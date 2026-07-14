@@ -1,0 +1,50 @@
+name: Release to npm
+
+# Every push to main (i.e. every merge) bumps the patch version, tags it, and
+# publishes @shomra/agent to npm. The bump commit is marked [skip ci] so it does
+# not retrigger this workflow. Requires an NPM automation token in the repo
+# secret NPM_TOKEN (Settings → Secrets and variables → Actions).
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Skip the bot's own release commits to avoid an infinite loop.
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Test
+        run: npm test
+
+      - name: Configure git
+        run: |
+          git config user.name "shomra-ci"
+          git config user.email "ci@shomra.ai"
+
+      - name: Bump patch version
+        run: npm version patch -m "chore: release %s [skip ci]"
+
+      - name: Publish to npm
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Push commit + tag
+        run: git push --follow-tags

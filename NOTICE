@@ -1,0 +1,10 @@
+Shomra Agent (@shomra/agent)
+Copyright 2026 Shomra
+
+This product includes software developed at Shomra (https://shomra.ai).
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file for the
+full terms.
+
+The detection rules, signatures, and analyzers in this package are intended for
+authorized security use — scanning your own AI artifacts, code, and machines.

@@ -1,0 +1,24 @@
+# Dependencies (this package has none at runtime, but tooling may add them)
+node_modules/
+
+# Shomra local state (config + caches live in the user's home dir, but never commit any that land here)
+.shomra/
+*.log
+
+# Build / packaging output
+*.tgz
+dist/
+coverage/
+
+# Editor / OS cruft
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Env / secrets — never commit
+.env
+.env.*
+*.pem
+*.key

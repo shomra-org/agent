@@ -1,0 +1,51 @@
+{
+  "name": "@shomra/agent",
+  "version": "0.2.4",
+  "description": "Shomra — a local-first security scanner and runtime firewall for AI agents, MCP servers, prompts, and models. Gates AI artifacts in your editor and CI.",
+  "type": "module",
+  "bin": {
+    "shomra": "./shomra.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.mjs\""
+  },
+  "files": [
+    "shomra.mjs",
+    "discovery.mjs",
+    "guard-signals.mjs",
+    "code-sast.mjs",
+    "model-refs.mjs",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "keywords": [
+    "ai-security",
+    "mcp",
+    "prompt-injection",
+    "sast",
+    "static-analysis",
+    "supply-chain",
+    "ci",
+    "sarif",
+    "llm",
+    "agent-security",
+    "devsecops"
+  ],
+  "homepage": "https://shomra.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shomra-org/agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shomra-org/agent/issues"
+  },
+  "author": "Shomra",
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  }
+}
