@@ -66,9 +66,9 @@ function firstExisting(paths) {
 }
 
 // ── workspace root discovery ─────────────────────────────────────
-// The old scanner only looked at cwd. Real AI assets live scattered across a
-// developer's project folders, so we discover those folders instead of hoping
-// the agent was launched from inside one.
+// Real AI assets live scattered across a developer's project folders, so
+// discovery walks those folders rather than assuming the CLI was launched from
+// inside one.
 
 const IGNORE_DIRS = new Set([
   'node_modules', '.git', '.hg', '.svn', 'dist', 'build', 'out', '.next', '.nuxt',

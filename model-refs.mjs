@@ -43,12 +43,20 @@ const TORCH_HUB = /torch\.hub\.load\s*\(\s*['"]([A-Za-z0-9][\w.-]*\/[A-Za-z0-9][
 
 // Reject ids that are really file paths, packages, or non-model strings.
 const ASSET_EXT = /\.(py|pyc|ipynb|[mc]?[jt]sx?|json|ya?ml|toml|txt|md|lock|cfg|ini|sh|env|png|jpg|svg|css|html?|csv|tsv|parquet)$/i;
+// First path segment on huggingface.co that is a SITE section, not an org — so
+// huggingface.co/docs/datasets isn't mistaken for the model "docs/datasets".
+const NONMODEL_ORGS = new Set([
+  'docs', 'blog', 'spaces', 'datasets', 'models', 'join', 'login', 'settings',
+  'pricing', 'tasks', 'learn', 'papers', 'collections', 'organizations', 'new',
+  'search', 'chat', 'posts', 'enterprise', 'inference-endpoints',
+]);
 function looksLikeModelId(id) {
   if (!id || id.startsWith('@') || id.startsWith('.') || id.startsWith('/')) return false;
   if (id.includes('..') || id.split('/').length !== 2) return false;
   if (ASSET_EXT.test(id)) return false; // a model id never ends in a code/asset ext
   const [a, b] = id.split('/');
   if (!/[A-Za-z]/.test(a) || !/[A-Za-z]/.test(b)) return false; // kills "123/456"
+  if (NONMODEL_ORGS.has(a.toLowerCase())) return false; // site path, not an org
   return true;
 }
 // A bare id (no org) from a high-confidence position — accept unless it's clearly

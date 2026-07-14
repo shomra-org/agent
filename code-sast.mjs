@@ -1,8 +1,8 @@
 /**
  * Local SAST rule engine for AI-artifact source code — a dependency-free port of
- * the platform's src/checks/code-sast.ts, so the CLI can catch the same
- * AI-vulnerability shapes ON-MACHINE (offline, pre-commit, in the IDE) that the
- * model scan and workspace scan catch server-side. Nothing here is executed.
+ * the server-side engine, so the CLI can catch the same AI-vulnerability shapes
+ * ON-MACHINE (offline, pre-commit, in the IDE) that the model scan and workspace
+ * scan catch server-side. Nothing here is executed.
  *
  * Three analysis tiers, worst-first, tuned for low false positives:
  *
@@ -21,11 +21,15 @@
  *      • config.json / tokenizer_config.json: auto_map / custom_pipeline / declared
  *        trust_remote_code → remote-code-under-load.
  *
- *   2. Lightweight taint tier — tracks variables assigned from an LLM call
- *      (`.generate` / `.invoke` / `.completions.create` / `.messages.create` …),
- *      propagates that taint across simple assignments, and raises a CRITICAL
- *      `*.llm_output_to_sink` when a tainted value reaches a code-execution sink.
- *      This is the prompt-injection → RCE shape that single-sink matching misses.
+ *   2. Heuristic LLM-output propagation tier (NOT true dataflow) — marks a
+ *      variable assigned from an LLM call (`.generate` / `.invoke` /
+ *      `.completions.create` …) as tainted, propagates by NAME SUBSTRING across
+ *      simple assignments, and raises an `*.llm_output_to_sink` finding when a
+ *      tainted name appears in a code-execution sink's arguments. Surfaces the
+ *      prompt-injection → RCE shape single-sink matching misses, but it is a
+ *      low-confidence heuristic, not analysis: no scope, no reassignment/kill, no
+ *      sanitizer awareness, no interprocedural tracking — it can over- and
+ *      under-report. Findings are HIGH at low confidence with hedged wording.
  *
  *   3. Cross-signal chain tier — synthesises a finding when two independently
  *      suspicious signals co-occur in one file: encoded-payload + code-exec
@@ -34,9 +38,9 @@
  *
  * Findings carry a stable dotted rule id, the matched SINK, an optional SOURCE, a
  * CWE, a category, a 0–1 confidence, the FILE + physical LINE and a context
- * SNIPPET — the exact shape the Risk Evaluation UI renders and shomra.mjs folds
- * into a gate result. Keep the rule bodies in sync with src/checks/code-sast.ts —
- * drift only costs recall on the local floor; the server remains the full check.
+ * SNIPPET — the exact shape shomra.mjs folds into a gate result. The rule bodies
+ * mirror the server engine; drift only costs recall on the local floor, and the
+ * server remains the full check.
  */
 
 const MAX_SNIPPET = 400;
@@ -73,7 +77,7 @@ const PY_RULES = [
     // jsonpickle, torch.load, joblib/skops, numpy allow_pickle, yaml.load without a
     // safe Loader, shelve, pandas.read_pickle, mlflow.*.load_model. All run
     // __reduce__ / arbitrary code on a crafted file the moment they load.
-    re: /\b(pickle|cpickle|dill|_pickle|cloudpickle)\.(loads?|Unpickler)\s*\(|\bjsonpickle\.(decode|loads)\s*\(|\btorch\.(load|jit\.load)\s*\(|\byaml\.(unsafe_load|load\s*\((?![^)]*Loader\s*=\s*yaml\.(Safe|Full)Loader))|\bjoblib\.load\s*\(|\bskops\.io\.load\s*\(|\bshelve\.open\s*\(|\bnumpy\.load\s*\([^)]*allow_pickle\s*=\s*True|\b(pandas|pd)\.read_pickle\s*\(|\bmlflow\.[\w.]+\.load_model\s*\(/,
+    re: /\b(pickle|cpickle|dill|_pickle|cloudpickle)\.(loads?|Unpickler)\s*\(|\bjsonpickle\.(decode|loads)\s*\(|\bmarshal\.loads?\s*\(|\btorch\.(load|jit\.load)\s*\(|\byaml\.(unsafe_load|load\s*\((?![^)]*Loader\s*=\s*yaml\.(Safe|Full)Loader))|\bjoblib\.load\s*\(|\bskops\.io\.load\s*\(|\bshelve\.open\s*\(|\bnumpy\.load\s*\([^)]*allow_pickle\s*=\s*True|\b(pandas|pd)\.read_pickle\s*\(|\bmlflow\.[\w.]+\.load_model\s*\(/,
     sink: (m) => m[0].replace(/\s*\($/, '').trim(),
     source: 'weight / config file',
     message: 'Deserializes data with a pickle-backed loader. A crafted file runs arbitrary code via __reduce__ on load — the primary model-hub malware vector.',
@@ -86,11 +90,56 @@ const PY_RULES = [
     severity: 'CRITICAL',
     category: 'remote-code',
     confidence: 0.95,
+    // codeOnly: keyword appears in docstrings / log warnings / usage examples
+    // (e.g. Falcon's "load without the trust_remote_code=True argument").
+    codeOnly: true,
     re: /trust_remote_code\s*=\s*True/,
     sink: () => 'trust_remote_code=True',
     source: 'model repository',
     message: 'Loads a model/tokenizer/embedder with trust_remote_code=True, which imports and runs code shipped in the model repo inside the host process before any weights load — an instant RCE if the publisher, or a later silent revision, is malicious.',
     remediation: 'Remove trust_remote_code=True. Prefer a model with native transformers support, or pin revision= to a specific reviewed commit hash and read the custom modeling code first.',
+    cwe: 'CWE-94',
+  },
+  {
+    id: 'python.dataset_remote_code',
+    title: 'Dataset loaded with trust_remote_code',
+    severity: 'CRITICAL',
+    category: 'remote-code',
+    confidence: 0.9,
+    codeOnly: true,
+    // datasets.load_dataset(..., trust_remote_code=True) runs the dataset's own
+    // Python loading script — a DISTINCT RCE vector from model trust_remote_code.
+    re: /\bload_dataset\s*\((?=[^)]*trust_remote_code\s*=\s*True)/,
+    sink: () => 'load_dataset(trust_remote_code=True)',
+    source: 'dataset repository',
+    message: 'Loads a Hugging Face dataset with trust_remote_code=True, which imports and runs the dataset\'s Python loading script in the host process — arbitrary code execution from the dataset publisher.',
+    remediation: 'Remove trust_remote_code=True. Use a non-script dataset format (Parquet/Arrow/CSV/JSON), or pin revision= to a reviewed commit and read the loading script first.',
+    cwe: 'CWE-94',
+  },
+  {
+    id: 'python.native_code_load',
+    title: 'Loads a native library (ctypes)',
+    severity: 'HIGH',
+    category: 'code-exec',
+    confidence: 0.85,
+    re: /\bctypes\.(CDLL|WinDLL|OleDLL|PyDLL|cdll|windll|oledll)\b|\bcdll\.LoadLibrary\s*\(|\bwindll\.LoadLibrary\s*\(/,
+    sink: (m) => m[0].replace(/\s*\($/, '').trim(),
+    source: 'native library',
+    message: 'Loads a native/shared library via ctypes. Model code has no reason to dlopen libc or an arbitrary .so/.dll — it is an execution primitive (e.g. ctypes.CDLL("libc.so.6").system(cmd)).',
+    remediation: 'Remove the ctypes native-library load from model/loader code. Treat any model that dlopens libraries on load as hostile.',
+    cwe: 'CWE-94',
+  },
+  {
+    id: 'python.dynamic_file_exec',
+    title: 'Loads and executes a Python file at runtime',
+    severity: 'HIGH',
+    category: 'code-exec',
+    confidence: 0.85,
+    re: /\bSourceFileLoader\s*\(|\bspec_from_file_location\s*\(|\bimp\.load_source\s*\(|\bexec_module\s*\(/,
+    sink: (m) => m[0].replace(/\s*\($/, '').trim(),
+    source: 'file path',
+    message: 'Imports and executes a Python file from a path at runtime (SourceFileLoader / spec_from_file_location / imp.load_source). This runs code that is not statically visible as an import — a common way to hide an execution path.',
+    remediation: 'Remove runtime file-based module loading from model code. Import only reviewed, statically-visible modules.',
     cwe: 'CWE-94',
   },
   {
@@ -235,14 +284,17 @@ const PY_RULES = [
   },
   {
     id: 'python.encoded_payload',
-    title: 'Encoded payload decode-and-run',
-    severity: 'HIGH',
+    title: 'Encoded blob decode',
+    // LOW on its own: base64/hex decode is ubiquitous & benign in ML (tokenizer
+    // vocabs, quant kernels). The dangerous decode→exec case is elevated to
+    // CRITICAL by chain.decode_exec. marshal.loads moved to pickle_deserialization.
+    severity: 'LOW',
     category: 'obfuscation',
-    confidence: 0.6,
-    re: /\b(base64|codecs|binascii|marshal)\.(b64decode|decode|unhexlify|loads)\s*\(|bytes\.fromhex\s*\(/,
+    confidence: 0.5,
+    re: /\b(base64|codecs|binascii)\.(b64decode|decode|unhexlify)\s*\(|bytes\.fromhex\s*\(/,
     sink: (m) => m[0].replace(/\s*\($/, '').trim(),
-    message: 'Decodes an encoded blob. Combined with eval/exec this is the "decode a base64 string then run it" packer used to smuggle payloads past a skim.',
-    remediation: 'Decode the blob offline and inspect it. Never load model code that decodes-and-runs embedded strings.',
+    message: 'Decodes an encoded blob. Benign on its own (common in tokenizers/quantization), but the "decode then run it" packer combines this with eval/exec — see any decode-and-run chain finding on this file.',
+    remediation: 'If this decode feeds eval/exec/import, decode the blob offline and inspect it. A lone decode of vocab/kernel data is expected.',
     cwe: 'CWE-506',
   },
   {
@@ -371,14 +423,17 @@ const JS_RULES = [
 const CONFIG_RULES = [
   {
     id: 'json.automodel_usage',
-    title: 'AutoModel bound to remote code',
-    severity: 'HIGH',
+    // MEDIUM, not HIGH: capability/posture fact (ships trust_remote_code code) —
+    // true of every legit custom model, so HIGH is alert fatigue. A real sink in
+    // the routed module is elevated to CRITICAL by chain.config_module_rce.
+    title: 'AutoModel bound to repo-shipped code (trust_remote_code)',
+    severity: 'MEDIUM',
     category: 'remote-code',
     confidence: 0.8,
     re: /"(AutoModel[A-Za-z]*|AutoConfig)"\s*:\s*"([^"]+)"/,
     sink: (m) => `auto_map.${m[1]}`,
-    message: 'config.json maps an Auto* class to a class shipped in this repo. Loading the model with trust_remote_code imports and runs that code before any weights.',
-    remediation: 'Do not use the AutoModel path for this repo. Pin revision= to a reviewed commit, or load a model with native transformers support.',
+    message: 'config.json maps an Auto* class to code shipped in this repo. Loading with trust_remote_code imports and runs that code before any weights — review the publisher and the referenced module. (A dangerous sink in that module is reported separately at higher severity.)',
+    remediation: 'Review the referenced module before loading, pin revision= to a reviewed commit, or use a model with native transformers support.',
     cwe: 'CWE-829',
   },
   {
@@ -419,10 +474,11 @@ const CONFIG_RULES = [
   },
 ];
 
-// ── Taint tier config: LLM output → code-execution sink ────────────
-// Per-language patterns for the dataflow pass. `aiCall` marks a variable tainted
-// when its RHS is an LLM/model call; `execSink` is the dangerous consumer. A
-// tainted value reaching a sink is prompt-injection → RCE.
+// ── LLM-output propagation config: LLM output → code-execution sink ─────────
+// Per-language patterns for the heuristic name-propagation pass (NOT dataflow).
+// `aiCall` marks a variable tainted when its RHS is an LLM/model call; `execSink`
+// is the dangerous consumer. A tainted name reaching a sink is the
+// prompt-injection → RCE shape — reported low-confidence, to be confirmed.
 const PY_TAINT = {
   lang: 'python',
   ruleId: 'python.llm_output_to_sink',
@@ -443,13 +499,13 @@ const CHAINS = [
     title: 'Decode-and-execute packer (multi-signal)',
     severity: 'CRITICAL',
     category: 'chain',
-    confidence: 0.8,
+    confidence: 0.6,
     // an encoded-blob decode AND a code-exec sink in the same file
     parts: ['python.encoded_payload', 'js.decode_and_run', 'python.dangerous_sinks', 'js.code_exec', 'python.dynamic_import'],
     needs: (ids) => (ids.has('python.encoded_payload') || ids.has('js.decode_and_run')) &&
       (ids.has('python.dangerous_sinks') || ids.has('js.code_exec') || ids.has('python.dynamic_import')),
     anchor: ['python.dangerous_sinks', 'js.code_exec', 'python.encoded_payload', 'js.decode_and_run'],
-    message: 'This file both decodes an encoded blob and contains a code-execution sink — the two halves of a decode-then-run packer. Even split across lines, together they smuggle and execute a hidden payload.',
+    message: 'This file BOTH decodes an encoded blob AND contains a code-execution sink — the two halves of a decode-then-run packer. Detected by co-occurrence in one file, not a proven decode→exec path, so confirm the decoded blob is what reaches the sink; when it is, this is how a hidden payload is smuggled and run.',
     remediation: 'Decode every embedded blob offline and inspect it, and remove the decode → eval/exec path entirely. Do not ship artifacts that assemble code at runtime.',
     cwe: 'CWE-506',
   },
@@ -458,14 +514,14 @@ const CHAINS = [
     title: 'Remote-code model that also phones out',
     severity: 'CRITICAL',
     category: 'chain',
-    confidence: 0.8,
+    confidence: 0.6,
     // remote-code loading AND network egress in the same file
     parts: ['python.trust_remote_code', 'python.torch_remote_code', 'json.automodel_usage', 'json.autotokenizer_usage', 'python.network_egress', 'js.network_egress'],
     needs: (ids) => (ids.has('python.trust_remote_code') || ids.has('python.torch_remote_code') ||
       ids.has('json.automodel_usage') || ids.has('json.autotokenizer_usage')) &&
       (ids.has('python.network_egress') || ids.has('js.network_egress')),
     anchor: ['python.network_egress', 'js.network_egress', 'python.trust_remote_code', 'python.torch_remote_code'],
-    message: 'This file loads code shipped in a model repo (trust_remote_code / auto_map / torch.hub) AND opens a network connection. Remote-code modeling that also phones out is the classic staged-download / exfiltration shape.',
+    message: 'This file loads code shipped in a model repo (trust_remote_code / auto_map / torch.hub) AND opens a network connection. Detected by co-occurrence in one file, not a proven load→egress path. Remote-code modeling that also phones out is the classic staged-download / exfiltration shape — confirm whether the network call is reachable from the model-code load.',
     remediation: 'Do not load remote model code; use a native-transformers model or a reviewed, pinned revision. Model code should never make outbound requests — treat this artifact as hostile.',
     cwe: 'CWE-494',
   },
@@ -538,6 +594,42 @@ function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Whether byte `offset` in `text` falls inside a string literal — tracks single/
+ * double/backtick + triple quotes, honouring escapes. Drops `codeOnly` rule
+ * matches that land in a docstring / log message / usage example (the Falcon
+ * `trust_remote_code=True`-in-a-warning FP). Approximate and only ever more
+ * conservative (may skip a real hit, never invents one).
+ */
+function isInsideString(text, offset) {
+  let quote = null;
+  let triple = false;
+  for (let i = 0; i < offset && i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === '\\') { i++; continue; }
+      if (triple) {
+        if (c === quote && text[i + 1] === quote && text[i + 2] === quote) { i += 2; quote = null; triple = false; }
+      } else if (c === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (c === '#') {
+      const nl = text.indexOf('\n', i);
+      if (nl === -1) return false;
+      i = nl;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      quote = c;
+      triple = text[i + 1] === c && text[i + 2] === c;
+      if (triple) i += 2;
+    }
+  }
+  return quote !== null;
+}
+
 /** Map a match offset inside a logical unit back to a 0-based physical line. */
 function physicalIdx(unit, offset) {
   const newlines = unit.text.slice(0, offset).match(/\n/g);
@@ -557,10 +649,13 @@ function parseAssign(text) {
 }
 
 /**
- * Lightweight intra-file taint pass. Marks variables assigned from an LLM call as
- * tainted, propagates that across simple assignments (bounded fixed point), then
- * emits a CRITICAL finding wherever a tainted value flows into a code-exec sink —
- * the prompt-injection → RCE shape a single-sink regex can't see.
+ * Heuristic intra-file LLM-output propagation (NOT true taint analysis). Marks
+ * variables assigned from an LLM call as tainted, propagates by name-substring
+ * across simple assignments (bounded fixed point), then emits a finding wherever
+ * a tainted name appears in a code-exec sink's arguments — the prompt-injection →
+ * RCE shape a single-sink regex can't see. No scope, kill, sanitizer or
+ * interprocedural tracking, so it can over- and under-report; findings are HIGH
+ * at low confidence with hedged wording, i.e. leads to confirm, not proof.
  */
 function taintFindings(lines, units, file, cfg) {
   const tainted = new Set();
@@ -602,18 +697,19 @@ function taintFindings(lines, units, file, cfg) {
           const sink = m[0].replace(/\s*\($/, '').trim();
           out.push({
             ruleId: cfg.ruleId,
-            title: 'LLM output reaches a code-execution sink',
-            severity: 'CRITICAL',
-            category: 'taint',
-            confidence: 0.85,
+            title: 'LLM output may reach a code-execution sink (heuristic)',
+            // HIGH, not CRITICAL: name-propagation heuristic, not proven dataflow.
+            severity: 'HIGH',
+            category: 'taint-heuristic',
+            confidence: 0.5,
             file,
             line: idx + 1,
             sink: sink.slice(0, 120),
             source: 'LLM output',
-            taint: `${via} (LLM output) → ${sink}`,
+            taint: `${via} (LLM output) → ${sink} (heuristic name match — confirm)`,
             ...contextChunk(lines, idx),
-            message: `A value derived from an LLM call ("${via}") flows into ${sink}. A prompt-injected instruction the model emits becomes code execution in the host — the highest-severity agent vulnerability.`,
-            remediation: 'Never pass model output to eval/exec/subprocess. Constrain the model to structured output (a fixed schema / tool-call allowlist), validate it, and dispatch on named handlers — never execute it.',
+            message: `A variable that appears to derive from an LLM call ("${via}") is used in ${sink}. If that value really is model-controlled, a prompt-injected instruction becomes code execution in the host — a critical agent vulnerability. Flagged by a name-propagation heuristic (no dataflow proof), so confirm the value is actually the model output and not reassigned/sanitized before this line.`,
+            remediation: 'If confirmed, never pass model output to eval/exec/subprocess. Constrain the model to structured output (a fixed schema / tool-call allowlist), validate it, and dispatch on named handlers — never execute it.',
             cwe: 'CWE-94',
           });
         }
@@ -673,6 +769,9 @@ function scanLines(text, file, rules, taintCfg) {
       rule.re.lastIndex = 0;
       const m = rule.re.exec(unit.text);
       if (!m) continue;
+      // Drop code-construct rules whose match lands inside a string literal
+      // (docstring / log message / usage example) — the Falcon-class FP.
+      if (rule.codeOnly && isInsideString(unit.text, m.index)) continue;
       const idx = physicalIdx(unit, m.index);
       const trimmed = (lines[idx] ?? '').trim();
       if (!trimmed || isCommentLine(trimmed)) continue;

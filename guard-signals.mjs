@@ -1,8 +1,7 @@
 /**
  * Tier-0 local guard signals — a dependency-free, high-confidence subset of the
- * backend detection engine (src/bundle/signals.ts + src/checks/patterns.ts),
- * ported so the runtime firewall can decide the DANGEROUS majority of tool calls
- * ON-BOX, with zero network round-trip.
+ * server-side detection engine, ported so the runtime firewall can decide the
+ * DANGEROUS majority of tool calls ON-BOX, with zero network round-trip.
  *
  * Why this exists: the pre-tool-call hook fires on every action. Routing every
  * call through the backend put a network dependency on the hot path — slow when
@@ -19,11 +18,50 @@
  *     escalates policy-relevant calls to it; the local tier is the floor, not a
  *     replacement.
  *
- * Keep the pattern lists roughly in sync with the server modules named above.
- * Drift only costs recall on the local floor — the server remains the full check.
+ * The pattern lists below mirror the server engine. Drift only costs recall on
+ * the local floor — the server remains the full check.
  */
 
-// ── dangerous shell (mirror of DANGEROUS_SHELL in src/bundle/signals.ts) ──
+// ── precision guards ──
+
+/** Build output every README tells you to wipe — regenerable, not real data. */
+const EPHEMERAL_RM_TARGET_RE =
+  /^(\.\/)?(node_modules|dist|build|out|coverage|target|\.next|\.nuxt|\.turbo|\.svelte-kit|\.cache|\.parcel-cache|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|venv|\.venv|\.eggs|[\w.-]+\.egg-info)\/?\*?$/i;
+
+/** True when an `rm -rf` line deletes something other than build output. */
+function rmTargetsRealData(line) {
+  const m = /\brm\s+((?:-[a-zA-Z]+\s+)+)(.*)$/.exec(line);
+  if (!m) return true; // unparsed shape → keep the finding (fail open)
+  const targets = m[2]
+    .split(/&&|\|\||[;|>&]/)[0]
+    .split(/\s+/)
+    .filter((t) => t && !t.startsWith('-'));
+  if (!targets.length) return true;
+  return !targets.every((t) => EPHEMERAL_RM_TARGET_RE.test(t.replace(/^["']|["']$/g, '')));
+}
+
+/**
+ * The TEXT of the line `index` falls on — the unit a `refine` guard reasons
+ * about. Distinct from lineAt() (line NUMBER) and lineOf() (locate a needle).
+ */
+function lineTextAt(text, index) {
+  const start = text.lastIndexOf('\n', index - 1) + 1;
+  const end = text.indexOf('\n', index);
+  return text.slice(start, end === -1 ? undefined : end);
+}
+
+/** True when `sig` fires AND at least one hit survives its precision guard. */
+export function matchesShellSignal(sig, text) {
+  if (!sig.refine) return sig.re.test(text);
+  const g = new RegExp(sig.re.source, sig.re.flags.includes('g') ? sig.re.flags : sig.re.flags + 'g');
+  for (const m of text.matchAll(g)) {
+    if (m.index == null) continue;
+    if (sig.refine(lineTextAt(text, m.index))) return true;
+  }
+  return false;
+}
+
+// ── dangerous shell ──
 export const DANGEROUS_SHELL = [
   { name: 'Pipe-to-shell installer (curl … | sh)', re: /\b(curl|wget)\b[^\n|]{0,200}\|\s*(sudo\s+)?(ba|z|k)?sh\b/i, severity: 'CRITICAL' },
   { name: 'PowerShell download-and-run (iwr/curl … | iex)', re: /\b(iwr|curl|wget|invoke-webrequest|invoke-restmethod|irm)\b[^\n|]{0,200}\|\s*(iex|invoke-expression)\b/i, severity: 'CRITICAL' },
@@ -34,8 +72,10 @@ export const DANGEROUS_SHELL = [
   { name: 'Command output piped into a network call', re: /\b(curl|wget|invoke-restmethod|invoke-webrequest|irm|iwr)\b[^\n]{0,220}(\$\(|`[^`\n]+`|<\()/i, severity: 'HIGH' },
   { name: 'Fetches from a raw IP address', re: /\b(curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n]{0,220}https?:\/\/\d{1,3}(\.\d{1,3}){3}/i, severity: 'HIGH' },
   { name: 'Writes to shell profile / SSH keys / crontab', re: /(\.bashrc|\.zshrc|\.bash_profile|\.profile|authorized_keys|id_rsa\b|\bcrontab\b)/i, severity: 'HIGH' },
-  { name: 'Recursive force delete (rm -rf)', re: /\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r/i, severity: 'HIGH' },
-  { name: 'Inline eval / exec of a string', re: /\b(eval|exec)\s*[("`']/i, severity: 'HIGH' },
+  { name: 'Recursive force delete (rm -rf)', re: /\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r/i, severity: 'HIGH', refine: rmTargetsRealData },
+  // BARE `eval(`/`exec(` only — the lookbehind drops method calls that merely end
+  // in those letters (`db.exec(`, `RE.exec(`, `page.$eval(`, `$pdo->exec(`).
+  { name: 'Inline eval / exec of a string', re: /(?<![.\w$>:])(eval|exec)\s*[("`']/i, severity: 'HIGH' },
   { name: 'Pipes an env dump to the network', re: /\b(env|printenv|set)\b[^\n|]{0,80}\|[^\n]{0,80}(curl|wget|nc\b|http)/i, severity: 'HIGH' },
   { name: 'Disables TLS / cert verification', re: /(NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*0|GIT_SSL_NO_VERIFY|--no-check-certificate|--insecure\b|verify\s*=\s*False)/i, severity: 'MEDIUM' },
   { name: 'python -c one-liner', re: /python[0-9.]*\s+-c\b/i, severity: 'MEDIUM' },
@@ -43,31 +83,39 @@ export const DANGEROUS_SHELL = [
   { name: 'Netcat / socket exfil', re: /\bnc\s+-[a-z]*\b|\bncat\b/i, severity: 'MEDIUM' },
 ];
 
-// ── injection (mirror of INJECTION_PHRASES / INJECTION_REGEXES) ──
+// ── injection ──
+// Broad phrases that dominate benign dev prose ("system prompt", "run the
+// following command", "do not tell the user", "never mention") are deliberately
+// excluded — their real-attack shapes are caught by scanShell and the tightened
+// regexes below. The injection loop also applies PRECEDING_NEGATION, so "never
+// ignore previous instructions" reads as legitimate.
 export const INJECTION_PHRASES = [
   'ignore previous instructions', 'ignore all previous', 'disregard previous', 'disregard the above',
-  'do not tell the user', "don't tell the user", 'without informing the user', 'without telling the user',
-  'do not mention', "don't mention", 'never mention',
-  'system prompt', 'you are now', 'new instructions:', 'override your', 'exfiltrate',
-  'send them to', 'post them to', 'forward the',
-  'run this first', 'run the following command', 'run the following commands', 'copy this command',
-  'copy and run', 'execute the following', 'seed the current host',
+  'without informing the user', 'without telling the user',
+  'new instructions:', 'override your', 'exfiltrate',
+  'send them to', 'post them to',
+  'run this first', 'copy and run', 'seed the current host',
   'ignore all instructions', 'ignore your instructions', 'ignore your safety', 'ignore all content policies',
   'disregard your instructions', 'disregard the guidelines', 'system override', 'follow only my instructions',
   'do anything now', 'reveal any credential',
   'save this to your memory', 'in all future sessions', 'remember this forever',
 ];
 export const INJECTION_REGEXES = [
-  { label: 'Instruction-override phrasing', re: /\b(ignore|disregard|forget|discard|override|bypass|skip)\b[\s\w,'"()-]{0,40}?\b(instruction|instructions|rule|rules|guideline|guidelines|prompt|prompts|directive|directives|context|constraint|constraints)\b/i },
-  { label: 'Reference to overriding earlier context', re: /\b(previous|prior|above|earlier|preceding|former|the last|that (?:were |was )?given)\b[\s\w,'"()-]{0,25}?\b(instruction|instructions|rule|rules|prompt|prompts|message|messages|guidance)\b/i },
-  { label: 'Bulk destructive command', re: /\b(delete|remove|wipe|erase|destroy|drop|purge|clear|nuke|truncate)\b[\s\w,'"()-]{0,20}?\b(all|every|each|entire|whole)\b[\s\w,'"()-]{0,15}?\b(folder|folders|file|files|directory|directories|table|tables|database|databases|record|records|repo|repos|repositor\w*|account|accounts|user|users|row|rows|document|documents|data)\b/i },
-  { label: 'Recursive force-delete command', re: /\brm\s+-[a-z]*[rf][a-z]*\b|\brmdir\b|\bdel\s+\/[sqf]|remove-item\b[\s\S]{0,40}?-recurse/i },
-  { label: 'Destructive SQL statement', re: /\b(drop|truncate)\s+(table|database|schema|index)\b/i },
+  { label: 'Instruction-override phrasing', re: /\b(ignore|disregard|override|bypass|circumvent)\b[\s\w,'"()-]{0,40}?\b(instruction|instructions|directive|directives|safety|safeguards?|guardrails?|system\s+prompt|content\s+polic\w+)\b/i },
+  { label: 'Instructs the agent to conceal an action from the user', re: /\b(?:do\s*n['o]?t|never|without)\s+(?:tell|telling|inform|informing|notify|notifying|alert|alerting|mention|mentioning|disclos\w+|reveal\w*)\s+(?:it\s+|this\s+|them\s+)?(?:to\s+)?(?:the\s+)?(?:user|users|human|operator|owner)\b(?!['']s)(?!\s+(?:to\b|how\s+to\b|when\s+to\b|that\s+they\b|about\b))/i },
+  { label: 'Bulk destructive command', re: /\b(delete|remove|wipe|erase|destroy|drop|purge|nuke|truncate)\b[\s\w,'"()-]{0,20}?\b(all|every|each|entire|whole)\b[\s\w,'"()-]{0,15}?\b(folder|folders|file|files|directory|directories|table|tables|database|databases|record|records|repo|repos|repositor\w*|account|accounts|user|users|row|rows|document|documents|data)\b/i },
+  { label: 'Destructive SQL statement', re: /\b(drop|truncate)\s+(table|database|schema)\b/i },
 ];
+// Negation flips an override phrase into a hardening rule; a bulk-destructive hit
+// on a build/test artifact is a clean step, not an attack. Applied in localScan.
+const PRECEDING_NEGATION = /\b(never|not|do not|don'?t|cannot|can'?t|must not|mustn'?t|should not|shouldn'?t|avoid|refuse to|forbidden to|prohibited from|without)\s*$/i;
+const BUILD_ARTIFACT = /\b(node_modules|dist|build|out|coverage|target|cache|generated|tmp|temp|__pycache__|artifacts?|logs?|tests?|test|fixtures?|staging|scratch|migrations?)\b/i;
 // zero-width / bidi / tag-block chars used to smuggle instructions (ASCII smuggling).
-export const INVISIBLE_CHARS_RE = /[​-‏‪-‮⁠-⁤﻿︀-️]|[\u{E0000}-\u{E007F}]|[\u{E0100}-\u{E01EF}]/u;
+// Excludes U+200D ZWJ and U+FE00–FE0F variation selectors — those render ordinary
+// emoji ("⚠️", "👨‍💻") and are not a smuggling channel.
+export const INVISIBLE_CHARS_RE = /[؜ᅟᅠ᠎​‌‎‏‪-‮⁠-⁤⁦-⁩ㅤ﻿ﾠ￹-￻]|[\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/u;
 
-// ── secrets (mirror of SECRET_PATTERNS) ──
+// ── secrets ──
 export const SECRET_PATTERNS = [
   { name: 'Stripe live key', re: /sk_live_[0-9a-zA-Z]{16,}/ },
   { name: 'OpenAI key', re: /sk-[A-Za-z0-9]{20,}/ },
@@ -84,7 +132,7 @@ export const RISKY_CONFIG_MARKERS = [
   'disable safety', 'bypass approval', 'full access', 'unrestricted',
 ];
 
-// ── PII (mirror of PII_PATTERNS + Luhn gate in checks/text-inspector.ts) ──
+// ── PII (patterns + Luhn gate) ──
 export const PII_PATTERNS = [
   { name: 'Email address', re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/ },
   { name: 'US SSN', re: /\b\d{3}-\d{2}-\d{4}\b/ },
@@ -92,6 +140,10 @@ export const PII_PATTERNS = [
   { name: 'Phone number', re: /\b(?:\+?1[ .-]?)?\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4}\b/ },
   { name: 'IPv4 address', re: /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/ },
 ];
+// Reserved / RFC-1918 / doc / public-DNS IPs (not personal data), and a version
+// context ("v1.0.0.0") that merely looks like an IP.
+const RESERVED_IPV4 = /^(0\.|255\.255\.255\.255|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|8\.8\.(8\.8|4\.4)|1\.1\.1\.1|1\.0\.0\.1|224\.)/;
+const VERSION_CONTEXT = /\b(v|ver|version|release|rev|build|semver|tag)\.?\s*$/i;
 
 // Luhn check keeps the loose credit-card regex from firing on any digit run.
 function luhnValid(value) {
@@ -123,8 +175,8 @@ export function containsAny(haystack, needles) {
   return null;
 }
 
-// Attacker-controlled data sinks (subset of SUSPICIOUS_EGRESS_HOSTS) — a tool
-// call/result referencing one is an exfiltration endpoint.
+// Attacker-controlled data sinks — a tool call/result referencing one is an
+// exfiltration endpoint.
 export const SUSPICIOUS_EGRESS_HOSTS = [
   'webhook.site', 'requestbin', 'pipedream.net', 'ngrok.io', 'ngrok-free.app', 'ngrok.app',
   'trycloudflare.com', 'serveo.net', 'localhost.run', 'interact.sh', 'oastify.com', 'oast.pro',
@@ -138,7 +190,7 @@ export const SUSPICIOUS_EGRESS_HOSTS = [
 const SEV_RANK = { INFO: 1, LOW: 2, MEDIUM: 3, HIGH: 4, CRITICAL: 5 };
 
 // Decode suspicious base64 blobs so payloads hidden in an "echo <blob>|base64 -d|sh"
-// trick are inspected too. We decode purely to READ the bytes; nothing runs.
+// trick are inspected too. Decoding is purely to READ the bytes; nothing runs.
 const BASE64_BLOB_RE = /\b[A-Za-z0-9+/]{32,}={0,2}/g;
 const DECODED_PAYLOAD_RE = /(\/bin\/(ba|z|k)?sh|\b(ba|z|k)?sh\s+-c|\bcurl\b|\bwget\b|\beval\b|\bexec\b|https?:\/\/|invoke-expression|\biex\b|powershell|\bnc\b|\bncat\b|\bchmod\b|\bbase64\b)/i;
 function deobfuscate(text) {
@@ -305,12 +357,27 @@ export function localScan(text, opts = {}) {
   if (cats.includes('shell')) {
     const aug = deobfuscate(t);
     if (aug.decodedPayload) findings.push({ label: 'Base64-encoded shell / RCE payload', severity: 'CRITICAL', category: 'shell' });
-    for (const sig of DANGEROUS_SHELL) if (sig.re.test(aug.text)) findings.push({ label: sig.name, severity: sig.severity, category: 'shell', ...locate(t, sig.re, mask) });
+    for (const sig of DANGEROUS_SHELL) if (matchesShellSignal(sig, aug.text)) findings.push({ label: sig.name, severity: sig.severity, category: 'shell', ...locate(t, sig.re, mask) });
   }
   if (cats.includes('injection')) {
     const low = t.toLowerCase();
-    for (const p of INJECTION_PHRASES) if (low.includes(p)) { findings.push({ label: `Injected instruction: "${p}"`, severity: 'HIGH', category: 'injection', ...locate(t, p, mask) }); break; }
-    for (const { label, re } of INJECTION_REGEXES) if (re.test(t)) findings.push({ label, severity: 'HIGH', category: 'injection', ...locate(t, re, mask) });
+    // First NON-NEGATED phrase (a negation right before flips it into a hardening
+    // rule — "never ignore previous instructions").
+    for (const p of INJECTION_PHRASES) {
+      const at = low.indexOf(p);
+      if (at < 0) continue;
+      if (PRECEDING_NEGATION.test(t.slice(Math.max(0, at - 20), at))) continue;
+      findings.push({ label: `Injected instruction: "${p}"`, severity: 'HIGH', category: 'injection', ...locate(t, p, mask) });
+      break;
+    }
+    for (const { label, re } of INJECTION_REGEXES) {
+      const m = t.match(re);
+      if (!m) continue;
+      const at = m.index ?? 0;
+      if (PRECEDING_NEGATION.test(t.slice(Math.max(0, at - 20), at))) continue;
+      if (label === 'Bulk destructive command' && BUILD_ARTIFACT.test(m[0])) continue; // build/test cleanup
+      findings.push({ label, severity: 'HIGH', category: 'injection', ...locate(t, re, mask) });
+    }
     if (INVISIBLE_CHARS_RE.test(t)) findings.push({ label: 'Invisible / zero-width characters', severity: 'MEDIUM', category: 'injection', ...locate(t, INVISIBLE_CHARS_RE, mask) });
   }
   if (cats.includes('secret')) {
@@ -321,6 +388,14 @@ export function localScan(text, opts = {}) {
       const m = t.match(re);
       if (!m) continue;
       if (name === 'Credit card number' && !luhnValid(m[0])) continue; // gate the loose CC regex
+      // Infra / reserved / doc / public-DNS IPs and version strings ("v1.0.0.0")
+      // are not personal data.
+      if (name === 'IPv4 address') {
+        if (RESERVED_IPV4.test(m[0])) continue;
+        if (VERSION_CONTEXT.test(t.slice(Math.max(0, (m.index ?? 0) - 12), m.index ?? 0))) continue;
+      }
+      // A separator-less digit run is an ID / Unix timestamp, not a phone number.
+      if (name === 'Phone number' && /^\d+$/.test(m[0])) continue;
       findings.push({ label: `Personal data: ${name}`, severity: 'MEDIUM', category: 'pii', ...locate(t, re, mask) });
     }
   }
@@ -352,7 +427,7 @@ export function downrankCodeContext(findings) {
 }
 
 // ── local artifact gate (offline `shomra gate`) ──
-// Social-engineering "install-lure" prose (mirror of INSTALL_LURE server-side).
+// Social-engineering "install-lure" prose.
 const INSTALL_LURE = [
   { name: 'Instructs downloading an executable/archive to run', re: /\b(download|install|fetch|grab|extract)\b[^\n]{0,180}\.(zip|exe|dmg|pkg|msi|bin|appimage|jar|scr|apk|deb|rpm|tar\.gz|tgz)\b/i, severity: 'MEDIUM' },
   { name: 'Password-protected archive (evades AV / scanners)', re: /\b(extract|unzip|decompress|archive|zip|password)\b[^\n]{0,50}\b(pass(word|phrase)?|pwd)\s*[:=]\s*\S/i, severity: 'HIGH' },
@@ -360,7 +435,7 @@ const INSTALL_LURE = [
   { name: 'Coercion: re-run / retry until it succeeds', re: /\b(re-?run (if needed|until|the command)|run (it |the command )?again|try again after)/i, severity: 'LOW' },
 ];
 
-// ── typosquat / malicious-package intel (mirror of checks/patterns.ts) ──
+// ── typosquat / malicious-package intel ──
 const MALICIOUS_PACKAGE_SEED = new Set([
   'event-stream', 'eslint-scope-malware', 'electron-native-notify', 'rc-malware',
   'crossenv', 'mongose', 'expresss',
@@ -447,7 +522,7 @@ function frontmatter(text) {
   return data;
 }
 
-// ── structured MCP-config checks (mirror of ArtifactAnalyzerService.checkMcpConfig) ──
+// ── structured MCP-config checks ──
 // Parses the JSON and inspects each server: plaintext HTTP (weak auth), a
 // hard-coded secret in the env block / launch line, and a typosquat / known-
 // malicious launch package — structural findings a raw-text scan can't produce.
@@ -486,7 +561,7 @@ function localMcp(content) {
   return out;
 }
 
-// ── structured agent-card checks (mirror of checkAgentCard endpoint analysis) ──
+// ── structured agent-card checks ──
 // Grades every URL the card declares (assessUrl: metadata SSRF, private-network
 // pivot, plaintext, raw IP) and flags a public card with no auth scheme.
 function localAgentCard(content) {
@@ -518,7 +593,7 @@ function localAgentCard(content) {
   return out;
 }
 
-// ── slash-command extras (mirror of checkCommand: `!`-bang + `@`-file) ──
+// ── slash-command extras (`!`-bang + `@`-file) ──
 function localCommandExtras(content) {
   const out = [];
   const body = content || '';
@@ -533,7 +608,7 @@ function localCommandExtras(content) {
   return out;
 }
 
-// ── memory / rules poisoning (mirror of bundle/memory-signals.ts analyzeMemory) ──
+// ── memory / rules poisoning ──
 // A persistent memory note or an AI rules file (CLAUDE.md, .cursorrules, …) is
 // re-injected as high-authority context every session. This grades the two by a
 // different baseline: MEMORY should record facts (any standing directive is
@@ -587,7 +662,7 @@ function scanDirectives(text) {
  * 'MEMORY' (agent-writable scratchpad — any standing directive is anomalous) or
  * 'INSTRUCTION' (curated rules file — only universally-malicious signals count).
  * Returns findings shaped like localGate's ({ severity, title, remediationText,
- * line }). Faithful to bundle/memory-signals.ts analyzeMemory.
+ * line }).
  */
 export function localMemory(content, { kind = 'MEMORY' } = {}) {
   const text = content || '';
@@ -622,7 +697,7 @@ export function localMemory(content, { kind = 'MEMORY' } = {}) {
 
   // Executable payload / egress sink / lifecycle-hook references have no business
   // in a note or rules file.
-  for (const sig of DANGEROUS_SHELL) if (sig.re.test(text)) { push(sig.severity === 'MEDIUM' || sig.severity === 'LOW' ? 'HIGH' : 'CRITICAL', `Executable payload staged in ${noun}: ${sig.name}`, `Delete the command from the ${noun}; treat the writer as untrusted.`, sig.re); break; }
+  for (const sig of DANGEROUS_SHELL) if (matchesShellSignal(sig, text)) { push(sig.severity === 'MEDIUM' || sig.severity === 'LOW' ? 'HIGH' : 'CRITICAL', `Executable payload staged in ${noun}: ${sig.name}`, `Delete the command from the ${noun}; treat the writer as untrusted.`, sig.re); break; }
   const host = egressHost(text);
   if (host) push('HIGH', `${isInstruction ? 'Rules file' : 'Memory'} references a data-exfiltration host (${host})`, 'Remove the reference and roll back to the approved baseline.', host);
   if (hasImperative && containsAny(text, SENSITIVE_READ) && containsAny(text, NETWORK_VERBS)) {
@@ -645,7 +720,7 @@ export function localMemory(content, { kind = 'MEMORY' } = {}) {
   return findings.filter((f) => (seen.has(f.title) ? false : (seen.add(f.title), true)));
 }
 
-// Basenames of AI rules / instruction files (mirror of INSTRUCTION_BASENAMES).
+// Basenames of AI rules / instruction files.
 const INSTRUCTION_BASENAMES = new Set([
   'claude.md', 'agents.md', 'agent.md', 'gemini.md', 'llms.txt', 'llms-full.txt',
   '.cursorrules', '.windsurfrules', '.clinerules', '.aiderrules', '.continuerules',
@@ -734,8 +809,8 @@ export function localGate(content, { kind, path } = {}) {
 }
 
 // Deterministic verdict + 0–100 risk score for a set of findings, aligned with
-// the server default policy (any CRITICAL → BLOCK, any HIGH → FLAG) and the
-// SEVERITY_WEIGHT scale. Exported so callers that fold in extra findings (e.g.
+// the server default policy: any CRITICAL → BLOCK, any HIGH → FLAG.
+// Exported so callers that fold in extra findings (e.g.
 // the CLI merging bundled-script SAST hits) re-grade the same way.
 export function grade(findings) {
   const WEIGHT = { INFO: 2, LOW: 8, MEDIUM: 20, HIGH: 40, CRITICAL: 70 };

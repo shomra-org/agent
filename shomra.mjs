@@ -310,7 +310,7 @@ async function sendReport(cfg, assets, flags) {
 }
 
 // Human name for a key scope, inferred from its prefix. Accepts the current
-// `shm_` prefix and the legacy pre-rebrand `dgx_` (older keys keep working).
+// `shm_` prefix and the legacy `dgx_` one, so older keys keep working.
 function keyScope(key) {
   if (!key) return null;
   if (/^(shm|dgx)_gw_/.test(key)) return 'gateway';
@@ -324,7 +324,7 @@ function cmdStatus() {
   const enrolled = !!apiKey;
   console.log(bold(cyan('\n  Shomra agent')) + dim(` v${VERSION}`));
 
-  // Mode banner — the whole point: what works right now, and what a key adds.
+  // Mode banner — what works right now, and what a key adds.
   if (enrolled) {
     console.log(`  ${dim('Mode     ')} ${green('● Enrolled')} ${dim(`(${keyScope(apiKey)} key)`)} — org policy, platform AI & dashboard telemetry active`);
   } else {
@@ -473,7 +473,7 @@ async function cmdGate(flags, positional) {
   const cfg = loadConfig();
   const { apiKey, url } = resolveSettings(cfg);
 
-  // Batch mode: gate every AI artifact under a directory (the CI story).
+  // Batch mode: gate every AI artifact under a directory.
   if (flags.all) {
     return cmdGateAll(flags, positional, { apiKey, url });
   }
@@ -576,7 +576,7 @@ async function cmdGate(flags, positional) {
 // usual env var (the SDK sends it; Shomra passes it through) — or set the org
 // key on the backend and use your shm_ key as the provider key.
 //
-// Providers mirror the backend registry (UPSTREAM in llm-proxy.service.ts):
+// Providers mirror the backend registry:
 // openai + every OpenAI-compatible API (groq/mistral/xai/deepseek/openrouter/
 // together) speak the OpenAI wire format; anthropic and gemini have their own.
 
@@ -1041,9 +1041,8 @@ async function gateArtifactList(artifacts, { apiKey, url, env, flags, root }) {
     prepared.push({ a, content, local, sast });
   }
 
-  // ── Phase 2: backend enrich, BOUNDED-PARALLEL (was one sequential round-trip
-  //    per artifact). Order-preserving; on the first outage stop starting new
-  //    calls (a down backend never costs N timeouts).
+  // ── Phase 2: backend enrich, BOUNDED-PARALLEL. Order-preserving; on the first
+  //    outage stop starting new calls (a down backend never costs N timeouts).
   const server = new Array(prepared.length).fill(null);
   if (apiKey) {
     const conc = clampInt(process.env.SHOMRA_GATE_CONCURRENCY, 8, 1, 32);
@@ -1348,7 +1347,6 @@ function gitChangedVsBase(root, base) {
 const GH_LEVEL = { CRITICAL: 'failure', HIGH: 'failure', MEDIUM: 'warning', LOW: 'notice', INFO: 'notice' };
 
 async function cmdPr(flags, positional) {
-  // Scaffold the workflow and exit.
   if (flags.init) {
     const wf = path.resolve('.github/workflows/shomra.yml');
     if (fs.existsSync(wf) && !flags.force) { console.error(red('✗') + ` ${path.relative(process.cwd(), wf)} exists. Use ${bold('--force')}.`); process.exit(1); }
@@ -2106,8 +2104,8 @@ async function cmdMemoryScan(flags, positional) {
 //
 // Replays the adversarial scenario library against your OWN LLM Guard (probe
 // mode — nothing is persisted as a real attack) or model, scores resilience,
-// and flags regressions vs the previous run. Great in CI: gate a merge/deploy
-// on `--min <resilience>` and/or `--fail-on-regression`. Exit: 0 = pass,
+// and flags regressions vs the previous run. In CI, gate a merge/deploy on
+// `--min <resilience>` and/or `--fail-on-regression`. Exit: 0 = pass,
 // 2 = below the resilience floor or a regression appeared.
 
 async function cmdRedteam(flags) {
@@ -2241,7 +2239,7 @@ async function cmdCampaign(flags) {
 // signatures for whatever breached, verifies each against a benign corpus (must
 // catch the attack AND cause zero false positives), and — with --apply — pushes
 // the survivors live as a SignaturePack (no redeploy) and re-runs to prove the
-// resilience lift. Great as a scheduled CI step after `shomra redteam`.
+// resilience lift. Suited to a scheduled CI step after `shomra redteam`.
 async function cmdHarden(flags) {
   const cfg = loadConfig();
   const { apiKey, url } = resolveSettings(cfg);
@@ -2303,8 +2301,8 @@ async function cmdHarden(flags) {
 // distinct principal and authorize every call against its capability policy.
 // Present the handle via SHOMRA_AGENT (or --agent-id); govern its capabilities,
 // approve break-glass requests and revoke it (a live kill-switch) in the
-// dashboard. Listing/governing is JWT-only (server.approve) — not exposed to a
-// machine key — so the CLI only self-registers.
+// dashboard. Listing/governing is JWT-only — not exposed to a machine key — so
+// the CLI only self-registers.
 async function cmdAgentIdentity(flags, positional) {
   const sub = (positional[0] || 'register').toLowerCase();
   const cfg = loadConfig();
@@ -2375,14 +2373,13 @@ function resolveAgentIdentityHandle(flags) {
 //              Shomra LLM Guard proxy instead of a tool hook (.aider.conf.yml).
 // `shomra install-hook --agent <name>` writes the right shape; the installed
 // hook command carries `--agent <name>` so tool-guard/result-guard know which
-// contract to speak at runtime. Default agent is `claude` (unqualified hooks
-// installed before multi-agent support existed still work unchanged).
+// contract to speak at runtime. Default agent is `claude`, so an unqualified
+// hook invocation keeps working.
 //
-// These hook systems are new and still moving fast — if a hook silently stops
-// firing after a CLI/extension update, check that agent's current docs before
-// assuming Shomra is broken; each adapter is isolated below so a schema tweak
-// is a small, local edit. Fail-OPEN by default (never break the session if
-// the backend is down) — set SHOMRA_GUARD_STRICT=1 to fail closed.
+// Vendor hook schemas change often, and a drifted schema shows up as a hook that
+// silently stops firing. Each adapter below is isolated so tracking a change is a
+// local edit. Fail-OPEN by default (never break the session if the backend is
+// down) — set SHOMRA_GUARD_STRICT=1 to fail closed.
 
 const AGENT_LABELS = {
   claude: 'Claude Code',
@@ -2563,7 +2560,7 @@ const AGENT_INSTALLERS = {
   // Cline (VS Code) is tool-dispatching like Claude Code, so it gets a real
   // blocking pre/post hook in the same grouped shape. Matcher covers Cline's
   // tool vocabulary (execute_command/write_to_file/replace_in_file/use_mcp_tool),
-  // all of which ToolGuardService already recognises.
+  // all of which the server-side guard already recognises.
   cline(global) {
     const dir = global ? path.join(os.homedir(), '.cline') : path.join(process.cwd(), '.cline');
     const file = path.join(dir, 'hooks.json');
@@ -2610,9 +2607,9 @@ const AGENT_INSTALLERS = {
 };
 
 // Normalize each agent's own hook payload into the {tool_name, tool_input,
-// tool_response, cwd, session_id} shape ToolGuardService/ToolResultGuardService
-// already understand (they already recognize Cursor/Cline/Aider-style tool
-// names like run_terminal_cmd/create_file — see tool-guard.service.ts).
+// tool_response, cwd, session_id} shape the server-side guards already
+// understand — including Cursor/Cline/Aider-style tool names like
+// run_terminal_cmd/create_file.
 function normalizeGuardInput(agent, payload) {
   switch (agent) {
     case 'cursor': {
@@ -2665,7 +2662,7 @@ function normalizeGuardInput(agent, payload) {
 
 // ── tiered-guard classification (Tier 0 local vs Tier 2 escalate) ──
 // Paths that ARE an AI artifact — a write here is install-time behaviour the
-// server's full gate must vet against org policy (mirror of PATH_KIND server-side).
+// server's full gate must vet against org policy.
 const ARTIFACT_PATH_RE = /(^|\/)(\.?mcp\.json|SKILL\.md|CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules|\.windsurfrules|\.aider\.conf\.yml|agent[-_]card\.json)$|(^|\/)\.claude\/(commands|agents)\/[^/]+\.md$|(^|\/)\.claude\/settings(\.local)?\.json$|(^|\/)\.well-known\/agent(-card)?\.json$|(^|\/)\.clinerules|(^|\/)\.github\/copilot-instructions\.md$/i;
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'create_file', 'str_replace_editor', 'str_replace_based_edit_tool', 'write_to_file', 'replace_in_file', 'new_rule']);
 const SHELL_TOOLS_RE = /^(bash|shell|sh|run_command|run_terminal_cmd|execute_command|terminal|exec)$/i;
@@ -2689,7 +2686,7 @@ function guardText(tool, input) {
 }
 
 // ── false-positive control: path allowlist for the runtime hooks ──────────────
-// The static `shomra check` honors .shomraignore; the runtime firewall didn't.
+// Both the static `shomra check` and the runtime firewall honor .shomraignore.
 // A dev needs a friction-free way to mark files known-safe (the security tool's
 // own detection source, test fixtures, generated code) so a benign pattern in
 // source isn't withheld. Two layers, both keyed on the target file path: a repo
@@ -3115,9 +3112,8 @@ async function cmdResultGuard(flags) {
 }
 
 // Wire the runtime firewall into one or more coding agents' hook systems.
-// Default (no --agent) targets Claude Code only, unchanged from before
-// multi-agent support existed. `--agent cursor,windsurf` or `--agent all`
-// installs into others too.
+// Default (no --agent) targets Claude Code only. `--agent cursor,windsurf` or
+// `--agent all` installs into others too.
 function cmdInstallHook(flags) {
   const global = !!flags.global;
   const requested = flags.agent
@@ -3163,8 +3159,8 @@ function cmdInstallHook(flags) {
 //
 // Discovers the AI tooling on this box (coding agents, MCP servers, rules files,
 // model keys, AI tools), locally scans the scannable ones, and prints a posture
-// score + the top fixes. Zero backend needed — the fastest "show a colleague"
-// first-run. Pairs with `shomra protect` (unguarded agents) and `shomra check`.
+// score + the top fixes. Runs fully offline. Pairs with `shomra protect`
+// (unguarded agents) and `shomra check`.
 function cmdDoctor(flags) {
   const assets = discoverAll();
   const by = (t) => assets.filter((a) => a.type === t);
@@ -3240,9 +3236,8 @@ function cmdDoctor(flags) {
 //   shomra protect [--local] [--force]
 //
 // `install-hook` protects one named agent; this discovers every supported coding
-// agent on the machine and wires the Pre/Post firewall for each unguarded one —
-// the zero-friction "seatbelt on everything" button. Global (machine-wide) by
-// default; --local scopes to this repo's .<agent> dirs.
+// agent on the machine and wires the Pre/Post firewall for each unguarded one.
+// Global (machine-wide) by default; --local scopes to this repo's .<agent> dirs.
 function cmdProtect(flags) {
   const assets = discoverAll();
   const labelToKey = Object.fromEntries(Object.entries(AGENT_LABELS).map(([k, v]) => [v, k]));
@@ -3280,7 +3275,7 @@ function cmdProtect(flags) {
 //
 // Generates the artifact from a least-privilege template (explicit narrow tool
 // grants, env-referenced secrets, https + auth on cards) and gates it to prove
-// it starts clean — "the right thing is the default thing."
+// it starts clean.
 const NEW_TEMPLATES = {
   skill: (name) => ({
     file: path.join(name, 'SKILL.md'),
@@ -3331,7 +3326,6 @@ function cmdNew(flags, positional) {
   }
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, content);
-  // Prove it starts clean.
   const g = localGate(content, { kind: kind === 'agent-card' ? 'agent-card' : kind === 'mcp' ? 'mcp' : kind === 'rules' ? 'rules' : kind, path: file });
   if (flags.json) { console.log(JSON.stringify({ created: file, kind, verdict: g.verdict }, null, 2)); return; }
   console.log(`\n  ${green('✓ Created')} ${bold(file)} ${dim(`(${kind})`)}`);
@@ -3409,7 +3403,7 @@ function worstMcpVerdict(local, idxAlert) {
  * the LLM can call Shomra's checks as native tools in its own loop: after it
  * edits files it can `shomra_check` / `shomra_scan_models`, then `shomra_fix`.
  * Each tool is a thin bridge to the corresponding CLI verb with `--json`, so it
- * reuses the exact same engine as the CLI and editor — one engine, another face.
+ * reuses the same engine as the CLI and editor.
  */
 async function cmdMcpServe(flags) {
   const { createInterface } = await import('node:readline');
@@ -3550,7 +3544,6 @@ async function cmdMcp(flags, positional) {
     return;
   }
 
-  // Merge into the target config.
   let cfg = {};
   if (fs.existsSync(configFile)) { try { cfg = JSON.parse(fs.readFileSync(configFile, 'utf8')); } catch { console.error(red('✗') + ` ${configFile} is not valid JSON.`); process.exit(1); } }
   cfg.mcpServers = cfg.mcpServers || {};
