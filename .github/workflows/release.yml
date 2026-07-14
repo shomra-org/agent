@@ -39,7 +39,8 @@ jobs:
           git config user.email "ci@shomra.ai"
 
       - name: Bump patch version
-        run: npm version patch -m "chore: release %s [skip ci]"
+        run: |
+          npm version patch -m "chore: release %s [skip ci]"
 
       - name: Publish to npm
         run: npm publish
