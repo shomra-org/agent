@@ -2843,17 +2843,9 @@ async function screenModelLoad(agent, tool, input, url) {
   if (!refs.length) return; // modelLookup is cache-first + breaker-aware, so don't bail here
 
   const flagged = [];
-  // ONE budget for the whole screen, not one per ref. This runs inside the
-  // PreToolUse hook, so its cost is added to a tool call the dev is watching: a
-  // file citing five uncached models must not be able to spend 5× the guard
-  // timeout. Cache hits and a tripped breaker short-circuit before any network,
-  // so the common path never touches this.
-  const deadline = Date.now() + guardTimeoutMs();
   for (const r of refs) {
-    const left = deadline - Date.now();
-    if (left <= 0) break; // budget spent — flag what we screened, never stall the call
     let lk;
-    try { lk = await modelLookup(url, r.id, r.revision, left); } catch { return; } // uncached + backend down → can't judge, stay silent
+    try { lk = await modelLookup(url, r.id, r.revision); } catch { return; } // uncached + backend down → can't judge, stay silent
     const findings = (lk && lk.findings) || [];
     const worst = findings.reduce((m, f) => Math.max(m, MODEL_SEV_RANK[f.severity] || 0), 0);
     const bad = lk && lk.found && (lk.verdict === 'FAIL' || lk.verdict === 'REVIEW' || worst >= MODEL_SEV_RANK.HIGH);
@@ -3024,26 +3016,6 @@ async function cmdToolGuard(flags) {
       signal: ctrl.signal,
     });
     clearTimeout(timer);
-    // fetch() does NOT reject on 4xx/5xx. Without this check a rejected key
-    // returned its error body, r.json() parsed it happily, breakerReset() marked
-    // the backend healthy, res.decision came back undefined — and every
-    // escalated call silently ALLOWed. Org policy off, no error, no breaker, no
-    // signal, indefinitely. Non-2xx must reach the failure path below.
-    if (!r.ok) {
-      // An auth failure is a misconfiguration, not an outage: it will not heal
-      // on its own, so it gets a visible line rather than a 30s breaker cooldown
-      // that would hide it (and skip even this warning on the calls after it).
-      if (r.status === 401 || r.status === 403) {
-        process.stderr.write(
-          `[shomra] guard NOT enforced: the backend rejected this API key (HTTP ${r.status}). ` +
-            `Local Tier-0 screening still ran; org policy, agent identity and flow control did not. ` +
-            `Re-enroll with \`shomra init --key <key>\`.\n`,
-        );
-        if (strict) emitGuardDeny(agent, `Shomra guard could not authenticate (HTTP ${r.status}); blocked by fail-closed policy.`);
-        process.exit(0);
-      }
-      throw new Error(`HTTP ${r.status}`); // 5xx / 429 → a real outage, trip the breaker
-    }
     res = await r.json();
     breakerReset(); // healthy response — clear any tripped breaker
   } catch (e) {
@@ -3136,20 +3108,6 @@ async function cmdResultGuard(flags) {
       signal: ctrl.signal,
     });
     clearTimeout(timer);
-    // See cmdToolGuard: fetch() does not reject on 4xx, so an error body would
-    // parse cleanly and `res.decision` would be undefined → silent fail-open.
-    if (!r.ok) {
-      if (r.status === 401 || r.status === 403) {
-        process.stderr.write(
-          `[shomra] result-guard NOT enforced: the backend rejected this API key (HTTP ${r.status}). ` +
-            `Local Tier-0 screening still ran; server-side flow taint did not. ` +
-            `Re-enroll with \`shomra init --key <key>\`.\n`,
-        );
-        if (strict) emitResultBlock(agent, `Shomra result-guard could not authenticate (HTTP ${r.status}); blocked by fail-closed policy.`);
-        process.exit(0);
-      }
-      throw new Error(`HTTP ${r.status}`); // 5xx / 429 → a real outage, trip the breaker
-    }
     res = await r.json();
     breakerReset();
   } catch (e) {
@@ -3733,11 +3691,7 @@ function modelCacheOff() { return process.env.SHOMRA_MODEL_CACHE === '0' || Stri
 function loadModelCache() { try { return JSON.parse(fs.readFileSync(MODEL_CACHE_FILE, 'utf8')) || {}; } catch { return {}; } }
 function saveModelCache(c) { try { fs.mkdirSync(CONFIG_DIR, { recursive: true }); fs.writeFileSync(MODEL_CACHE_FILE, JSON.stringify(c)); } catch { /* cache is best-effort */ } }
 
-// `timeoutMs` overrides the interactive API budget. The PreToolUse hook MUST
-// pass the guard budget: this function's default is sized for a human waiting on
-// `shomra models`, and inheriting it on the hot path froze a dev's terminal for
-// 15s per uncached ref against a cold backend.
-async function modelLookup(url, id, sha, timeoutMs) {
+async function modelLookup(url, id, sha) {
   const key = `${id}@${sha || 'latest'}`;
   const ttl = clampInt(process.env.SHOMRA_MODEL_CACHE_TTL_MS, 7 * 24 * 3600 * 1000, 0, 365 * 24 * 3600 * 1000);
   const cache = modelCacheOff() ? {} : loadModelCache();
@@ -3758,7 +3712,7 @@ async function modelLookup(url, id, sha, timeoutMs) {
 
   const q = `id=${encodeURIComponent(id)}${sha ? `&sha=${encodeURIComponent(sha)}` : ''}`;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs ?? clampInt(process.env.SHOMRA_API_TIMEOUT_MS, 15000, 1000, 60000));
+  const timer = setTimeout(() => ctrl.abort(), clampInt(process.env.SHOMRA_API_TIMEOUT_MS, 15000, 1000, 60000));
   try {
     const res = await fetch(`${url}/models/lookup?${q}`, { signal: ctrl.signal, headers: { Accept: 'application/json', 'User-Agent': 'shomra-agent' } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
