@@ -3919,7 +3919,7 @@ async function cmdModels(flags, positional) {
 
 function cmdHelp() {
   console.log(`
-${bold(cyan('Shomra'))} ${dim('— AI security agent v' + VERSION)}
+${bold(cyan('Shomra'))} ${dim('— the firewall for AI agents · v' + VERSION)}
 
 ${bold('USAGE')}
   shomra <command> [options]

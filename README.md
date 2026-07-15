@@ -1,8 +1,10 @@
 # @shomra/agent
 
-The Shomra AI-security CLI. Discovers the AI tooling on a machine, vets AI
+**The firewall for AI agents**, as a local-first CLI. It sits inside your coding
+agent and CI and blocks dangerous tool-calls, shell commands and data
+exfiltration *before they run* — on your machine, even offline. It also vets AI
 artifacts (MCP configs, Skills, slash commands, hooks, rules files) before they
-install, and enforces a runtime firewall around coding agents and LLM traffic.
+install. Start with a free on-machine scan — no signup.
 
 Zero dependencies — Node ≥ 18 built-ins only.
 
