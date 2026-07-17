@@ -3052,6 +3052,13 @@ async function cmdToolGuard(flags) {
     process.exit(0); // fail-open (Tier 0 already screened the dangerous patterns)
   }
 
+  if (res && res.hold) {
+    // Human-in-the-loop: the call was BLOCKed but diverted to approval. Don't
+    // hard-deny — ask, so the developer can wait for a reviewer to approve in
+    // Slack/Teams and then retry (an approval opens a short grant window that
+    // lets the identical call through).
+    emitGuardAsk(agent, res.reason || 'Held for approval by Shomra — waiting on a reviewer. Retry once it’s approved.');
+  }
   if (res && res.decision === 'BLOCK') {
     emitGuardDeny(agent, res.reason || 'Blocked by Shomra security policy.');
   }
