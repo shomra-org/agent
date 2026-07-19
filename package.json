@@ -18,6 +18,7 @@
     "guard-signals.mjs",
     "code-sast.mjs",
     "model-refs.mjs",
+    "ai-usage.mjs",
     "README.md",
     "LICENSE",
     "NOTICE"

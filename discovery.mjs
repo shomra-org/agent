@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { scanAiUsage, rollupAiUsage, isAiUsageScannable, AI_USAGE_CATEGORY_LABEL } from './ai-usage.mjs';
 
 const HOME = os.homedir();
 const APPDATA = process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming');
@@ -142,13 +143,17 @@ const isVectorIndex = (base) =>
   VECTOR_INDEX_BASENAMES.has(base.toLowerCase()) ||
   VECTOR_INDEX_EXTS.has((base.slice(base.lastIndexOf('.') + 1) || '').toLowerCase());
 
+/** Cap on SOURCE files collected for AI-usage-in-code scanning (bounded so a big
+ * monorepo can't turn the sweep into a full read of every .py/.ts on disk). */
+const MAX_SOURCE_FILES = 600;
+
 /**
  * One bounded breadth-first walk per root that collects every file of interest.
- * Returns { mcp:[], rules:[], manifests:[], env:[], vector:[] } absolute-path lists.
+ * Returns { mcp:[], rules:[], manifests:[], env:[], vector:[], source:[] } lists.
  * Depth- and count-limited so it never turns into a full-disk crawl.
  */
 function walkWorkspace(roots) {
-  const found = { mcp: [], rules: [], manifests: [], env: [], vector: [] };
+  const found = { mcp: [], rules: [], manifests: [], env: [], vector: [], source: [] };
   const seenDir = new Set();
   let budget = 40_000; // total directories visited across all roots
   const maxDepth = 6;
@@ -163,6 +168,9 @@ function walkWorkspace(roots) {
     } else if (MANIFEST_NAMES.has(base)) found.manifests.push({ file: full, parentBase });
     else if (isEnvFile(base)) found.env.push({ file: full, parentBase });
     else if (isVectorIndex(base)) found.vector.push({ file: full, parentBase });
+    // Application source — collected (capped) so discoverAiUsageInCode can find
+    // the LLM/AI providers this code actually calls, not just what a manifest declares.
+    else if (found.source.length < MAX_SOURCE_FILES && isAiUsageScannable(base)) found.source.push({ file: full, parentBase });
   };
 
   for (const root of roots) {
@@ -417,6 +425,117 @@ export function discoverAiDependencies(roots = [process.cwd()], files = null) {
       vendor: 'ai-sdk',
       metadata: {
         category: 'dependency',
+        ecosystem: eco,
+        package: pkg,
+        usedInProjects: list.length,
+        manifests: list.slice(0, 10),
+      },
+    });
+  }
+  return assets;
+}
+
+// ── AI usage in code (SDK imports + provider call sites) ─────────
+// The dependency scan above sees which AI SDKs a manifest DECLARES; this sees
+// which LLM/AI providers the code actually CALLS (an `openai` import + a
+// `chat.completions.create`, a LangChain chain, `ollama.chat`) — the shadow-AI
+// usage a manifest can miss (a transitive dep, a vendored client) and can't
+// localize (which file, which model). Surfaced regardless of whether it is
+// vulnerable. One AI_TOOL asset per provider, category 'code-usage'.
+export function discoverAiUsageInCode(roots = [process.cwd()], files = null) {
+  const walk = files || walkWorkspace(roots);
+  const usages = [];
+  for (const { file } of walk.source || []) {
+    if (!isAiUsageScannable(path.basename(file))) continue;
+    const text = readText(file, 300_000);
+    if (text == null) continue;
+    for (const u of scanAiUsage(text, file)) usages.push(u);
+  }
+  const assets = [];
+  for (const row of rollupAiUsage(usages)) {
+    const site = row.firstSite;
+    assets.push({
+      type: 'AI_TOOL',
+      name: `${row.label} (in code)`,
+      identifier: `ai-usage:${row.provider}`,
+      vendor: 'ai-sdk',
+      metadata: {
+        category: 'code-usage',
+        provider: row.provider,
+        aiCategory: row.category,
+        aiCategoryLabel: AI_USAGE_CATEGORY_LABEL[row.category],
+        fileCount: row.files.length,
+        files: row.files.slice(0, 10),
+        models: row.models.slice(0, 10),
+        callSites: row.sightings,
+        hasCallSite: row.hasCallSite,
+        firstSite: site ? { file: site.file, line: site.line } : null,
+      },
+    });
+  }
+  return assets;
+}
+
+// ── MCP client / host SDK usage in code ──────────────────────────
+// A repo that depends on the MCP SDK acts as an MCP HOST: it connects out to MCP
+// servers and feeds their (untrusted) tool output back into a model — the
+// toxic-flow / lethal-trifecta ingress. This is distinct from the MCP SERVERS a
+// machine is CONFIGURED to launch (discoverMcpServers, keyed as servers) and from
+// generic AI SDKs (discoverAiDependencies): here the code itself is the client.
+// Manifest-level detection can't prove which SDK surface is used, so the on-disk
+// SAST rules (js.mcp_client / python.mcp_client) confirm the client role from
+// actual imports; this lens surfaces the dependency so shadow MCP hosts are seen.
+const NPM_MCP_CLIENT = new Set(['mcp-use', 'mcp-client']);
+const NPM_MCP_CLIENT_PREFIX = ['@modelcontextprotocol/', '@mastra/mcp', '@langchain/mcp'];
+const PY_MCP_CLIENT = ['mcp', 'fastmcp', 'mcp-use', 'mcpadapt', 'langchain-mcp-adapters'];
+
+function npmMcpClientDeps(pkg) {
+  const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}), ...(pkg.peerDependencies || {}), ...(pkg.optionalDependencies || {}) };
+  const hits = [];
+  for (const name of Object.keys(deps)) {
+    if (NPM_MCP_CLIENT.has(name) || NPM_MCP_CLIENT_PREFIX.some((p) => name.startsWith(p))) hits.push(name);
+  }
+  return hits;
+}
+function pyMcpClientDeps(text) {
+  const hits = [];
+  for (const pkg of PY_MCP_CLIENT) {
+    const re = new RegExp(`(^|[^a-z0-9_.-])${pkg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9_.-]|$)`, 'im');
+    if (re.test(text)) hits.push(pkg);
+  }
+  return hits;
+}
+
+export function discoverMcpClients(roots = [process.cwd()], files = null) {
+  const walk = files || walkWorkspace(roots);
+  const byPkg = new Map(); // `${eco}:${pkg}` -> { pkg, eco, manifests:Set }
+  const add = (eco, pkg, manifest) => {
+    const key = `${eco}:${pkg}`;
+    if (!byPkg.has(key)) byPkg.set(key, { pkg, eco, manifests: new Set() });
+    byPkg.get(key).manifests.add(manifest);
+  };
+  for (const { file } of walk.manifests) {
+    const base = path.basename(file);
+    if (base === 'package.json') {
+      const json = readJson(file);
+      if (!json) continue;
+      for (const pkg of npmMcpClientDeps(json)) add('npm', pkg, file);
+    } else {
+      const text = readText(file, 100_000);
+      if (text == null) continue;
+      for (const pkg of pyMcpClientDeps(text)) add('pip', pkg, file);
+    }
+  }
+  const assets = [];
+  for (const { pkg, eco, manifests } of byPkg.values()) {
+    const list = [...manifests];
+    assets.push({
+      type: 'AI_TOOL',
+      name: `${pkg} (${eco})`,
+      identifier: `mcp-client:${eco}:${pkg}`,
+      vendor: 'mcp-client',
+      metadata: {
+        category: 'mcp-client',
         ecosystem: eco,
         package: pkg,
         usedInProjects: list.length,
@@ -792,6 +911,8 @@ export function discoverAll(roots = [process.cwd()], opts = {}) {
     ...discoverMcpServers(scanRoots, files),
     ...discoverRulesFiles(scanRoots, files),
     ...discoverAiDependencies(scanRoots, files),
+    ...discoverAiUsageInCode(scanRoots, files),
+    ...discoverMcpClients(scanRoots, files),
     ...discoverVectorStores(scanRoots, files),
     ...discoverDotenvKeys(scanRoots, files),
     ...discoverAiTools(),

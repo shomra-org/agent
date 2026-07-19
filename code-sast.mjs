@@ -246,6 +246,25 @@ const PY_RULES = [
     cwe: 'CWE-502',
   },
   {
+    id: 'python.mcp_client',
+    title: 'MCP client integration (untrusted tool-output ingress)',
+    // LOW capability twin of js.mcp_client: importing the MCP SDK client surface
+    // says this file acts as an MCP host that feeds server tool output to a model.
+    severity: 'LOW',
+    category: 'agentic',
+    confidence: 0.55,
+    // Precise: `mcp.client.*` and `from mcp.client…import` are unambiguous;
+    // `from mcp import` only counts WITH ClientSession (excludes server-authoring
+    // imports); bare ClientSession( is NOT matched (aiohttp.ClientSession FP).
+    re: /\bfrom\s+mcp\.client[\w.]*\s+import\b|\bimport\s+mcp\.client\b|\bmcp\.client\.\w+|\bfrom\s+mcp\s+import\b[^\n]*\bClientSession\b/,
+    codeOnly: true,
+    sink: (m) => m[0].trim(),
+    source: 'MCP server tool output',
+    message: 'Acts as an MCP client/host: opens a ClientSession to MCP servers and passes their tool descriptions and results back to a model. Every server it reaches is an untrusted-input ingress — a poisoned tool description or result can hijack the agent (prompt injection / tool poisoning).',
+    remediation: 'Pin exactly which MCP servers this client may connect to and run each through governance before trusting it. Treat all server output as untrusted data, never instructions, and screen it (runtime firewall) before it reaches the model.',
+    cwe: 'CWE-829',
+  },
+  {
     id: 'python.reduce_payload',
     title: 'Custom __reduce__ (pickle RCE gadget)',
     severity: 'CRITICAL',
@@ -366,6 +385,25 @@ const JS_RULES = [
     message: 'Spawns a shell or child process. If any argument derives from tool input or model output this is command injection / RCE in the agent host.',
     remediation: 'Avoid shelling out. If unavoidable, use execFile with a fixed binary and an argument array (never a shell string), and validate every argument.',
     cwe: 'CWE-78',
+  },
+  {
+    id: 'js.mcp_client',
+    title: 'MCP client integration (untrusted tool-output ingress)',
+    // LOW capability signal: the /client SDK entrypoint or a *ClientTransport says
+    // this file acts as an MCP host — it connects to servers and feeds their tool
+    // output to a model. That is the toxic-flow ingress; on its own it is a lead.
+    severity: 'LOW',
+    category: 'agentic',
+    confidence: 0.55,
+    // /client subpath + transport class names are unambiguous. `new Client(` is NOT
+    // matched — too many libs export a generic Client. Not codeOnly: the /client
+    // import path lives inside a require()/import string.
+    re: /@modelcontextprotocol\/sdk\/client|\b(StdioClientTransport|SSEClientTransport|StreamableHTTPClientTransport|WebSocketClientTransport)\b/,
+    sink: (m) => m[0].trim(),
+    source: 'MCP server tool output',
+    message: 'Acts as an MCP client/host: connects to MCP servers and passes their tool descriptions and results back to a model. Every server it reaches is an untrusted-input ingress — a poisoned tool description or result can hijack the agent (prompt injection / tool poisoning).',
+    remediation: 'Pin exactly which MCP servers this client may connect to and run each through governance before trusting it. Treat all server output as untrusted data, never instructions, and screen it (runtime firewall) before it reaches the model.',
+    cwe: 'CWE-829',
   },
   {
     id: 'js.decode_and_run',
