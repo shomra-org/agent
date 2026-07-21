@@ -1656,6 +1656,108 @@ function printWhy(res) {
   console.log('');
 }
 
+// ── shomra provenance: which of these changed files did an AI agent write? ──
+//
+//   shomra provenance [--staged | --base main] [--trailer] [--fail-on-blocked] [--json]
+//
+// Every mutating tool call the runtime firewall screened was recorded with its
+// target path and ALLOW/FLAG/BLOCK decision. This joins a real git diff against
+// that record, so a commit can carry an EVIDENCE-BACKED statement of authorship
+// instead of a "Co-Authored-By" line anyone can type.
+//
+// ⚠ "Unattributed" means the firewall has no record — NOT that a human wrote it.
+// With the hook uninstalled every file is unattributed, so the output always
+// states its coverage and never claims human authorship. Don't rewrite that copy.
+
+/** All changed paths (not just AI artifacts) for provenance. */
+function gitChangedPaths(root, { staged, base }) {
+  const run = (args) => {
+    try {
+      return execSync(`git ${args}`, { cwd: root, stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).toString();
+    } catch {
+      return null;
+    }
+  };
+  let out = null;
+  if (staged) {
+    out = run('diff --cached --name-only --relative --diff-filter=ACM');
+  } else if (base) {
+    for (const b of [`origin/${base}`, base]) {
+      out = run(`diff --name-only --relative --diff-filter=ACM ${b}...HEAD`);
+      if (out !== null) break;
+    }
+  }
+  if (out === null) out = run('diff HEAD~1 --name-only --relative --diff-filter=ACM');
+  if (out === null) return null;
+  return out.split('\n').map((s) => s.trim()).filter(Boolean);
+}
+
+async function cmdProvenance(flags, positional) {
+  const root = path.resolve(flags.path || positional[0] || '.');
+  const staged = !!flags.staged;
+  const base = flags.base || (staged ? null : process.env.GITHUB_BASE_REF || 'main');
+
+  const paths = gitChangedPaths(root, { staged, base });
+  if (paths === null) {
+    console.error(red('✗') + ' Not a git repository (or no diff available). Run inside a repo, or pass --base <ref>.');
+    process.exit(1);
+  }
+  if (!paths.length) {
+    if (flags.json) console.log(JSON.stringify({ files: [], agentAuthored: 0, coverage: 'NO_TELEMETRY', summary: 'no changed files' }, null, 2));
+    else console.log(green('\n  ✓ No changed files to attribute.\n'));
+    return;
+  }
+
+  const cfg = loadConfig();
+  const { apiKey, url } = resolveSettings(cfg);
+  let res;
+  try {
+    res = await api(url, apiKey, '/gate/provenance', {
+      paths,
+      repo: flags.repo || process.env.GITHUB_REPOSITORY || undefined,
+      sessionId: flags.session || undefined,
+      sinceHours: flags.since ? Number(flags.since) : undefined,
+    });
+  } catch (e) {
+    // Provenance is an evidence lookup, not a guard — a backend outage must not
+    // block a commit. Say so plainly instead of silently reporting "no agents".
+    console.error(yellow('!') + ` Provenance unavailable (${e.message}). Authorship not established.`);
+    process.exit(flags['fail-on-blocked'] ? 1 : 0);
+  }
+
+  if (flags.json) {
+    console.log(JSON.stringify(res, null, 2));
+  } else if (flags.trailer) {
+    for (const t of res.trailers || []) console.log(t);
+  } else {
+    const noTel = res.coverage === 'NO_TELEMETRY';
+    console.log('');
+    console.log(`  ${bold('Commit provenance')} ${dim(`· ${res.files.length} changed file(s)`)}`);
+    console.log(`  ${noTel ? yellow('⚠ ' + res.summary) : res.summary}`);
+    if (noTel) {
+      console.log(dim('    No firewall telemetry for this range — this is NOT a claim that a human wrote them.'));
+      console.log(dim('    Install the runtime hook with ') + bold('shomra protect') + dim(' to attribute future work.'));
+    }
+    console.log('');
+    for (const f of res.files.slice(0, 40)) {
+      const tag =
+        f.authorship === 'AGENT' ? cyan('agent') : f.authorship === 'BLOCKED_ATTEMPT' ? red('blocked') : dim('unattributed');
+      const who = f.agents?.length ? dim(` ${f.agents.join(', ')}`) : '';
+      const amb = f.ambiguous ? yellow(' ~ambiguous') : '';
+      console.log(`    ${tag.padEnd(22)} ${f.path}${who}${amb}`);
+    }
+    if (res.files.length > 40) console.log(dim(`    …and ${res.files.length - 40} more`));
+    console.log('');
+  }
+
+  // A path the firewall BLOCKED that changed anyway is the signal worth failing
+  // on: either the guard was bypassed, or something wrote it outside the agent.
+  if (flags['fail-on-blocked'] && res.blockedAttempts > 0) {
+    console.error(red('✗') + ` ${res.blockedAttempts} file(s) the firewall blocked were modified anyway.`);
+    process.exit(1);
+  }
+}
+
 // ── shomra install-precommit: gate staged AI artifacts at commit time ──
 //
 //   shomra install-precommit [dir] [--force]
@@ -3951,6 +4053,7 @@ ${bold('COMMANDS')}
   ${cyan('init')}          Configure + enroll this machine       ${dim('--key shm_live_… [--url <backend>]')}
   ${cyan('protect')}       Wire the runtime firewall for every coding agent ${dim('[--local] [--force]')}
   ${cyan('install-hook')}  Wire the runtime firewall into ONE agent ${dim('[--agent claude|cursor|windsurf|gemini|codex|copilot|cline|aider|all] [--global]')}
+  ${cyan('provenance')}    Which changed files an AI agent wrote   ${dim('[--staged | --base main] [--trailer] [--fail-on-blocked] [--json]')}
   ${cyan('install-precommit')} Gate staged AI artifacts on git commit ${dim('[dir] [--force]')}
   ${cyan('doctor')}        ${bold('Am I safe?')} Posture of this machine's AI setup ${dim('[--json]')}
 
@@ -4163,6 +4266,7 @@ const COMMANDS = {
   baseline: (f, p) => cmdBaseline(f, p),
   fix: (f, p) => cmdFix(f, p),
   why: (f, p) => cmdWhy(f, p),
+  provenance: (f, p) => cmdProvenance(f, p),
   'install-precommit': (f, p) => cmdInstallPrecommit(f, p),
   'scan-zip': (f, p) => cmdScanZip(f, p),
   'model-scan': (f, p) => cmdModelScan(f, p),
