@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * Shomra agent — the developer-machine plugin for the Shomra AI Security
- * Posture Management platform. Discovers the AI tooling on this machine
- * (MCP servers, AI rules files, AI tools, model keys), and reports it to your
- * Shomra org for analysis. Zero dependencies — Node built-ins only.
+ * Shomra agent — the developer-machine half of Shomra, the adversarial
+ * assurance platform for AI agents. Blocks dangerous tool-calls before they
+ * run, discovers the AI tooling on this machine (MCP servers, AI rules files,
+ * AI tools, model keys), and reports it to your Shomra org so the org can
+ * attack its own guardrails and prove they hold. Zero deps — Node built-ins.
  *
  *   shomra init --key shm_live_… --url <your backend>   # connect to a Shomra org (optional)
  *   shomra scan            # discover + analyze, print a local report
@@ -73,6 +74,22 @@ function resolveSettings(cfg) {
     apiKey: process.env.SHOMRA_API_KEY || cfg.apiKey,
     url: raw ? raw.replace(/\/$/, '').replace('://localhost', '://127.0.0.1') : null,
   };
+}
+
+// ── exit-code convention (one convention for every command) ──────
+//   0 = clean / pass
+//   1 = hard fail   (BLOCK, vulnerable model, secret found, FAIL verdict,
+//                    below --min, regression)
+//   2 = soft fail   (FLAG under --strict, REVIEW when strict)
+//   3 = usage/config error (not configured, bad flags, unknown command)
+const EXIT_USAGE = 3;
+
+// One shared "not configured" error — this command needs a backend + key.
+// Prints where to get a key and exits with the usage/config code.
+function exitNotConfigured() {
+  console.error('\n' + red('✗') + ' Not configured. Run ' + bold('shomra init --key shm_live_… --url <your backend>') + ' first.');
+  console.error('  ' + dim('Get a key in the Shomra app → Settings → API Keys.'));
+  process.exit(EXIT_USAGE);
 }
 
 // ── guard latency budget + circuit breaker ───────────────────────
@@ -183,17 +200,49 @@ async function api(url, key, route, body, opts = {}) {
   return json;
 }
 
+// Flags that are ON/OFF switches — they must NEVER consume the next token, or
+// `shomra check --strict Shomra.Agent` silently eats the directory and scans
+// the CWD, and `shomra gate --json file.md` errors "usage". Built from every
+// boolean `flags.…` read in this file.
+const BOOLEAN_FLAGS = new Set([
+  'strict', 'json', 'sarif', 'fix', 'staged', 'changed', 'all', 'history', 'force',
+  'apply', 'dry-run', 'global', 'local', 'trailer', 'evolve', 'report', 'init',
+  'no-suppress', 'no-baseline', 'no-policy', 'no-index', 'adaptive',
+  'fail-on-regression', 'fail-on-blocked', 'write', 'yes', 'stdin', 'quiet', 'help',
+]);
+// Flags that take a value (`--key value` or `--key=value`).
+const VALUE_FLAGS = new Set([
+  'key', 'url', 'path', 'kind', 'name', 'project', 'agent', 'agent-id', 'min',
+  'scenarios', 'objectives', 'turns', 'target', 'run', 'port', 'config', 'env',
+  'command', 'base', 'repo', 'pr', 'token', 'sha', 'session', 'since', 'depth',
+  'scope', 'writer', 'type', 'slug',
+]);
+const KNOWN_FLAGS = new Set([...BOOLEAN_FLAGS, ...VALUE_FLAGS]);
+
 function parseFlags(argv) {
   const flags = {};
   const positional = [];
+  const unknown = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
       const body = a.slice(2);
-      // Support both `--key value` and `--key=value`.
+      // Support both `--key value` and `--key=value`. The `=` form always wins
+      // (even for boolean flags — `--sarif=out.sarif` opts into a value).
       const eq = body.indexOf('=');
       if (eq !== -1) {
-        flags[body.slice(0, eq)] = body.slice(eq + 1);
+        const name = body.slice(0, eq);
+        if (!KNOWN_FLAGS.has(name)) unknown.push(name);
+        flags[name] = body.slice(eq + 1);
+        continue;
+      }
+      if (!KNOWN_FLAGS.has(body)) {
+        unknown.push(body);
+        flags[body] = true; // never consume a token for an unknown flag
+        continue;
+      }
+      if (BOOLEAN_FLAGS.has(body)) {
+        flags[body] = true; // boolean — never consume the next token
         continue;
       }
       const next = argv[i + 1];
@@ -203,7 +252,33 @@ function parseFlags(argv) {
       } else flags[body] = true;
     } else positional.push(a);
   }
-  return { flags, positional };
+  return { flags, positional, unknown };
+}
+
+// Smallest edit distance — powers "did you mean …?" for commands and flags.
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[n];
+}
+function didYouMean(input, candidates) {
+  const s = String(input).toLowerCase();
+  let best = null, bestDist = Infinity;
+  for (const c of candidates) {
+    if (c.startsWith(s) || s.startsWith(c)) return c; // prefix match wins outright
+    const d = levenshtein(s, c);
+    if (d < bestDist) { bestDist = d; best = c; }
+  }
+  return bestDist <= Math.max(2, Math.floor(s.length / 3)) ? best : null;
 }
 
 // ── commands ─────────────────────────────────────────────────────
@@ -215,11 +290,11 @@ async function cmdInit(flags) {
   const url = (flags.url || cfg.url || '').replace(/\/$/, '');
   if (!key) {
     console.error(red('✗') + ' Missing API key. Run: ' + bold('shomra init --key shm_live_… --url <your backend>'));
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
   if (!url) {
     console.error(red('✗') + ' Missing backend URL. Run: ' + bold('shomra init --key shm_live_… --url <your backend>'));
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
   cfg.apiKey = key;
   cfg.url = url;
@@ -284,8 +359,7 @@ async function cmdScan(flags) {
 async function sendReport(cfg, assets, flags) {
   const { apiKey, url } = resolveSettings(cfg);
   if (!apiKey) {
-    console.error('\n' + red('✗') + ' Not configured. Run ' + bold('shomra init --key shm_live_…') + ' first.');
-    process.exit(1);
+    exitNotConfigured();
   }
   process.stdout.write(dim('\n  Reporting to platform… '));
   try {
@@ -314,7 +388,7 @@ async function sendReport(cfg, assets, flags) {
           : green('No high-severity findings. ') + dim('Nice and clean.')),
     );
     console.log(dim(`  Endpoint: ${res.endpointId}\n`));
-    if (crit > 0) process.exitCode = 2;
+    if (crit > 0) process.exitCode = 1; // criticals are a hard fail
   } catch (e) {
     console.log(red('failed'));
     console.error(`  ${red('✗')} ${e.message}\n`);
@@ -344,7 +418,7 @@ function cmdStatus() {
     console.log(`  ${dim('Mode     ')} ${cyan('● Local')} ${dim('— on-machine analysis only; nothing leaves this machine')}`);
     console.log(`  ${dim('         ')} ${dim('Run')} ${bold('shomra init --key shm_…')} ${dim('to add org policy, AI fixes, deep scans & the dashboard.')}`);
   }
-  console.log(`  ${dim('Backend  ')} ${url}`);
+  console.log(`  ${dim('Backend  ')} ${url || dim('none (local mode — set with shomra init --url)')}`);
   console.log(`  ${dim('API key  ')} ${apiKey ? green(apiKey.slice(0, 14) + '…') : dim('none (local mode)')}`);
   console.log(`  ${dim('Machine  ')} ${os.hostname()} ${dim('(' + (cfg.machineId || 'unenrolled') + ')')}`);
   console.log(`  ${dim('Config   ')} ${CONFIG_FILE}`);
@@ -355,21 +429,24 @@ function cmdStatus() {
   console.log(`  ${enrolled ? green('✓') : gray('○')} ${(enrolled ? dim : gray)('fix (AI) · deep scans (scan-zip/model-scan/memory-scan) · org policy · dashboard telemetry')}`);
 
   // Runtime firewall health — is the guard wired in, and is it in a state that
-  // could freeze the agent? (checks Claude Code's global + project settings).
-  const hookFiles = [
-    path.join(os.homedir(), '.claude', 'settings.json'),
-    path.join(process.cwd(), '.claude', 'settings.json'),
-  ].filter((f) => {
-    try {
-      return fs.readFileSync(f, 'utf8').includes('shomra tool-guard');
-    } catch {
-      return false;
-    }
-  });
+  // could freeze the agent? Checks EVERY supported agent's config files (the
+  // same paths install-hook writes), matching both the legacy bare `shomra
+  // tool-guard` form and the absolute `node …shomra.mjs tool-guard` form.
   const localOff = process.env.SHOMRA_GUARD_LOCAL === '0' || String(process.env.SHOMRA_GUARD_LOCAL).toLowerCase() === 'false';
   const strict = envFlag('SHOMRA_GUARD_STRICT');
   console.log(bold('\n  Runtime firewall'));
-  console.log(`  ${dim('Hook     ')} ${hookFiles.length ? green('installed') + dim(' → ' + hookFiles.join(', ')) : yellow('not installed') + dim('  (run: shomra install-hook)')}`);
+  const installedAgents = AGENT_KEYS.map((a) => ({ agent: a, files: agentHookInstalled(a) })).filter((x) => x.files.length);
+  if (installedAgents.length) {
+    let first = true;
+    for (const { agent, files } of installedAgents) {
+      console.log(`  ${dim(first ? 'Hooks    ' : '         ')} ${green('installed')} ${bold(AGENT_LABELS[agent])} ${dim('→ ' + files.join(', '))}`);
+      first = false;
+    }
+    const missing = AGENT_KEYS.filter((a) => !installedAgents.some((i) => i.agent === a));
+    if (missing.length) console.log(`  ${dim('         ')} ${dim('not installed: ' + missing.map((m) => AGENT_LABELS[m]).join(', '))}`);
+  } else {
+    console.log(`  ${dim('Hooks    ')} ${yellow('not installed for any agent')}${dim('  (run: shomra install-hook --agent all  or  shomra protect)')}`);
+  }
   console.log(`  ${dim('Tier 0   ')} ${localOff ? yellow('off') + dim(' (server-only)') : green('on') + dim(' — dangerous calls blocked on-machine, zero network')}`);
   console.log(`  ${dim('Mode     ')} ${strict ? 'fail-closed (strict)' : 'fail-open'}${dim(` · server timeout ${guardTimeoutMs()}ms · breaker ${breakerCooldownMs()}ms`)}`);
   console.log(`  ${dim('Breaker  ')} ${breakerOpen() ? red('OPEN') + dim(' — backend recently unreachable; server tier is being skipped') : green('closed')}\n`);
@@ -501,7 +578,7 @@ async function cmdGate(flags, positional) {
   } else {
     if (!file) {
       console.error(red('✗') + ' Usage: ' + bold('shomra gate <file> [--kind mcp|skill|command|subagent|hook|rules|agent-card|memory] [--name x] [--strict] [--json]'));
-      process.exit(1);
+      process.exit(EXIT_USAGE);
     }
     let target = path.resolve(String(file));
     // A directory gates its SKILL.md (the skill-install case).
@@ -509,13 +586,13 @@ async function cmdGate(flags, positional) {
       const skillMd = path.join(target, 'SKILL.md');
       if (!fs.existsSync(skillMd)) {
         console.error(red('✗') + ` ${file} is a directory with no SKILL.md — point at a file instead.`);
-        process.exit(1);
+        process.exit(EXIT_USAGE);
       }
       target = skillMd;
     }
     if (!fs.existsSync(target)) {
       console.error(red('✗') + ` File not found: ${file}`);
-      process.exit(1);
+      process.exit(EXIT_USAGE);
     }
     content = fs.readFileSync(target, 'utf8');
     relPath = path.relative(process.cwd(), target).split(path.sep).join('/');
@@ -599,8 +676,7 @@ async function cmdLlmProxy(flags) {
   const cfg = loadConfig();
   const { apiKey, url } = resolveSettings(cfg);
   if (!apiKey) {
-    console.error('\n' + red('✗') + ' Not configured. Run ' + bold('shomra init --key shm_live_…') + ' first.');
-    process.exit(1);
+    exitNotConfigured();
   }
   const port = parseInt(flags.port, 10) || 4141;
   const project = flags.project ? String(flags.project) : null;
@@ -614,7 +690,11 @@ async function cmdLlmProxy(flags) {
 
   const providerRe = new RegExp(`^/(${LLM_PROVIDERS.join('|')})(/.*)?$`);
   const server = createServer(async (req, res) => {
-    const m = String(req.url).match(providerRe);
+    // Back-compat: older integrations (an .aider.conf.yml written by a previous
+    // install-hook) pointed at /llm/<provider>/… — strip the /llm prefix so
+    // already-written configs keep working against the /<provider>/… routes.
+    const reqUrl = String(req.url).replace(/^\/llm(?=\/)/, '');
+    const m = reqUrl.match(providerRe);
     if (!m) {
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: { message: `Unknown route — use /<provider>/… (providers: ${LLM_PROVIDERS.join(', ')})` } }));
@@ -706,6 +786,16 @@ const ARTIFACT_MATCHERS = [
   { kind: 'command', re: /(^|\/)\.claude\/commands\/[^/]+\.md$/i },
   { kind: 'subagent', re: /(^|\/)\.claude\/agents\/[^/]+\.md$/i },
   { kind: 'hook', re: /(^|\/)\.claude\/settings(\.local)?\.json$/i },
+  // Every other agent-config file install-hook writes is the same attack
+  // surface: a malicious hook planted there runs on every tool call. Gate them
+  // with the same hook/settings checks as .claude/settings.json.
+  { kind: 'hook', re: /(^|\/)\.cursor\/hooks\.json$/i },
+  { kind: 'hook', re: /(^|\/)(\.windsurf|\.codeium\/windsurf)\/hooks\.json$/i },
+  { kind: 'hook', re: /(^|\/)\.gemini\/settings\.json$/i },
+  { kind: 'hook', re: /(^|\/)\.cline\/hooks\.json$/i },
+  { kind: 'hook', re: /(^|\/)\.codex\/hooks\.json$/i },
+  { kind: 'hook', re: /(^|\/)(\.github|\.copilot)\/hooks\/[^/]+\.json$/i },
+  { kind: 'hook', re: /(^|\/)\.aider\.conf\.yml$/i },
   { kind: 'agent-card', re: /(^|\/)\.well-known\/agent(-card)?\.json$/i },
   { kind: 'agent-card', re: /(^|\/)agent[-_]card\.json$/i },
   { kind: 'rules', re: /(^|\/)(CLAUDE|AGENTS|GEMINI|CONVENTIONS)\.md$/i },
@@ -1085,7 +1175,9 @@ async function gateArtifactList(artifacts, { apiKey, url, env, flags, root }) {
     const { a, content, local, sast } = prepared[i];
     const res = server[i];
     const source = res ? 'server' : 'local';
-    const merged = mergeSastIntoResult(res || localAsGateResult(local, a.rel, a.kind), sast);
+    // Local results get a clean display name (basename) — the path is already
+    // printed next to it, so name=rel printed the path twice per line.
+    const merged = mergeSastIntoResult(res || localAsGateResult(local, a.rel.split('/').pop(), a.kind), sast);
     const r0 = { path: a.rel, full: a.full, kind: a.kind, source, ...merged };
     const rs = suppress ? suppressResult(r0, rules, baseline, lineCache) : r0;
     const r = applyRepoPolicy(rs, policy);
@@ -1096,10 +1188,15 @@ async function gateArtifactList(artifacts, { apiKey, url, env, flags, root }) {
     if (!quiet) {
       const dc = r.decision === 'BLOCK' ? red : r.decision === 'FLAG' ? yellow : green;
       const supNote = r.suppressedCount ? dim(` · ${r.suppressedCount} suppressed`) : '';
-      console.log(`  ${dc('●')} ${bold(r.name)} ${dim(a.rel)}${source === 'local' ? dim(' ·local') : ''} ${dc(r.decision)} ${dim('risk ' + r.riskScore + ' · ' + (r.findingCount ?? (r.findings || []).length) + ' finding(s)')}${supNote}`);
-      for (const f of (r.findings || []).slice(0, 3)) {
-        console.log(`      ${SEV_COLOR[f.severity](String(f.severity).padEnd(8))} ${f.title}`);
+      const pathNote = a.rel !== r.name ? ' ' + dim(a.rel) : ''; // don't print the path twice
+      console.log(`  ${dc('●')} ${bold(r.name)}${pathNote}${source === 'local' ? dim(' ·local') : ''} ${dc(r.decision)} ${dim('risk ' + r.riskScore + ' · ' + (r.findingCount ?? (r.findings || []).length) + ' finding(s)')}${supNote}`);
+      const shown = (r.findings || []).slice(0, 3);
+      for (const f of shown) {
+        const loc = f.line ? dim(` (${f.file || a.rel}:${f.line})`) : '';
+        console.log(`      ${SEV_COLOR[f.severity](String(f.severity).padEnd(8))} ${f.title}${loc}`);
       }
+      const more = (r.findings || []).length - shown.length;
+      if (more > 0) console.log(`      ${dim(`… and ${more} more (run with --json for all)`)}`);
     }
   }
   return { results, blocked, flagged, suppressed, backendDown };
@@ -1362,7 +1459,7 @@ const GH_LEVEL = { CRITICAL: 'failure', HIGH: 'failure', MEDIUM: 'warning', LOW:
 async function cmdPr(flags, positional) {
   if (flags.init) {
     const wf = path.resolve('.github/workflows/shomra.yml');
-    if (fs.existsSync(wf) && !flags.force) { console.error(red('✗') + ` ${path.relative(process.cwd(), wf)} exists. Use ${bold('--force')}.`); process.exit(1); }
+    if (fs.existsSync(wf) && !flags.force) { console.error(red('✗') + ` ${path.relative(process.cwd(), wf)} exists. Use ${bold('--force')}.`); process.exit(EXIT_USAGE); }
     fs.mkdirSync(path.dirname(wf), { recursive: true });
     fs.writeFileSync(wf, PR_WORKFLOW);
     console.log(`\n  ${green('✓ Wrote')} ${bold('.github/workflows/shomra.yml')} ${dim('— commit it; PRs will get an inline Shomra review.')}`);
@@ -1381,8 +1478,8 @@ async function cmdPr(flags, positional) {
   const root = path.resolve(flags.path || '.');
   const dryRun = !!flags['dry-run'];
 
-  if (!repo || !headSha) { console.error(red('✗') + ' Not in a GitHub PR context (need GITHUB_REPOSITORY + a head sha). Pass --repo / --sha, or use --dry-run.'); process.exit(1); }
-  if (!token && !dryRun) { console.error(red('✗') + ' No GitHub token. Set GITHUB_TOKEN (CI) or --token, or preview with --dry-run.'); process.exit(1); }
+  if (!repo || !headSha) { console.error(red('✗') + ' Not in a GitHub PR context (need GITHUB_REPOSITORY + a head sha). Pass --repo / --sha, or use --dry-run.'); process.exit(EXIT_USAGE); }
+  if (!token && !dryRun) { console.error(red('✗') + ' No GitHub token. Set GITHUB_TOKEN (CI) or --token, or preview with --dry-run.'); process.exit(EXIT_USAGE); }
 
   // Gate the CHANGED artifacts (fall back to the whole tree if the diff won't resolve).
   const changed = gitChangedVsBase(root, base);
@@ -1390,13 +1487,27 @@ async function cmdPr(flags, positional) {
   const artifacts = changed === null ? all : all.filter((a) => new Set(changed).has(a.rel));
   const env = detectEnv();
 
+  // --sarif: emit SARIF 2.1.0 for the changed artifacts. Bare `--sarif` writes
+  // to stdout; `--sarif=<file>` writes the file (so it can coexist with the
+  // human/check-run output).
+  const emitSarif = (results) => {
+    if (!flags.sarif) return;
+    const sarif = JSON.stringify(toSarif(results), null, 2);
+    if (typeof flags.sarif === 'string') {
+      fs.writeFileSync(path.resolve(String(flags.sarif)), sarif);
+      if (!flags.json) console.error(dim(`  SARIF written → ${flags.sarif}`));
+    } else console.log(sarif);
+  };
+
   if (!artifacts.length) {
-    if (!flags.json) console.log(green('\n  ✓ No AI artifacts changed in this PR.\n'));
+    emitSarif([]);
+    if (!flags.json && flags.sarif !== true) console.log(green('\n  ✓ No AI artifacts changed in this PR.\n'));
     if (token && !dryRun) await githubApi(token, 'POST', `/repos/${repo}/check-runs`, { name: 'Shomra AI Security', head_sha: headSha, status: 'completed', conclusion: 'success', output: { title: 'No AI artifacts changed', summary: 'No MCP configs, skills, rules, hooks or agent cards changed in this PR.' } }).catch((e) => console.error(dim('  check-run: ' + e.message)));
     return;
   }
 
   const { results, blocked, flagged, suppressed } = await gateArtifactList(artifacts, { apiKey, url, env, flags: { ...flags, json: true }, root });
+  emitSarif(results);
 
   // Build inline annotations (GitHub caps a check-run at 50 per request).
   const annotations = [];
@@ -1430,7 +1541,7 @@ async function cmdPr(flags, positional) {
 
   if (dryRun || flags.json) {
     console.log(JSON.stringify({ repo, prNumber: prNumber ?? null, headSha, base, conclusion, artifacts: results.length, findings: annotations.length, checkRun: dryRun ? checkRun : undefined }, null, 2));
-  } else {
+  } else if (flags.sarif !== true) { // bare --sarif already owns stdout
     console.log(bold(cyan('\n  Shomra pr')) + dim(` — ${repo} #${prNumber ?? '?'} · ${results.length} changed artifact(s) · ${annotations.length} finding(s)`));
   }
 
@@ -1460,27 +1571,27 @@ async function cmdFix(flags, positional) {
   const file = positional[0];
   if (!file) {
     console.error(red('✗') + ' Usage: ' + bold('shomra fix <file> [--apply] [--kind mcp|skill|command|subagent|hook|rules] [--json]'));
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
   const cfg = loadConfig();
   const { apiKey, url } = resolveSettings(cfg);
   if (!apiKey) {
     console.error('\n' + red('✗') + ' ' + bold('shomra fix') + ' needs enrollment — the fix is generated on the platform with your org AI key.');
     console.error('  ' + dim('Run ') + bold('shomra init --key shm_live_…') + dim(', or apply the guidance from ') + bold('shomra check') + dim(' by hand.\n'));
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
   let target = path.resolve(String(file));
   if (fs.existsSync(target) && fs.statSync(target).isDirectory()) {
     const skillMd = path.join(target, 'SKILL.md');
     if (!fs.existsSync(skillMd)) {
       console.error(red('✗') + ` ${file} is a directory with no SKILL.md — point at a file instead.`);
-      process.exit(1);
+      process.exit(EXIT_USAGE);
     }
     target = skillMd;
   }
   if (!fs.existsSync(target)) {
     console.error(red('✗') + ` File not found: ${file}`);
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
   await fixOneFile(target, { apiKey, url, flags });
 }
@@ -1578,20 +1689,20 @@ async function cmdWhy(flags, positional) {
   const file = positional[0];
   if (!file) {
     console.error(red('✗') + ' Usage: ' + bold('shomra why <file> [--kind mcp|skill|command|subagent|hook|rules] [--json]'));
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
   let target = path.resolve(String(file));
   if (fs.existsSync(target) && fs.statSync(target).isDirectory()) {
     const skillMd = path.join(target, 'SKILL.md');
     if (!fs.existsSync(skillMd)) {
       console.error(red('✗') + ` ${file} is a directory with no SKILL.md — point at a file instead.`);
-      process.exit(1);
+      process.exit(EXIT_USAGE);
     }
     target = skillMd;
   }
   if (!fs.existsSync(target)) {
     console.error(red('✗') + ` File not found: ${file}`);
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
   const content = fs.readFileSync(target, 'utf8');
   const rel = path.relative(process.cwd(), target).split(path.sep).join('/');
@@ -1700,7 +1811,7 @@ async function cmdProvenance(flags, positional) {
   const paths = gitChangedPaths(root, { staged, base });
   if (paths === null) {
     console.error(red('✗') + ' Not a git repository (or no diff available). Run inside a repo, or pass --base <ref>.');
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
   if (!paths.length) {
     if (flags.json) console.log(JSON.stringify({ files: [], agentAuthored: 0, coverage: 'NO_TELEMETRY', summary: 'no changed files' }, null, 2));
@@ -1719,10 +1830,11 @@ async function cmdProvenance(flags, positional) {
       sinceHours: flags.since ? Number(flags.since) : undefined,
     });
   } catch (e) {
-    // Provenance is an evidence lookup, not a guard — a backend outage must not
-    // block a commit. Say so plainly instead of silently reporting "no agents".
+    // Provenance is an evidence lookup, not a guard — but exiting 0 here was a
+    // green build that proved nothing. Exit with the config-error code so CI
+    // can tell "authorship established: none" from "could not even look".
     console.error(yellow('!') + ` Provenance unavailable (${e.message}). Authorship not established.`);
-    process.exit(flags['fail-on-blocked'] ? 1 : 0);
+    process.exit(flags['fail-on-blocked'] ? 1 : EXIT_USAGE);
   }
 
   if (flags.json) {
@@ -1770,7 +1882,7 @@ async function cmdInstallPrecommit(flags, positional) {
   const hooksDir = gitHooksDir(root);
   if (!hooksDir) {
     console.error(red('✗') + ' Not a git repository (or git unavailable). cd into your repo first.');
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
   const hookPath = path.join(hooksDir, 'pre-commit');
   const marker = 'shomra check --staged';
@@ -1778,7 +1890,18 @@ async function cmdInstallPrecommit(flags, positional) {
     '#!/bin/sh',
     '# Shomra — block staged AI artifacts that fail the gate before they land.',
     '# Managed by `shomra install-precommit`. Delete this file to uninstall.',
-    'command -v shomra >/dev/null 2>&1 || { echo "shomra not on PATH — skipping AI-artifact gate"; exit 0; }',
+    // Skipping is the safe choice (never brick a commit), but it must be LOUD:
+    // a silent skip is a gate everyone believes ran.
+    'command -v shomra >/dev/null 2>&1 || {',
+    '  echo "" >&2',
+    '  echo "!! ============================================================== !!" >&2',
+    '  echo "!!  WARNING: shomra not on PATH — the AI-artifact gate DID NOT RUN !!" >&2',
+    '  echo "!!  Staged MCP/skill/rules files were committed UNGATED.          !!" >&2',
+    '  echo "!!  Fix: npm i -g @shomra/agent   (then re-commit to gate)        !!" >&2',
+    '  echo "!! ============================================================== !!" >&2',
+    '  echo "" >&2',
+    '  exit 0',
+    '}',
     'shomra check --staged',
     'if [ "$?" -eq 1 ]; then',
     '  echo "✗ Shomra blocked a staged AI artifact — run: shomra fix <file> --apply  (or: git commit --no-verify to override)"',
@@ -1837,28 +1960,27 @@ function gitHooksDir(root) {
 // Uploads the archive to the platform's Workspace Scan (static analysis only —
 // nothing in the archive is executed) and prints the per-kind report: Skills,
 // slash commands, subagents, hooks, MCP configs, rules files, secret files.
-// Exit codes: 0 = PASS/REVIEW, 2 = FAIL.
+// Exit codes: 0 = PASS/REVIEW, 1 = FAIL or policy BLOCK, 2 = policy FLAG with --strict.
 
 async function cmdScanZip(flags, positional) {
   const cfg = loadConfig();
   const { apiKey, url } = resolveSettings(cfg);
   if (!apiKey) {
-    console.error('\n' + red('✗') + ' Not configured. Run ' + bold('shomra init --key shm_live_…') + ' first.');
-    process.exit(1);
+    exitNotConfigured();
   }
   const file = positional[0];
   if (!file) {
     console.error(red('✗') + ' Usage: ' + bold('shomra scan-zip <workspace.zip> [--project <id>] [--json]'));
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
   const target = path.resolve(String(file));
   if (!fs.existsSync(target) || !fs.statSync(target).isFile()) {
     console.error(red('✗') + ` File not found: ${file}`);
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
   if (!/\.zip$/i.test(target)) {
     console.error(red('✗') + ` ${file} is not a .zip archive.`);
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
 
   const buf = fs.readFileSync(target);
@@ -1926,11 +2048,10 @@ async function cmdScanZip(flags, positional) {
         dim(' Full report in the Shomra dashboard → Workspace Scan.\n'),
     );
   }
-  // Org policy takes precedence for CI: a BLOCK fails the build (exit 1), above
-  // the severity-only FAIL (exit 2). A policy FLAG fails only with --strict.
-  if (res.policyDecision === 'BLOCK') process.exitCode = 1;
-  else if (res.verdict === 'FAIL') process.exitCode = 2;
-  else if (res.policyDecision === 'FLAG' && flags.strict) process.exitCode = 2;
+  // Hard fails (policy BLOCK, severity FAIL) exit 1; a policy FLAG or a REVIEW
+  // verdict is a soft fail and exits 2 only with --strict.
+  if (res.policyDecision === 'BLOCK' || res.verdict === 'FAIL') process.exitCode = 1;
+  else if ((res.policyDecision === 'FLAG' || res.verdict === 'REVIEW') && flags.strict) process.exitCode = 2;
 }
 
 // ── model SAST scan: analyze a public AI model's source code ─────────
@@ -1941,22 +2062,21 @@ async function cmdScanZip(flags, positional) {
 // API or a shallow GitHub clone — never the weights) and runs SAST over its
 // .py files + config.json, plus provenance/weight/card checks. Prints the
 // per-asset findings with rule id, file:line and code snippet. Nothing is
-// executed. Exit codes: 0 = PASS/REVIEW, 2 = FAIL.
+// executed. Exit codes: 0 = PASS/REVIEW, 1 = FAIL.
 
 async function cmdModelScan(flags, positional) {
   const cfg = loadConfig();
   const { apiKey, url } = resolveSettings(cfg);
   if (!apiKey) {
-    console.error('\n' + red('✗') + ' Not configured. Run ' + bold('shomra init --key shm_live_…') + ' first.');
-    process.exit(1);
+    exitNotConfigured();
   }
   const target = positional[0];
   if (!target) {
     console.error(red('✗') + ' Usage: ' + bold('shomra model-scan <hf-url | owner/model | github-url> [--project <id>] [--json]'));
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
 
-  process.stdout.write(dim(`\n  Scanning ${target}… `));
+  if (!flags.json) process.stdout.write(dim(`\n  Scanning ${target}… `));
   let res;
   try {
     res = await api(url, apiKey, '/projects/agent-model-scan', {
@@ -1965,15 +2085,16 @@ async function cmdModelScan(flags, positional) {
       ...(flags.project ? { projectId: String(flags.project) } : {}),
     });
   } catch (e) {
-    console.log(red('failed'));
+    if (!flags.json) console.log(red('failed'));
     console.error(`  ${red('✗')} ${e.message}\n`);
     process.exit(1);
   }
-  console.log(green('done'));
+  if (!flags.json) console.log(green('done'));
 
   if (flags.json) {
     console.log(JSON.stringify(res, null, 2));
-    if (res.verdict === 'FAIL') process.exitCode = 2;
+    if (res.verdict === 'FAIL') process.exitCode = 1;
+    else if (res.verdict === 'REVIEW' && flags.strict) process.exitCode = 2;
     return;
   }
 
@@ -2024,7 +2145,8 @@ async function cmdModelScan(flags, positional) {
       dim(' Full report in the Shomra dashboard → Projects.\n'),
   );
 
-  if (res.verdict === 'FAIL') process.exitCode = 2;
+  if (res.verdict === 'FAIL') process.exitCode = 1;
+  else if (res.verdict === 'REVIEW' && flags.strict) process.exitCode = 2;
 }
 
 // Normalize a model-scan target (HF URL, owner/model, or github URL) to the
@@ -2048,7 +2170,7 @@ function hfModelIdFromTarget(target) {
 // staged payloads, exfil sinks — and reports each write to the platform with
 // provenance so the integrity timeline, drift detection and rollback work. Rules
 // files are graded against an instruction baseline (their path decides the mode).
-// Point it at a repo/dir or a single file. Exit: 0 = clean/review, 2 = poisoned.
+// Point it at a repo/dir or a single file. Exit: 0 = clean/review, 1 = poisoned.
 
 const MEMORY_MATCHERS = [
   /(^|\/)MEMOR(Y|IES)\.(md|json|jsonl|txt)$/i,
@@ -2123,14 +2245,13 @@ async function cmdMemoryScan(flags, positional) {
   const cfg = loadConfig();
   const { apiKey, url } = resolveSettings(cfg);
   if (!apiKey) {
-    console.error('\n' + red('✗') + ' Not configured. Run ' + bold('shomra init --key shm_live_…') + ' first.');
-    process.exit(1);
+    exitNotConfigured();
   }
   const targetArg = positional[0] || '.';
   const target = path.resolve(String(targetArg));
   if (!fs.existsSync(target)) {
     console.error(red('✗') + ` Not found: ${targetArg}`);
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
   const files = fs.statSync(target).isDirectory()
     ? walkMemoryFiles(target)
@@ -2145,7 +2266,7 @@ async function cmdMemoryScan(flags, positional) {
   const scope = flags.scope ? String(flags.scope).toLowerCase() : undefined;
   const writer = flags.writer ? String(flags.writer).toUpperCase() : 'AGENT';
   const actor = `${os.hostname()}/${os.userInfo().username}`;
-  console.log(bold(cyan('\n  Shomra Memory Integrity')) + dim(` — scanning ${files.length} store${files.length > 1 ? 's' : ''}`));
+  if (!flags.json) console.log(bold(cyan('\n  Shomra Memory Integrity')) + dim(` — scanning ${files.length} store${files.length > 1 ? 's' : ''}`));
 
   let worst = 'PASS';
   const stores = [];
@@ -2154,7 +2275,7 @@ async function cmdMemoryScan(flags, positional) {
     try {
       const stat = fs.statSync(f.full);
       if (stat.size > MAX_ARTIFACT_BYTES) {
-        console.log(`  ${gray('•')} ${dim(f.rel)} ${yellow('skipped (too large)')}`);
+        if (!flags.json) console.log(`  ${gray('•')} ${dim(f.rel)} ${yellow('skipped (too large)')}`);
         continue;
       }
       content = fs.readFileSync(f.full, 'utf8');
@@ -2174,7 +2295,7 @@ async function cmdMemoryScan(flags, positional) {
         ...(flags.project ? { projectId: String(flags.project) } : {}),
       });
     } catch (e) {
-      console.log(`  ${red('✗')} ${f.rel} ${red('ingest error: ' + e.message)}`);
+      console.error(`  ${red('✗')} ${f.rel} ${red('ingest error: ' + e.message)}`);
       continue;
     }
     const v = res?.store?.verdict || 'PASS';
@@ -2182,18 +2303,20 @@ async function cmdMemoryScan(flags, positional) {
     else if (v === 'REVIEW' && worst !== 'FAIL') worst = 'REVIEW';
     stores.push({ path: f.rel, ...res });
 
-    const vc = VERDICT_COLOR[v] || gray;
-    const poison = res?.store?.poisonScore ?? 0;
-    const anom = res?.provenance?.anomalous;
-    console.log(
-      `\n  ${vc('●')} ${bold(path.basename(f.rel))} ${dim(f.rel)} ${vc(v)} ${dim('poison ' + poison + '/100')}` +
-        (res?.quarantined ? ' ' + red('QUARANTINED') : '') +
-        (anom ? ' ' + red('OUT-OF-BAND WRITE') : ''),
-    );
-    for (const finding of (res?.analysis?.findings || []).filter((x) => x.severity !== 'INFO')) {
-      console.log(`      ${SEV_COLOR[finding.severity](String(finding.severity).padEnd(8))} ${finding.title}`);
+    if (!flags.json) {
+      const vc = VERDICT_COLOR[v] || gray;
+      const poison = res?.store?.poisonScore ?? 0;
+      const anom = res?.provenance?.anomalous;
+      console.log(
+        `\n  ${vc('●')} ${bold(path.basename(f.rel))} ${dim(f.rel)} ${vc(v)} ${dim('poison ' + poison + '/100')}` +
+          (res?.quarantined ? ' ' + red('QUARANTINED') : '') +
+          (anom ? ' ' + red('OUT-OF-BAND WRITE') : ''),
+      );
+      for (const finding of (res?.analysis?.findings || []).filter((x) => x.severity !== 'INFO')) {
+        console.log(`      ${SEV_COLOR[finding.severity](String(finding.severity).padEnd(8))} ${finding.title}`);
+      }
+      if (anom) console.log(`      ${red('provenance:')} ${dim(res.provenance.reason)}`);
     }
-    if (anom) console.log(`      ${red('provenance:')} ${dim(res.provenance.reason)}`);
   }
 
   if (flags.json) {
@@ -2209,7 +2332,8 @@ async function cmdMemoryScan(flags, positional) {
         dim(' Full timeline + rollback in the Shomra dashboard → Memory.\n'),
     );
   }
-  if (worst === 'FAIL') process.exitCode = 2;
+  if (worst === 'FAIL') process.exitCode = 1;
+  else if (worst === 'REVIEW' && flags.strict) process.exitCode = 2;
 }
 
 // ── continuous agentic red-teaming: prove your guardrails still hold ────
@@ -2227,13 +2351,12 @@ async function cmdRedteam(flags) {
   const cfg = loadConfig();
   const { apiKey, url } = resolveSettings(cfg);
   if (!apiKey) {
-    console.error('\n' + red('✗') + ' Not configured. Run ' + bold('shomra init --key shm_live_…') + ' first.');
-    process.exit(1);
+    exitNotConfigured();
   }
   const targetKind = flags.target === 'model' ? 'model' : 'llm-guard';
   const scenarioKeys = typeof flags.scenarios === 'string' ? flags.scenarios.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
 
-  process.stdout.write(dim(`\n  Red-teaming your ${targetKind === 'model' ? 'model' : 'LLM Guard'}… `));
+  if (!flags.json) process.stdout.write(dim(`\n  Red-teaming your ${targetKind === 'model' ? 'model' : 'LLM Guard'}… `));
   let run;
   try {
     run = await api(url, apiKey, '/redteam/agent-run', {
@@ -2244,11 +2367,11 @@ async function cmdRedteam(flags) {
       actor: `${os.hostname()}/${os.userInfo().username}`,
     });
   } catch (e) {
-    console.log(red('failed'));
+    if (!flags.json) console.log(red('failed'));
     console.error(`  ${red('✗')} ${e.message}\n`);
     process.exit(1);
   }
-  console.log(green('done'));
+  if (!flags.json) console.log(green('done'));
 
   if (flags.json) {
     console.log(JSON.stringify(run, null, 2));
@@ -2276,7 +2399,7 @@ async function cmdRedteam(flags) {
   const regressed = flags['fail-on-regression'] && run.regressedCount > 0;
   if (belowFloor) console.error(red(`  ✗ Resilience ${run.resilience} is below the required ${min}.`));
   if (regressed) console.error(red(`  ✗ ${run.regressedCount} scenario(s) regressed since the last run.`));
-  if (belowFloor || regressed) process.exitCode = 2;
+  if (belowFloor || regressed) process.exitCode = 1;
 }
 
 // ── adversary campaigns: autonomous multi-turn red-team operator ──────────
@@ -2290,19 +2413,18 @@ async function cmdRedteam(flags) {
 // adapting each turn to how the guard and the assistant responded. A breach
 // needs the whole chain to fail — the guard allows the turn AND the assistant
 // complies — which single-prompt scans can't surface. Needs AI configured.
-// Exit: 0 = pass, 2 = below the resilience floor.
+// Exit: 0 = pass, 1 = below the resilience floor.
 
 async function cmdCampaign(flags) {
   const cfg = loadConfig();
   const { apiKey, url } = resolveSettings(cfg);
   if (!apiKey) {
-    console.error('\n' + red('✗') + ' Not configured. Run ' + bold('shomra init --key shm_live_…') + ' first.');
-    process.exit(1);
+    exitNotConfigured();
   }
   const objectiveKeys = typeof flags.objectives === 'string' ? flags.objectives.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
   const turns = flags.turns != null ? parseInt(flags.turns, 10) : undefined;
 
-  process.stdout.write(dim('\n  Running an autonomous adversary campaign against your assistant… '));
+  if (!flags.json) process.stdout.write(dim('\n  Running an autonomous adversary campaign against your assistant… '));
   let run;
   try {
     run = await api(url, apiKey, '/redteam/agent-campaign', {
@@ -2312,11 +2434,11 @@ async function cmdCampaign(flags) {
       actor: `${os.hostname()}/${os.userInfo().username}`,
     });
   } catch (e) {
-    console.log(red('failed'));
+    if (!flags.json) console.log(red('failed'));
     console.error(`  ${red('✗')} ${e.message}\n`);
     process.exit(1);
   }
-  console.log(green('done'));
+  if (!flags.json) console.log(green('done'));
 
   if (flags.json) {
     console.log(JSON.stringify(run, null, 2));
@@ -2343,7 +2465,7 @@ async function cmdCampaign(flags) {
   const min = flags.min != null ? parseInt(flags.min, 10) : null;
   if (Number.isFinite(min) && run.resilience < min) {
     console.error(red(`  ✗ Resilience ${run.resilience} is below the required ${min}.`));
-    process.exitCode = 2;
+    process.exitCode = 1;
   }
 }
 
@@ -2359,14 +2481,13 @@ async function cmdHarden(flags) {
   const cfg = loadConfig();
   const { apiKey, url } = resolveSettings(cfg);
   if (!apiKey) {
-    console.error('\n' + red('✗') + ' Not configured. Run ' + bold('shomra init --key shm_live_…') + ' first.');
-    process.exit(1);
+    exitNotConfigured();
   }
   const targetKind = flags.target === 'model' ? 'model' : 'llm-guard';
   const apply = !!flags.apply;
   const runId = flags.run ? String(flags.run) : undefined;
 
-  process.stdout.write(
+  if (!flags.json) process.stdout.write(
     dim(`\n  ${runId ? 'Hardening from run ' + runId : 'Red-teaming your ' + (targetKind === 'model' ? 'model' : 'LLM Guard') + ', then hardening'}… `),
   );
   let res;
@@ -2378,11 +2499,11 @@ async function cmdHarden(flags) {
       actor: `${os.hostname()}/${os.userInfo().username}`,
     });
   } catch (e) {
-    console.log(red('failed'));
+    if (!flags.json) console.log(red('failed'));
     console.error(`  ${red('✗')} ${e.message}\n`);
     process.exit(1);
   }
-  console.log(green('done'));
+  if (!flags.json) console.log(green('done'));
 
   if (flags.json) {
     console.log(JSON.stringify(res, null, 2));
@@ -2423,13 +2544,12 @@ async function cmdAgentIdentity(flags, positional) {
   const cfg = loadConfig();
   const { apiKey, url } = resolveSettings(cfg);
   if (!apiKey) {
-    console.error('\n' + red('✗') + ' Not configured. Run ' + bold('shomra init --key shm_live_…') + ' first.');
-    process.exit(1);
+    exitNotConfigured();
   }
   if (sub !== 'register') {
     console.error(`\n  ${red('✗')} Unknown subcommand "${sub}". Use: ${bold('shomra agent-identity register --name "…" --type coding-agent')}`);
     console.error(dim('  (List / govern / revoke identities in the dashboard → Agent Identities.)\n'));
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
   let res;
   try {
@@ -2510,7 +2630,57 @@ const AGENT_KEYS = Object.keys(AGENT_LABELS);
 
 // The proxy base Aider (and any OpenAI-API client) should point at so its model
 // traffic is screened by the Shomra LLM Guard. Overridable for a remote proxy.
-const LLM_PROXY_BASE = process.env.SHOMRA_LLM_PROXY_BASE || 'http://localhost:4141/llm/openai';
+// Must match cmdLlmProxy's own route shape (/openai/v1 — see its startup banner);
+// the proxy also strips a legacy `/llm` prefix so old configs keep working.
+const LLM_PROXY_BASE = process.env.SHOMRA_LLM_PROXY_BASE || 'http://127.0.0.1:4141/openai/v1';
+
+// Absolute hook invocation: `"<node>" "<shomra.mjs>" tool-guard …`. A bare
+// `shomra tool-guard` breaks the moment the CLI was run via npx or PATH drifts —
+// and a hook that silently stops firing is a firewall that's off. Paths with
+// spaces (C:\Program Files\…) are quoted for both sh and cmd.
+const SELF_PATH = fileURLToPath(import.meta.url);
+function quoteArg(s) {
+  return /\s/.test(s) ? `"${s}"` : s;
+}
+function hookCommand(args) {
+  return `${quoteArg(process.execPath)} ${quoteArg(SELF_PATH)} ${args}`;
+}
+// Matches BOTH the legacy bare `shomra tool-guard` form and the absolute
+// `…shomra.mjs" tool-guard` form, so detection/idempotency survive the migration.
+function shomraHookRe(verb) {
+  return new RegExp(`shomra(\\.mjs"?)?\\s+${verb}`, 'i');
+}
+const SHOMRA_ANY_HOOK_RE = /shomra(\.mjs"?)?\s+(tool-guard|result-guard)/i;
+
+// Where each agent's hook config lives — [machine-wide, project] — the same
+// paths AGENT_INSTALLERS writes. Used by `status` for per-agent detection.
+function agentHookFiles(agent) {
+  const home = os.homedir();
+  const cwd = process.cwd();
+  switch (agent) {
+    case 'claude': return [path.join(home, '.claude', 'settings.json'), path.join(cwd, '.claude', 'settings.json')];
+    case 'codex': return [path.join(home, '.codex', 'hooks.json'), path.join(cwd, '.codex', 'hooks.json')];
+    case 'gemini': return [path.join(home, '.gemini', 'settings.json'), path.join(cwd, '.gemini', 'settings.json')];
+    case 'cursor': return [path.join(home, '.cursor', 'hooks.json'), path.join(cwd, '.cursor', 'hooks.json')];
+    case 'windsurf': return [path.join(home, '.codeium', 'windsurf', 'hooks.json'), path.join(cwd, '.windsurf', 'hooks.json')];
+    case 'copilot': return [path.join(home, '.copilot', 'hooks', 'shomra.json'), path.join(cwd, '.github', 'hooks', 'shomra.json')];
+    case 'cline': return [path.join(home, '.cline', 'hooks.json'), path.join(cwd, '.cline', 'hooks.json')];
+    case 'aider': return [path.join(home, '.aider.conf.yml'), path.join(cwd, '.aider.conf.yml')];
+    default: return [];
+  }
+}
+// The config files (of the agent's own paths) that carry a Shomra hook.
+function agentHookInstalled(agent) {
+  return agentHookFiles(agent).filter((f) => {
+    try {
+      const text = fs.readFileSync(f, 'utf8');
+      if (agent === 'aider') return /shomra llm guard/i.test(text);
+      return SHOMRA_ANY_HOOK_RE.test(text);
+    } catch {
+      return false;
+    }
+  });
+}
 
 function readJsonFile(file) {
   if (!fs.existsSync(file)) return {};
@@ -2518,16 +2688,18 @@ function readJsonFile(file) {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch {
     console.error(red('✗') + ` ${file} is not valid JSON — fix or move it first.`);
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
 }
 // Dedupe check for the {matcher, hooks:[{command}]} grouped shape (Claude/Codex/Gemini).
-function hasGroupedHook(list, needle) {
-  return Array.isArray(list) && list.some((g) => Array.isArray(g.hooks) && g.hooks.some((h) => String(h.command || '').includes(needle)));
+// `verb` is 'tool-guard' | 'result-guard'; matches bare AND absolute command forms.
+function hasGroupedHook(list, verb) {
+  const re = shomraHookRe(verb);
+  return Array.isArray(list) && list.some((g) => Array.isArray(g.hooks) && g.hooks.some((h) => re.test(String(h.command || ''))));
 }
 // Dedupe check for the flat {command} array shape (Cursor/Windsurf).
 function hasFlatHook(list) {
-  return Array.isArray(list) && list.some((h) => String(h.command || '').includes('shomra '));
+  return Array.isArray(list) && list.some((h) => SHOMRA_ANY_HOOK_RE.test(String(h.command || '')));
 }
 
 // Each installer merges Shomra's hook(s) into that agent's config file and
@@ -2542,12 +2714,12 @@ const AGENT_INSTALLERS = {
     const pre = (settings.hooks.PreToolUse = settings.hooks.PreToolUse || []);
     const post = (settings.hooks.PostToolUse = settings.hooks.PostToolUse || []);
     let changed = false;
-    if (!hasGroupedHook(pre, 'shomra tool-guard')) {
-      pre.push({ matcher: 'Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*', hooks: [{ type: 'command', command: 'shomra tool-guard --agent claude' }] });
+    if (!hasGroupedHook(pre, 'tool-guard')) {
+      pre.push({ matcher: 'Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*', hooks: [{ type: 'command', command: hookCommand('tool-guard --agent claude') }] });
       changed = true;
     }
-    if (!hasGroupedHook(post, 'shomra result-guard')) {
-      post.push({ matcher: 'WebFetch|WebSearch|Read|NotebookRead|mcp__.*', hooks: [{ type: 'command', command: 'shomra result-guard --agent claude' }] });
+    if (!hasGroupedHook(post, 'result-guard')) {
+      post.push({ matcher: 'WebFetch|WebSearch|Read|NotebookRead|mcp__.*', hooks: [{ type: 'command', command: hookCommand('result-guard --agent claude') }] });
       changed = true;
     }
     if (changed) {
@@ -2565,12 +2737,12 @@ const AGENT_INSTALLERS = {
     const pre = (settings.PreToolUse = settings.PreToolUse || []);
     const post = (settings.PostToolUse = settings.PostToolUse || []);
     let changed = false;
-    if (!hasGroupedHook(pre, 'shomra tool-guard')) {
-      pre.push({ matcher: 'Bash|Write|Edit|mcp__.*', hooks: [{ type: 'command', command: 'shomra tool-guard --agent codex' }] });
+    if (!hasGroupedHook(pre, 'tool-guard')) {
+      pre.push({ matcher: 'Bash|Write|Edit|mcp__.*', hooks: [{ type: 'command', command: hookCommand('tool-guard --agent codex') }] });
       changed = true;
     }
-    if (!hasGroupedHook(post, 'shomra result-guard')) {
-      post.push({ matcher: 'WebFetch|WebSearch|Read|mcp__.*', hooks: [{ type: 'command', command: 'shomra result-guard --agent codex' }] });
+    if (!hasGroupedHook(post, 'result-guard')) {
+      post.push({ matcher: 'WebFetch|WebSearch|Read|mcp__.*', hooks: [{ type: 'command', command: hookCommand('result-guard --agent codex') }] });
       changed = true;
     }
     if (changed) {
@@ -2589,12 +2761,12 @@ const AGENT_INSTALLERS = {
     const before = (settings.hooks.BeforeTool = settings.hooks.BeforeTool || []);
     const after = (settings.hooks.AfterTool = settings.hooks.AfterTool || []);
     let changed = false;
-    if (!hasGroupedHook(before, 'shomra tool-guard')) {
-      before.push({ matcher: '.*', hooks: [{ type: 'command', command: 'shomra tool-guard --agent gemini' }] });
+    if (!hasGroupedHook(before, 'tool-guard')) {
+      before.push({ matcher: '.*', hooks: [{ type: 'command', command: hookCommand('tool-guard --agent gemini') }] });
       changed = true;
     }
-    if (!hasGroupedHook(after, 'shomra result-guard')) {
-      after.push({ matcher: '.*', hooks: [{ type: 'command', command: 'shomra result-guard --agent gemini' }] });
+    if (!hasGroupedHook(after, 'result-guard')) {
+      after.push({ matcher: '.*', hooks: [{ type: 'command', command: hookCommand('result-guard --agent gemini') }] });
       changed = true;
     }
     if (changed) {
@@ -2620,10 +2792,10 @@ const AGENT_INSTALLERS = {
         changed = true;
       }
     };
-    wire('beforeShellExecution', 'shomra tool-guard --agent cursor');
-    wire('beforeMCPExecution', 'shomra tool-guard --agent cursor');
-    wire('afterFileEdit', 'shomra result-guard --agent cursor');
-    wire('afterMCPExecution', 'shomra result-guard --agent cursor');
+    wire('beforeShellExecution', hookCommand('tool-guard --agent cursor'));
+    wire('beforeMCPExecution', hookCommand('tool-guard --agent cursor'));
+    wire('afterFileEdit', hookCommand('result-guard --agent cursor'));
+    wire('afterMCPExecution', hookCommand('result-guard --agent cursor'));
     if (changed) {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
@@ -2646,10 +2818,10 @@ const AGENT_INSTALLERS = {
         changed = true;
       }
     };
-    wire('pre_run_command', 'shomra tool-guard --agent windsurf');
-    wire('pre_write_code', 'shomra tool-guard --agent windsurf');
-    wire('pre_mcp_tool_use', 'shomra tool-guard --agent windsurf');
-    wire('post_mcp_tool_use', 'shomra result-guard --agent windsurf');
+    wire('pre_run_command', hookCommand('tool-guard --agent windsurf'));
+    wire('pre_write_code', hookCommand('tool-guard --agent windsurf'));
+    wire('pre_mcp_tool_use', hookCommand('tool-guard --agent windsurf'));
+    wire('post_mcp_tool_use', hookCommand('result-guard --agent windsurf'));
     if (changed) {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
@@ -2664,8 +2836,8 @@ const AGENT_INSTALLERS = {
     const file = path.join(dir, 'shomra.json');
     if (fs.existsSync(file)) return { file, changed: false };
     const cfg = {
-      preToolUse: [{ command: 'shomra tool-guard --agent copilot' }],
-      postToolUse: [{ command: 'shomra result-guard --agent copilot' }],
+      preToolUse: [{ command: hookCommand('tool-guard --agent copilot') }],
+      postToolUse: [{ command: hookCommand('result-guard --agent copilot') }],
     };
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
@@ -2684,12 +2856,12 @@ const AGENT_INSTALLERS = {
     const pre = (settings.hooks.PreToolUse = settings.hooks.PreToolUse || []);
     const post = (settings.hooks.PostToolUse = settings.hooks.PostToolUse || []);
     let changed = false;
-    if (!hasGroupedHook(pre, 'shomra tool-guard')) {
-      pre.push({ matcher: 'execute_command|write_to_file|replace_in_file|new_rule|use_mcp_tool', hooks: [{ type: 'command', command: 'shomra tool-guard --agent cline' }] });
+    if (!hasGroupedHook(pre, 'tool-guard')) {
+      pre.push({ matcher: 'execute_command|write_to_file|replace_in_file|new_rule|use_mcp_tool', hooks: [{ type: 'command', command: hookCommand('tool-guard --agent cline') }] });
       changed = true;
     }
-    if (!hasGroupedHook(post, 'shomra result-guard')) {
-      post.push({ matcher: 'read_file|web_fetch|use_mcp_tool', hooks: [{ type: 'command', command: 'shomra result-guard --agent cline' }] });
+    if (!hasGroupedHook(post, 'result-guard')) {
+      post.push({ matcher: 'read_file|web_fetch|use_mcp_tool', hooks: [{ type: 'command', command: hookCommand('result-guard --agent cline') }] });
       changed = true;
     }
     if (changed) {
@@ -3286,9 +3458,12 @@ function cmdInstallHook(flags) {
   const unknown = requested.filter((a) => a !== 'all' && !AGENT_KEYS.includes(a));
   if (unknown.length) {
     console.error(red('✗') + ` Unknown agent(s): ${unknown.join(', ')}. Supported: ${AGENT_KEYS.join(', ')}, all.`);
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
   const targets = requested.includes('all') ? AGENT_KEYS : requested;
+  if (!flags.agent) {
+    console.log(dim('  No --agent given — installing for Claude Code only. Use ') + bold('--agent all') + dim(' (or ') + bold('shomra protect') + dim(') to cover every agent.'));
+  }
 
   for (const agent of targets) {
     const { file, changed } = AGENT_INSTALLERS[agent](global);
@@ -3479,14 +3654,14 @@ function cmdNew(flags, positional) {
   const tmpl = NEW_TEMPLATES[kind];
   if (!tmpl) {
     console.error(red('✗') + ` Usage: ${bold('shomra new ' + Object.keys(NEW_TEMPLATES).join('|') + ' [name]')}`);
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
   const name = (positional[1] || (kind === 'rules' ? 'rules' : `my-${kind}`)).replace(/[^a-zA-Z0-9._-]/g, '-');
   const { file, content } = tmpl(name);
   const target = path.resolve(file);
   if (fs.existsSync(target) && !flags.force) {
     console.error(red('✗') + ` ${file} already exists. Use ${bold('--force')} to overwrite.`);
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, content);
@@ -3653,17 +3828,17 @@ async function cmdMcp(flags, positional) {
 
   if (sub !== 'add') {
     console.error(red('✗') + ` Usage: ${bold('shomra mcp add <name> <command…> | --url <url>')} ${dim('|')} ${bold('shomra mcp list')}`);
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
 
   const name = positional[1];
-  if (!name) { console.error(red('✗') + ` Usage: ${bold('shomra mcp add <name> <command…>')}`); process.exit(1); }
+  if (!name) { console.error(red('✗') + ` Usage: ${bold('shomra mcp add <name> <command…>')}`); process.exit(EXIT_USAGE); }
   const server = {};
   if (flags.url) server.url = String(flags.url);
   const cmdTokens = flags.command ? String(flags.command).split(/\s+/) : positional.slice(2);
   if (cmdTokens.length) { server.command = cmdTokens[0]; if (cmdTokens.length > 1) server.args = cmdTokens.slice(1); }
   if (flags.env) server.env = parseEnvKV(flags.env);
-  if (!server.url && !server.command) { console.error(red('✗') + ' Provide a launch command or --url.'); process.exit(1); }
+  if (!server.url && !server.command) { console.error(red('✗') + ' Provide a launch command or --url.'); process.exit(EXIT_USAGE); }
 
   // Vet the candidate BEFORE writing it anywhere: (1) local heuristics, then
   // (2) the platform's pre-scanned MCP Security Index (GET /catalog/lookup) so a
@@ -3675,11 +3850,18 @@ async function cmdMcp(flags, positional) {
 
   let index = null;
   if (!flags['no-index']) {
-    try {
-      const { url } = resolveSettings(loadConfig());
-      index = await mcpLookup(url, mcpLookupId(server, name));
-    } catch (e) {
-      index = { error: e.message };
+    const { url } = resolveSettings(loadConfig());
+    if (!url) {
+      // No backend → no index to ask. Skip the fetch entirely (fetch("null/…")
+      // used to surface a raw JS parse error here); the print section renders
+      // this as a clean one-line "unavailable" notice.
+      index = { error: 'no backend configured — set SHOMRA_URL or run shomra init --url' };
+    } else {
+      try {
+        index = await mcpLookup(url, mcpLookupId(server, name));
+      } catch (e) {
+        index = { error: e.message };
+      }
     }
   }
   const idxAlert = mcpIndexAlert(index);
@@ -3709,7 +3891,7 @@ async function cmdMcp(flags, positional) {
   }
 
   let cfg = {};
-  if (fs.existsSync(configFile)) { try { cfg = JSON.parse(fs.readFileSync(configFile, 'utf8')); } catch { console.error(red('✗') + ` ${configFile} is not valid JSON.`); process.exit(1); } }
+  if (fs.existsSync(configFile)) { try { cfg = JSON.parse(fs.readFileSync(configFile, 'utf8')); } catch { console.error(red('✗') + ` ${configFile} is not valid JSON.`); process.exit(EXIT_USAGE); } }
   cfg.mcpServers = cfg.mcpServers || {};
   const existed = !!cfg.mcpServers[name];
   cfg.mcpServers[name] = server;
@@ -4017,8 +4199,20 @@ async function cmdModels(flags, positional) {
       printAlternatives(m.alternatives, 'model');
       if (m.notIndexed && m.source !== 'ollama') console.log(`      ${dim('→ scan it now:')} ${bold('shomra model-scan ' + m.id)}`);
     }
+    // A failed lookup is NOT a clean model — never claim "no known-vulnerable
+    // models" when we could not actually check some of them.
+    const failedLookups = models.filter((m) => m.error).length;
+    const unchecked = failedLookups
+      ? yellow(`⚠ ${failedLookups} model reference(s) could not be checked`) + dim(url ? ' (model index unreachable)' : ' (no backend configured — set SHOMRA_URL)')
+      : null;
     console.log(
-      '\n  ' + (blocked ? red(`✗ ${blocked} vulnerable`) + dim(` · ${flagged} to review`) : flagged ? yellow(`⚠ ${flagged} to review`) : green('✓ No known-vulnerable models')) + '\n',
+      '\n  ' +
+        (blocked
+          ? red(`✗ ${blocked} vulnerable`) + dim(` · ${flagged} to review`) + (unchecked ? ' · ' + unchecked : '')
+          : flagged
+            ? yellow(`⚠ ${flagged} to review`) + (unchecked ? ' · ' + unchecked : '')
+            : unchecked || green('✓ No known-vulnerable models')) +
+        '\n',
     );
   }
 
@@ -4028,7 +4222,7 @@ async function cmdModels(flags, positional) {
 
 function cmdHelp() {
   console.log(`
-${bold(cyan('Shomra'))} ${dim('— the firewall for AI agents · v' + VERSION)}
+${bold(cyan('Shomra'))} ${dim('— adversarial assurance for AI agents · v' + VERSION)}
 
 ${bold('USAGE')}
   shomra <command> [options]
@@ -4047,6 +4241,7 @@ ${bold('COMMANDS')}
   ${cyan('why')}           Explain a finding + false-positive read ${dim('<file> [--kind …] [--json]')}
   ${cyan('gate')}          Vet ONE AI artifact before install     ${dim('<file> [--kind …] [--strict] [--json]  ·  --all for a whole repo (CI)')}
   ${cyan('scan')}          Discover AI tooling on this machine    ${dim('[--report] [--json] [--path <dir>]')}
+  ${cyan('report')}        Discover + send inventory to your Shomra org ${dim('(alias: scan --report) [--json]')}
   ${cyan('status')}        Show config, enrollment + firewall health
 
   ${dim('Setup — run once per machine / repo')}
@@ -4066,6 +4261,7 @@ ${bold('COMMANDS')}
   ${dim('Build safely')}
   ${cyan('new')}           Scaffold a secure-by-default artifact  ${dim('skill|command|subagent|agent-card|mcp|rules [name]')}
   ${cyan('mcp add')}       Vet an MCP server, then add it to a config ${dim('<name> <command…>|--url <url> [--config <f>] [--force]')}
+  ${cyan('mcp list')}      List the MCP servers in a config       ${dim('[--config <f>] [--json]')}
   ${cyan('mcp serve')}     Run Shomra AS an MCP server so agents call its checks ${dim('(check/scan_models/fix/explain tools)')}
 
   ${dim('Governance & advanced')}  ${dim('→')} ${bold('shomra admin')} ${dim('for the full list')}
@@ -4220,7 +4416,8 @@ ${bold('RUNTIME FIREWALL (multi-agent)')}
   Default target is Claude Code (unchanged for existing installs). Add
   ${bold('--agent <name>')} (comma-separated, or ${bold('all')}) to also wire in:
     ${dim('claude')} (Claude Code) · ${dim('cursor')} (Cursor) · ${dim('windsurf')} (Windsurf/Cascade) ·
-    ${dim('gemini')} (Gemini CLI) · ${dim('codex')} (OpenAI Codex CLI) · ${dim('copilot')} (GitHub Copilot CLI)
+    ${dim('gemini')} (Gemini CLI) · ${dim('codex')} (OpenAI Codex CLI) · ${dim('copilot')} (GitHub Copilot CLI) ·
+    ${dim('cline')} (Cline) · ${dim('aider')} (Aider — no tool hooks, so it is routed through the LLM Guard proxy)
   e.g. ${dim('shomra install-hook --agent cursor,windsurf')} or ${dim('shomra install-hook --agent all')}.
   Windsurf's post-hooks can flag/log but not withhold a result (vendor limit).
 
@@ -4237,11 +4434,19 @@ ${bold('RUNTIME FIREWALL (multi-agent)')}
   that skips a known-down backend. Fail-open by default (the local tier is still
   enforcing); SHOMRA_GUARD_STRICT=1 to also fail-closed on the server tier.
 
+${bold('EXIT CODES')}  ${dim('— one convention across every command')}
+  0   clean / pass
+  1   hard fail — BLOCK, vulnerable model, secret found, FAIL verdict, below --min, regression
+  2   soft fail — FLAG under --strict (REVIEW when strict)
+  3   usage / config error — not configured, bad flags, unknown command
+
 ${bold('ENV')}
   SHOMRA_API_KEY              API key (overrides config)
   SHOMRA_URL                  Backend URL (overrides config)
   SHOMRA_API_TIMEOUT_MS=30000 Per-request backend timeout for scan/gate/report (never hangs)
   SHOMRA_AGENT                Agent-identity handle presented as x-shomra-agent (llm-proxy + firewall)
+  SHOMRA_GATE_CONCURRENCY=8   Parallel backend gate/model-lookup calls in batch runs (1–32)
+  SHOMRA_GH_TOKEN             GitHub token for \`shomra pr\` (falls back to GITHUB_TOKEN)
   SHOMRA_GUARD_STRICT=1       Fail-closed on the server tier if the backend is unreachable
   SHOMRA_GUARD_LOCAL=0        Disable the on-machine Tier-0 guard (route everything to the server)
   SHOMRA_GUARD_IGNORE=<globs> Comma-separated file globs the runtime guard treats as known-safe (never
@@ -4250,6 +4455,10 @@ ${bold('ENV')}
   SHOMRA_GUARD_ALWAYS_ESCALATE=1  Send every call to the server (full telemetry, higher overhead)
   SHOMRA_GUARD_TIMEOUT_MS=2000    Per-call server timeout budget (default 2000)
   SHOMRA_GUARD_BREAKER_MS=30000   Skip the server for this long after a failure (0 disables)
+  SHOMRA_LLM_PROXY_BASE       Proxy base URL install-hook writes for Aider (default http://127.0.0.1:4141/openai/v1)
+  SHOMRA_MODEL_GUARD=0        Disable the model-load screen in the PreToolUse hook
+  SHOMRA_MODEL_CACHE=0        Disable the on-machine model-index verdict cache
+  SHOMRA_MODEL_CACHE_TTL_MS   Model-cache freshness window (default 7 days)
 `);
 }
 
@@ -4301,10 +4510,27 @@ const ADMIN_VERBS = new Set([
 
 async function main() {
   const [, , command, ...rest] = process.argv;
-  const { flags, positional } = parseFlags(rest);
+  const { flags, positional, unknown } = parseFlags(rest);
 
   if (command === 'help' || command === undefined || command === '--help' || command === '-h') {
     return cmdHelp();
+  }
+  if (command === '--version' || command === '-v' || command === 'version') {
+    console.log(VERSION); // single source: package.json (see VERSION above)
+    return;
+  }
+
+  // Unknown --flags used to silently no-op — the worst failure mode for a
+  // security gate (`--strcit` = strict mode silently off). Hook handlers are
+  // exempt: a vendor passing a new flag must never break every tool call.
+  const guardCmd = command === 'tool-guard' || command === 'result-guard';
+  if (unknown.length && !guardCmd) {
+    for (const u of unknown) {
+      const near = didYouMean(u, [...KNOWN_FLAGS]);
+      console.error(red(`✗ Unknown flag: --${u}`) + (near ? dim(`  (did you mean --${near}?)`) : ''));
+    }
+    console.error(dim('Run `shomra help` for the full option list.'));
+    process.exit(EXIT_USAGE);
   }
 
   // `shomra admin <verb> …` — the governance namespace.
@@ -4313,18 +4539,20 @@ async function main() {
     if (!sub || sub === 'help' || flags.help) return cmdAdminHelp();
     const fn = COMMANDS[sub];
     if (!fn || !ADMIN_VERBS.has(sub)) {
-      console.error(red(`Unknown admin command: ${sub ?? ''}`));
-      cmdAdminHelp();
-      process.exit(1);
+      const near = didYouMean(sub, [...ADMIN_VERBS]);
+      console.error(red(`✗ Unknown admin command: ${sub ?? ''}`) + (near ? `  did you mean ${bold(near)}?` : ''));
+      console.error(dim('Run `shomra admin` for the list.'));
+      process.exit(EXIT_USAGE);
     }
     return fn(flags, positional.slice(1));
   }
 
   const fn = COMMANDS[command];
   if (!fn) {
-    console.error(red(`Unknown command: ${command}`));
-    cmdHelp();
-    process.exit(1);
+    const near = didYouMean(command, [...Object.keys(COMMANDS), 'help', 'version', 'admin']);
+    console.error(red(`✗ Unknown command: ${command}`) + (near ? `  did you mean ${bold(near)}?` : ''));
+    console.error(dim('Run `shomra help` for the full command list.'));
+    process.exit(EXIT_USAGE);
   }
   return fn(flags, positional);
 }

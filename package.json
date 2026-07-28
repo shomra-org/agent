@@ -1,7 +1,7 @@
 {
   "name": "@shomra/agent",
-  "version": "0.2.11",
-  "description": "Shomra — a local-first security scanner and runtime firewall for AI agents, MCP servers, prompts, and models. Gates AI artifacts in your editor and CI.",
+  "version": "0.3.0",
+  "description": "Shomra — adversarial assurance for AI agents, as a local-first CLI. Blocks dangerous tool-calls before they run, attacks your own guardrails to prove they hold, and gates AI artifacts in your editor and CI.",
   "type": "module",
   "bin": {
     "shomra": "./shomra.mjs"

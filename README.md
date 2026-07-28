@@ -1,8 +1,10 @@
 # @shomra/agent
 
-**The firewall for AI agents**, as a local-first CLI. It sits inside your coding
-agent and CI and blocks dangerous tool-calls, shell commands and data
-exfiltration *before they run* — on your machine, even offline. It also vets AI
+**Adversarial assurance for AI agents**, as a local-first CLI. It sits inside
+your coding agent and CI and blocks dangerous tool-calls, shell commands and
+data exfiltration *before they run* — on your machine, even offline. Enrolled,
+it also attacks your org’s own guardrails (`shomra admin redteam`) and turns
+each breach into a false-positive-gated control (`shomra harden`). It also vets AI
 artifacts (MCP configs, Skills, slash commands, hooks, rules files) before they
 install. Start with a free on-machine scan — no signup.
 
@@ -74,7 +76,14 @@ install-lure prose) runs on-machine, so you get a genuine verdict even if the
 backend is unreachable. When enrolled + reachable, your **org policy** is layered
 on top.
 
-**Exit codes:** `0` = allowed · `1` = blocked (or `--strict` + backend outage) · `2` = flagged with `--strict`.
+**Exit codes** (one convention across every command):
+
+| Code | Meaning |
+|------|---------|
+| `0` | clean / pass |
+| `1` | hard fail — BLOCK, vulnerable model, secret found, FAIL verdict, below `--min`, regression (also `--strict` + backend outage) |
+| `2` | soft fail — FLAG under `--strict` (REVIEW when strict) |
+| `3` | usage / config error — not configured, bad flags, unknown command |
 
 **Backend outage:** by default it falls back to the on-machine verdict (org
 policy not applied). `--strict` fails closed (exit 1) because org policy can't be
@@ -153,6 +162,9 @@ runs local-first; with a key, your **org policy** (below) drives the verdict.
         with: { sarif_file: shomra.sarif }
 ```
 
+`shomra pr` accepts it too: bare `--sarif` writes SARIF to stdout,
+`--sarif=shomra.sarif` writes a file alongside the normal check-run output.
+
 ### Org policy + triage on top of CI
 
 When enrolled, the same **org policy** that governs the dashboard decides the CI
@@ -206,6 +218,36 @@ backend, behind a short timeout + circuit breaker — so a slow or down backend
 never freezes the agent. Fail-open by default; `SHOMRA_GUARD_STRICT=1` fails
 closed on the server tier.
 
+## Adopting Shomra on an existing repo
+
+A brand-new gate on a repo with history will flag things. Three layers make
+adoption friction-free — all of them re-grade the artifact, so a fully
+suppressed file drops to ALLOW and never fails the build:
+
+- **`shomra baseline`** records every current finding (line-independent
+  fingerprints) in `.shomra/baseline.json` — commit it so the whole team shares
+  it. From then on only findings introduced *after* the baseline fail; re-run it
+  to refresh after cleanups. Skip it per-run with `--no-baseline`.
+- **`.shomraignore`** — a repo file of `path/glob` lines (skip the file) or
+  `path/glob :: title-substring` lines (skip one finding class in those files).
+  The runtime firewall honors it too, so test fixtures and detection source
+  aren't withheld. Silence a single finding inline with `// shomra-ignore` (or
+  `# shomra-ignore`) on the finding's line or the line above, or opt a whole
+  file out with `shomra-ignore-file` in its first lines (works in JSON as a
+  `"_shomra": "shomra-ignore-file"` key). `--no-suppress` ignores all of this.
+- **`.shomra/policy.yml`** — policy-as-code, reviewed in PRs like any code:
+
+  ```yaml
+  block: high              # min severity that BLOCKS (critical|high|medium|low|none)
+  flag: medium             # min severity that FLAGS
+  allow:                   # finding-title substrings to always downgrade away
+    - "IPv4 address"
+  ```
+
+  For a local verdict the repo policy fully re-grades; when the backend
+  returned an org decision it can only make it *stricter* (worst-wins) — repo
+  config never loosens org enforcement. `--no-policy` skips it.
+
 ## Environment variables
 
 | Var | Purpose |
@@ -214,9 +256,17 @@ closed on the server tier.
 | `SHOMRA_URL` | Backend URL (overrides config) |
 | `SHOMRA_API_TIMEOUT_MS` | Per-request backend timeout (default 30000) |
 | `SHOMRA_AGENT` | Agent-identity handle presented to `llm-proxy` + firewall |
+| `SHOMRA_GATE_CONCURRENCY` | Parallel backend calls in batch gate / model lookups (default 8, 1–32) |
+| `SHOMRA_GH_TOKEN` | GitHub token for `shomra pr` (falls back to `GITHUB_TOKEN`) |
 | `SHOMRA_GUARD_STRICT` | `1` = firewall fails closed on the server tier |
 | `SHOMRA_GUARD_LOCAL` | `0` = disable the on-machine Tier-0 guard |
+| `SHOMRA_GUARD_IGNORE` | Comma-separated file globs the runtime guard treats as known-safe (adds to `.shomraignore`) |
+| `SHOMRA_GUARD_ALWAYS_ESCALATE` | `1` = send every call to the server (full telemetry, higher overhead) |
 | `SHOMRA_GUARD_TIMEOUT_MS` | Firewall per-call server timeout (default 2000) |
 | `SHOMRA_GUARD_BREAKER_MS` | Skip the server this long after a failure (default 30000; `0` disables) |
+| `SHOMRA_LLM_PROXY_BASE` | Proxy base URL `install-hook` writes for Aider (default `http://127.0.0.1:4141/openai/v1`) |
+| `SHOMRA_MODEL_GUARD` | `0` = disable the model-load screen in the PreToolUse hook |
+| `SHOMRA_MODEL_CACHE` | `0` = disable the on-machine model-index verdict cache |
+| `SHOMRA_MODEL_CACHE_TTL_MS` | Model-cache freshness window (default 7 days) |
 
 Run `shomra help` for the full command reference.
