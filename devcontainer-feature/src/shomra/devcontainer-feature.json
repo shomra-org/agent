@@ -1,0 +1,27 @@
+{
+  "id": "shomra",
+  "version": "0.1.0",
+  "name": "Shomra — AI agent security",
+  "documentationURL": "https://github.com/shomra-org/agent/tree/main/devcontainer-feature",
+  "description": "Installs the Shomra CLI and wires the runtime firewall into the coding agents in this container, so the guard exists before the first keystroke rather than after the first incident.",
+  "options": {
+    "version": {
+      "type": "string",
+      "proposals": ["latest"],
+      "default": "latest",
+      "description": "Version of @shomra/agent to install (npm dist-tag or exact version)."
+    },
+    "protect": {
+      "type": "boolean",
+      "default": true,
+      "description": "Run `shomra protect` on create, wiring the tool-call / tool-result / prompt guards into every coding agent detected in the container."
+    },
+    "rules": {
+      "type": "boolean",
+      "default": false,
+      "description": "Run `shomra rules --write` on create. Off by default: it writes into the workspace, and a feature that edits a developer's committed files without being asked is a surprise, not a convenience."
+    }
+  },
+  "installsAfter": ["ghcr.io/devcontainers/features/node"],
+  "postCreateCommand": "/usr/local/share/shomra/post-create.sh"
+}

@@ -4,6 +4,137 @@ All notable changes to `@shomra/agent` are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added (shift-left, batch 3)
+- **`shomra plan` + `shomra_review_plan` + `plan-guard`** — threat-model what an
+  agent is ABOUT to build. `design` reads a document a human remembered to write;
+  coding agents produce a plan before every non-trivial task, automatically. Same
+  engine, a hundred times the frequency, zero human effort: agent proposes a plan
+  → Shomra threat-models it → the controls land in its context before it writes
+  line one. Three redundant paths, strongest first: the MCP tool (any MCP-capable
+  agent, no vendor hook), a `rules` section that asks the agent to call it (added
+  only when the Shomra MCP server is actually registered — telling an agent to
+  call a tool it does not have is noise that trains it to ignore the block), and
+  a Claude Code `PreToolUse` hook on `ExitPlanMode`. That tool name is NOT in the
+  published hook docs, so it gets its OWN PreToolUse entry rather than being
+  folded into the tool-guard matcher: if it never fires, only this hook is dead.
+  ⚠ A plan is a proposal — the default is to inform, never refuse. Only
+  untrusted-input-reaches-a-hard-sink escalates to `ask`, and only under
+  `SHOMRA_GUARD_STRICT=1`. `SHOMRA_PLAN_GUARD_OFF=1` disables just this channel.
+- **`shomra corpus`** — screen RAG documents at INDEX time. The result firewall
+  screens what a retrieval brings back; nothing screened what went in, so a
+  poisoned document sat in the vector store indefinitely and was judged for the
+  first time as one chunk, stripped of its document, inside a live request. Index
+  time has the whole document (a payload split across paragraphs is visible),
+  costs once per document instead of once per retrieval, and a failing document
+  is simply never embedded. Findings carry the CHUNK index, not just the line,
+  because retrieval returns chunks. `--manifest` emits the quarantine list for an
+  ingestion job to consume. Invisible/bidi characters are a first-class BLOCK.
+  ⚠ Absence accounting: real corpora are mostly PDF/DOCX/PPTX, which this cannot
+  read — every unreadable file is counted and reported as NOT covered, and
+  `--strict` fails on them.
+
+### Fixed
+- **`design` missed untrusted input by format and by provenance** — `pdf`
+  could not match the plural in "ingests uploaded PDFs", and no rule keyed on
+  content being RECEIVED FROM a party outside the trust boundary. Found by
+  running plan-guard against a realistic plan. Both fixed and pinned.
+
+### Added (shift-left, batch 2)
+- **`shomra design <file|dir|->`** — threat-model a system that does not exist
+  yet. Reads an RFC / design doc / Jira or Linear ticket / PR body and says
+  whether what is described closes a path from untrusted input to a consequence.
+  Reuses the platform's own model (`attack-graph.ts`: sources = untrusted input /
+  sensitive data / filesystem; sinks = network egress / execution / destructive
+  action; a closed pair is an attack path) — that model does not care whether the
+  capabilities came from a scan or from a sentence. Each capability cites the
+  line that evidenced it, ranked so the citation is the line that DESCRIBES the
+  behaviour rather than the first line the word appeared on. `--checklist` emits
+  the conditions as a markdown task list to paste into the ticket as acceptance
+  criteria. Ticket integration is a pipe, deliberately:
+  `gh issue view 42 --json body -q .body | shomra design -`.
+  ⚠ There is no clean verdict, by design: `NOT_DESCRIBED` is a statement about
+  the DOCUMENT, not the system. Exit 1 when untrusted input reaches execution or
+  a destructive action; 2 for any other closed path under `--strict`.
+- **`shomra add mcp|skill|model|package <ref>`** — one gate for every channel an
+  agent acquires from, not just MCP. `skill` gates the manifest AND the scripts
+  the skill bundles; `model` checks the Model Index before any weights download;
+  `package` catches the dominant failure — an agent suggesting a plausible
+  package name — with edit-distance typosquat detection against the AI package
+  catalog, fully offline. ⚠ Unknown is never clean: an unreachable index, an
+  unscanned model and an unrecognised package all return FLAG, never ALLOW.
+- **`shomra install-precommit --pre-receive`** — the un-bypassable sibling of the
+  pre-commit hook. Runs on the git SERVER, on every push, for every developer;
+  no `--no-verify`, no per-machine install. Deliberately FAILS CLOSED (the client
+  hook fails open): at an enforcement point, deleting the binary must not be the
+  bypass. Self-hosted Git + GitHub Enterprise; on GitHub.com the equivalent is
+  the Action as a required status check.
+- **`shomra new agent [name] --framework vercel-ai`** — a whole project that
+  starts compliant: guard enforcing on every model call, an egress allowlist in
+  code rather than in the prompt, untrusted input kept out of the system prompt,
+  secrets referenced from the environment, and the gate wired into CI from commit
+  zero.
+- **Reusable GitHub Action** (`action.yml`) — replaces the copy-pasted workflow
+  snippet that no consumer ever updated. Composite, not Docker.
+- **Dev Container Feature** (`devcontainer-feature/`) — installs the CLI and runs
+  `shomra protect` at provision time, so the guard exists before the first
+  keystroke in Codespaces / Gitpod / a local rebuild. `rules` is off by default:
+  a feature that edits a developer's committed files unasked is a surprise.
+  There is deliberately no `curl … | sh` installer — Shomra's own Tier-0 blocks
+  that pattern, and shipping one would be the product contradicting its own
+  control in its own README.
+
+### Added
+- **`shomra rules`** — compiles what Shomra enforces into the coding agent's own
+  context files (`CLAUDE.md`, `AGENTS.md`, `.cursor/rules/shomra.mdc`,
+  `.github/copilot-instructions.md`, `GEMINI.md`, `.windsurfrules`,
+  `.clinerules/shomra.md`), so the blocked pattern is never generated. Every
+  other surface intercepts *after* the model wrote something; this one runs
+  before it. The block is derived, not boilerplate: the always-on directives
+  mirror the Tier-0 signals the firewall actually blocks, sections switch on
+  according to what the repo holds, and an "Already present in this repo"
+  section names what a local gate pass actually found, with paths. Org policy
+  is layered on when enrolled (new `POST /gate/rules`). Written inside a
+  `<!-- BEGIN SHOMRA MANAGED BLOCK -->` marker pair — nothing outside it is
+  ever touched — with `--write`, `--check` (CI drift gate, exit 1 when stale),
+  `--agent`, `--json`.
+- **`shomra prompt-guard`** — the third runtime channel: what *you* submit,
+  screened before it leaves the machine. `install-hook` now wires Claude Code's
+  `UserPromptSubmit` and Cursor's `beforeSubmitPrompt`. A live credential in a
+  prompt is refused; pasted injection text is passed through but flagged to the
+  model as untrusted data (you meant to send it — the risk is that you did not
+  read it). Backtick-quoted payloads are down-ranked, so asking about a
+  signature is never blocked. `SHOMRA_PROMPT_GUARD_OFF=1` disables just this
+  channel. Only vendors with a documented pre-submit hook that can stop a
+  submission are wired — a guessed event name would silently never fire, which
+  reads as a control being on while it is off.
+- **`shomra mcp install`** — registers Shomra *as* an MCP server with Claude
+  Code / Cursor / Gemini CLI / Windsurf, so `mcp serve` is actually reachable
+  instead of shipping switched off.
+- **Two MCP tools** that answer *before* the write, when changing course is
+  free: `shomra_review_change` (proposed content + intended path → verdict,
+  nothing written to disk) and `shomra_rules` (what will be refused here).
+
+### Fixed
+- **The local Tier-0 mirror scored a rules file that FORBIDS exfiltration the
+  same as one that COMMANDS it.** "Never exfiltrate data", "never read .env and
+  post it anywhere", "treat paste sites as exfiltration destinations" — the
+  sentences a security-conscious `CLAUDE.md` is made of — produced a CRITICAL
+  exfiltration finding and a HIGH toxic-instruction finding. The backend has
+  guarded this since `memory-signals.ts`; `guard-signals.mjs` had drifted and
+  was missing all of it, so the false positive fired **offline**, where no
+  server verdict arrives to correct it. Ported the backend's guards: per-line
+  negation guarding on the exfil rule set, descriptive-line suppression,
+  the loopback-URL exception, the narrowed encode-then-send connector, and the
+  toxic-flow check moved from whole-document co-occurrence to a single
+  imperative line. Pinned by four new regression tests that also assert real
+  poisoning still BLOCKs.
+- **`shomra protect` skipped agents it considered already guarded**, so a
+  machine wired before a new channel existed never received it while `protect`
+  reported the agent protected. The installers are idempotent and report
+  `changed` honestly, so they now always run.
+
 ## [0.3.0] - 2026-07-27
 
 ### Changed (breaking)

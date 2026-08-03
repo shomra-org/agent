@@ -1,0 +1,86 @@
+# Shomra as a reusable GitHub Action.
+#
+# The README already showed the workflow YAML to hand-write. That is a snippet
+# every consumer copies and then never updates, so a fix here reached nobody. A
+# composite action is the same three steps behind a version tag they can bump.
+#
+# Composite, not Docker: a Docker action pays an image pull on every run for a
+# zero-dependency Node CLI, and it cannot see the runner's own Node. This runs on
+# the runner directly.
+name: Shomra
+description: Gate the AI artifacts, models and secrets in a repo — MCP configs, skills, slash commands, hooks and rules files.
+author: Shomra
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  args:
+    description: >-
+      The full shomra command line to run, without the binary name.
+      Examples: "check --strict", "check --staged", "gate --all . --sarif",
+      "design docs/ --strict", "rules --check".
+    required: false
+    default: check --strict
+  version:
+    description: Version of @shomra/agent to run (npm dist-tag or exact version).
+    required: false
+    default: latest
+  api-key:
+    description: >-
+      Shomra API key (use a CI key, shm_ci_…). Optional — every gate runs
+      local-first, so the action works with no key at all; a key adds org policy,
+      triage state and the dashboard record.
+    required: false
+  url:
+    description: Shomra backend URL. Required only when api-key is set.
+    required: false
+  working-directory:
+    description: Directory to run in.
+    required: false
+    default: .
+  fail-on-flag:
+    description: >-
+      Fail the job on FLAG as well as BLOCK. Equivalent to appending --strict;
+      set false to let flagged artifacts through with a warning.
+    required: false
+    default: 'true'
+
+outputs:
+  exit-code:
+    description: The CLI exit code — 0 clean, 1 hard fail (BLOCK/secret/vulnerable model), 2 soft fail (FLAG under strict).
+    value: ${{ steps.run.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Run Shomra
+      id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        SHOMRA_API_KEY: ${{ inputs.api-key }}
+        SHOMRA_URL: ${{ inputs.url }}
+      run: |
+        set -o pipefail
+        args="${{ inputs.args }}"
+        # --strict is appended rather than baked into the default, so a caller who
+        # passes their own args still gets the fail-on-flag behaviour they asked
+        # for, and passing --strict twice stays harmless.
+        if [ "${{ inputs.fail-on-flag }}" = "true" ] && [[ "$args" != *"--strict"* ]]; then
+          args="$args --strict"
+        fi
+        set +e
+        npx --yes "@shomra/agent@${{ inputs.version }}" $args
+        code=$?
+        set -e
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        # Exit codes are the contract (0 clean · 1 hard fail · 2 soft fail ·
+        # 3 usage). Re-raise rather than swallow: an action that always succeeds
+        # is a required check that checks nothing.
+        exit $code

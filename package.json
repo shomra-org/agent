@@ -19,6 +19,7 @@
     "code-sast.mjs",
     "model-refs.mjs",
     "ai-usage.mjs",
+    "design.mjs",
     "README.md",
     "LICENSE",
     "NOTICE"

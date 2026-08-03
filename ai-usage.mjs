@@ -60,6 +60,35 @@ const PROVIDERS = [
   { id: 'llama-cpp', label: 'llama.cpp', category: 'local-runtime', npm: ['node-llama-cpp'], py: ['llama_cpp'], call: [/\bLlama\s*\(\s*model_path\s*=/] },
 ];
 
+/**
+ * Every AI package name this catalog knows, flattened for name comparison at
+ * ACQUISITION time (`shomra add package`). A typosquat is only detectable
+ * against a list of the real names, and this catalog is already that list —
+ * maintaining a second copy is how the two drift and the check quietly stops
+ * matching the packages people actually install.
+ *
+ * `ecosystem` matters: `openai` exists on both npm and PyPI, but `crewai` is
+ * PyPI-only, so `npm i crewai` is a different and more suspicious event than
+ * `pip install crewai`.
+ */
+export const KNOWN_AI_PACKAGES = (() => {
+  const out = [];
+  const seen = new Set();
+  const add = (name, ecosystem, p) => {
+    const key = `${ecosystem}:${name}`;
+    if (!name || seen.has(key)) return;
+    seen.add(key);
+    out.push({ name, ecosystem, provider: p.id, label: p.label, category: p.category });
+  };
+  for (const p of PROVIDERS) {
+    for (const n of p.npm ?? []) add(n, 'npm', p);
+    for (const n of p.npmPrefix ?? []) add(n.replace(/\/$/, ''), 'npm', p);
+    for (const n of p.py ?? []) add(n, 'pypi', p);
+    for (const n of p.pyRoot ?? []) add(n, 'pypi', p);
+  }
+  return out;
+})();
+
 const MODEL_ON_LINE = /\bmodel(?:_?id|_?name)?\s*[=:]\s*['"]([A-Za-z0-9][\w.:\/-]{1,80})['"]/;
 const MAX_CODE_LEN = 240;
 const clipLine = (s) => (s.length > MAX_CODE_LEN ? s.slice(0, MAX_CODE_LEN) + '…' : s);
