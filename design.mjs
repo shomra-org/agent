@@ -46,11 +46,16 @@ export const CAP_LABEL = {
  * the attack story, so a path reads as a sentence about the system rather than a
  * list of flags.
  *
- * Rules are matched per line so the evidence can cite one, and so a document
- * that mentions a capability in a "we will not do X" sentence is still surfaced
- * — unlike the runtime detectors, a design doc's negations are DESIGN DECISIONS
- * worth showing the reader, not false positives to suppress. The reader decides.
+ * Rules are matched per line so the evidence can cite one.
+ *
+ * ⚠ A line that DISCLAIMS a capability must not grant it. This originally said
+ * the opposite — that a "we will not do X" sentence was a design decision worth
+ * surfacing — and that was wrong: granting the flag from a disclaimer invents a
+ * phantom attack path out of the one sentence that rules it out, which is the
+ * most misleading output this tool can produce. "The tool has no access to
+ * customer data" is the designer telling you the source does not exist.
  */
+const DISCLAIMER_RE = /\b(no|never|not|without|excludes?|excluding|neither|nor)\b[^.\n]{0,30}\b(access|read|write|permission|abilit|able|connection|integration)\w*|\b(does |do |will |can |must )(not|n't)\b|\bout of scope\b|\bnon-goals?\b|\bis not (able|permitted|allowed)\b/i;
 const CAP_RULES = [
   // ── SOURCES ────────────────────────────────────────────────────────────────
   { cap: 'injection', what: 'end-user or customer text', re: /\b(user|customer|client|end[- ]user)[- ]?(input|message|text|query|prompt|request|content|submission)\b/i },
@@ -79,12 +84,15 @@ const CAP_RULES = [
   { cap: 'readsSensitive', what: 'private source code', re: /\bprivate (repo|repositor\w+|source|code)\b|\bproprietary (code|source)\b|\binternal (repo|codebase|wiki|docs?)\b/i },
   { cap: 'readsSensitive', what: 'object storage', re: /\bS3 bucket\b|\b(blob|object) storage\b|\bGCS bucket\b|\bdata lake\b/i },
 
-  { cap: 'filesystem', what: 'file writes', re: /\bwrit\w+\b.{0,25}\b(file|disk|filesystem|directory|folder|repo)\b|\b(file ?system|local files?) (access|write)\b|\bcommits? (code|files?|changes?)\b/i },
+  // Plurals throughout: "writes the generated files to the repo" is the normal
+  // phrasing, and `\bfile\b` cannot match it. Same blind spot as `\bpdf\b` vs
+  // "PDFs" — assume every noun here arrives plural at least half the time.
+  { cap: 'filesystem', what: 'file writes', re: /\bwrit\w+\b[^.\n]{0,25}\b(files?|disks?|filesystems?|director(y|ies)|folders?|repos?|repositor(y|ies))\b|\b(file ?system|local files?) (access|write)\b|\bcommits? (code|files?|changes?)\b/i },
   { cap: 'filesystem', what: 'workspace or repo checkout', re: /\b(clones?|checks? out|checkout)\b.{0,25}\b(repo|repositor\w+)\b|\bworkspace (access|mount|volume)\b/i },
 
   // ── SINKS ──────────────────────────────────────────────────────────────────
   { cap: 'network', what: 'outbound API calls', re: /\bcalls?\b.{0,30}\b(external|third[- ]party|public|remote|partner)\b.{0,20}\bapi\b|\boutbound (request|call|http|traffic)\b|\begress\b/i },
-  { cap: 'network', what: 'webhooks', re: /\bwebhooks?\b|\bpost(s|ing)?\b.{0,25}\b(to an? )?(endpoint|url|callback)\b/i },
+  { cap: 'network', what: 'webhooks', re: /\bwebhooks?\b|\bpost(s|ing|ed)?\b[^.\n]{0,30}\bto\b[^.\n]{0,25}\b(endpoints?|urls?|callbacks?|apis?|services?|partners?|systems?)\b/i },
   { cap: 'network', what: 'sending email or messages', re: /\bsends?\b.{0,25}\b(e-?mail|message|notification|sms|slack|dm)\b|\bnotif(y|ies|ication)\b.{0,25}\b(user|customer|channel|slack|teams|email)\b|\bsmtp\b/i },
   { cap: 'network', what: 'publishing or uploading data', re: /\b(publish|upload|export|sync|push)\w*\b.{0,30}\b(to|into)\b.{0,25}\b(external|third[- ]party|cloud|bucket|service|partner|crm|warehouse)\b/i },
   { cap: 'network', what: 'a model provider call', re: /\b(openai|anthropic|gemini|bedrock|azure openai|mistral|cohere|hugging ?face)\b|\bLLM (api|provider|call)\b|\bmodel (provider|endpoint|api)\b/i },
@@ -95,7 +103,10 @@ const CAP_RULES = [
   { cap: 'exec', what: 'agent tool calls', re: /\b(tool[- ]call|function[- ]call|tool use|agentic loop|autonomous(ly)?)\b|\bagent (executes?|acts?|takes? actions?)\b/i },
 
   { cap: 'destructive', what: 'deleting data', re: /\bdelet\w+|\bremov\w+\b.{0,20}\b(record|row|file|user|account|data)\b|\bpurge\b|\bdrop (table|database)\b|\btruncat\w+/i },
-  { cap: 'destructive', what: 'moving money', re: /\b(refund|payment|charge|invoice|payout|transfer|billing|subscription|purchase|order)s?\b|\bstripe\b|\bmoves? money\b/i },
+  // A money NOUN alone is not a capability — "the dashboard displays the refund
+  // history" is a read. The line has to name an act that MOVES the money, so the
+  // verb is required and read-only verbs are not on the list.
+  { cap: 'destructive', what: 'moving money', re: /\b(issues?|issuing|processes|processing|triggers?|initiates?|creates?|approves?|grants?|sends?|makes?|charges?|refunds?|voids?|cancels?)\b[^.\n]{0,30}\b(refunds?|payments?|charges?|invoices?|payouts?|transfers?|subscriptions?|purchases?|orders?)\b|\bmoves? money\b|\bthrough stripe\b|\bvia stripe\b/i },
   { cap: 'destructive', what: 'changing access or state', re: /\b(revok\w+|disabl\w+|suspend\w+|deactivat\w+|cancel\w*|ban\w*)\b.{0,25}\b(user|account|access|key|token|subscription|service)\b|\bgrants? (access|permission|role)\b/i },
   { cap: 'destructive', what: 'writing to production', re: /\bwrit\w+\b.{0,25}\bprod(uction)?\b|\bprod(uction)?\b.{0,20}\bwrite (access|path)\b|\bmutat\w+\b.{0,25}\b(prod|live|customer) (data|state)\b/i },
 ];
@@ -123,6 +134,9 @@ export function capsFromProse(text) {
     // Code blocks in a design doc are illustrative snippets, not statements of
     // intent — and they are exactly where a scanner's vocabulary produces noise.
     if (inFence || isSkippableLine(line)) continue;
+    // A disclaimer names the capability in order to rule it out. Granting the
+    // flag here would invent an attack path from the sentence that removes it.
+    if (DISCLAIMER_RE.test(line)) continue;
 
     for (const r of CAP_RULES) {
       const m = r.re.exec(line);

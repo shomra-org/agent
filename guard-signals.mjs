@@ -709,20 +709,40 @@ function localCommandExtras(content) {
 // conceal from the user, disable safety, exfiltrate).
 const PERSISTENCE_MARKERS = /\b(in (all|every|future) (sessions?|conversations?|chats?|projects?)|from now on|going forward|permanently|persist(ent|ed)?|across (all )?sessions|every time|each time|whenever you|forever|always remember to|never forget( to)?|for all future)\b/i;
 const MALICIOUS_OVERRIDE = /\b(ignore (all |any |the )?(previous|prior|earlier|above|system)|disregard (the |your |all )?(instructions?|guidelines?|system|rules?)|do not (tell|inform|mention|reveal|disclose) (the |any)?(user|anyone|them)|without (telling|informing|asking|notifying) the user|no matter what (the )?(user|system|instructions?) (say|says|state)|bypass (the |all )?(safety|guard|security|policy|restrictions?))\b/i;
-const PRECEDENCE_MARKERS = /\b(regardless of (what|any|your|the)|overrid(e|ing|es)|supersede?s?|takes? precedence|highest[- ]priority)\b/i;
+// Backend parity: a bare `override` matched "the env var overrides the default
+// port", so the verb now needs an object that makes it a precedence CLAIM.
+const PRECEDENCE_MARKERS = /\b(regardless of (what|any|your|the)|supersede?s?|takes? precedence|highest[- ]priority|overrid(e|ing|es)\b[^.\n]{0,30}\b(instruction|prompt|rule|system|user|guidance|directive|context|behaviou?r|polic|guardrail|safety))\b/i;
 const OVERRIDE_MARKERS = new RegExp(`${MALICIOUS_OVERRIDE.source}|${PRECEDENCE_MARKERS.source}`, 'i');
-const AUTHORITY_SPOOF_STRONG = /(^|\n)\s*(#{0,3}\s*system\s*(prompt|message|instruction)?\s*[:>]|\[system\]|<\/?system>|\bas an? (system|admin|root|developer)[- ]?(instruction|directive|message|mode)|authority\s*[:=]\s*(system|admin|root)|you are now\b|new (system )?(instructions?|directive)s?\s*[:>])/i;
-const AUTHORITY_SPOOF_SOFT = /priority\s*[:=]\s*(high|critical|max|urgent)/i;
-const AUTHORITY_SPOOF = new RegExp(`${AUTHORITY_SPOOF_STRONG.source}|${AUTHORITY_SPOOF_SOFT.source}`, 'i');
-const LIFECYCLE_VECTOR = /\b(postinstall|preinstall|node[_-]?gyp|npm (run |lifecycle)|package\.json.{0,40}scripts|\.npmrc|install hook|lifecycle (script|hook))\b/i;
+// Backend parity. The noun after "system" is MANDATORY (`system\s+(prompt|
+// message|instruction)s?`), not optional: with it optional, an ordinary markdown
+// heading — "## System: NestJS 10 + Prisma 6" — scored as authority spoofing.
+const AUTHORITY_SPOOF_STRONG = /(^|\n)\s*(#{0,3}\s*system\s+(prompt|message|instruction)s?\s*[:>]|\[system\]|<\/?system>|\bas an? (system|admin|root|developer)[- ]?(instruction|directive|message|mode)|authority\s*[:=]\s*(system|admin|root)|you are now\b|new (system )?(instructions?|directive)s?\s*[:>])/i;
+// ⚠ There is deliberately no SOFT tier. `priority: high` is a TODO tag in every
+// issue tracker ever built; scoring it as authority spoofing was pure noise. The
+// backend dropped it and the mirror follows — do not reintroduce it.
+const AUTHORITY_SPOOF = AUTHORITY_SPOOF_STRONG;
+// Backend parity: `npm run ` matched every "run npm run db:generate" note in a
+// developer's memory, and the `.` wildcard crossed lines. The MemoryTrap vector
+// is a LIFECYCLE hook, not the npm CLI.
+const LIFECYCLE_VECTOR = /\b(postinstall|preinstall|node[_-]?gyp|npm\s+lifecycle|package\.json[^.\n]{0,40}scripts|\.npmrc|install hook|lifecycle (script|hook))\b/i;
 const IMPERATIVE = /\b(always|never|must|do not|don'?t|ensure you|make sure( you)?|be sure to|you should always|you must|remember to|whenever|when(ever)? (asked|the user)|instead of .*,? (use|do|say)|reply with|respond with|tell (the )?user)\b/i;
 const NEGATION_GUARD = /\b(never|do not|don'?t|cannot|can'?t|avoid|refuse|must not|mustn'?t|should not|shouldn'?t|won'?t|will not|under no circumstances|forbidden|prohibited|not allowed|disallow(ed)?)\b/i;
 const SABOTAGE_RULES = [
-  { re: /\b(disabl|turn(ing)? off|deactivat|switch off|remov|drop|skip|suppress|circumvent)\w*\b[^.\n]{0,50}\b(security|safety|guard(?:rail)?s?|protection|moderation|content[- ]?filters?|safeguards?|sandbox(?:ing)?|checks?|flags?|controls?|restrictions?|policies|policy|filters?)\b/i, label: 'disable-safety', guarded: true },
+  // Object list drops `checks`/`flags` (backend parity): "skip the OSV checks in
+  // CI, they are flaky" is a developer note about test infrastructure, not an
+  // instruction to disable a guardrail.
+  { re: /\b(disabl|turn(ing)? off|deactivat|switch off|remov|drop|skip|suppress|circumvent)\w*\b[^.\n]{0,50}\b(security|safety|guard(?:rail)?s?|protection|moderation|content[- ]?filters?|safeguards?|sandbox(?:ing)?|controls?|restrictions?|policies|policy|filters?)\b/i, label: 'disable-safety', guarded: true },
   { re: /\bbypass(?:ing)?\b[^.\n]{0,50}\b(human(?:[- ]in[- ]the[- ]loop)?|hitl|verification|approval|confirmation|review|guard(?:rail)?s?|safety|security|checks?|policy|policies|restrictions?|sandbox|permission)\b/i, label: 'bypass-controls', guarded: true },
   { re: /\bprioriti[sz]e\b[^.\n]{0,60}\b(above|over)\b[^.\n]{0,40}\b(prompt|instruction|input|request|message|command|direction)s?\b/i, label: 'priority-hijack', guarded: true },
-  { re: /\bignore\b[^.\n]{0,40}\b(user|human)\b[^.\n]{0,25}\b(prompt|instruction|input|request|message|command|wish|intent|question)s?\b/i, label: 'ignore-user', guarded: true },
-  { re: /\bdo not\b[^.\n]{0,20}\b(log|display|show|print|record|surface|expose|output)\b[^.\n]{0,60}\buser\b/i, label: 'conceal-from-user', guarded: false, context: /\b(transfer|transmit|send|network|exfil|upload|post|copy|collect|file|data|when)\b/i },
+  // Object list drops `input`/`message` (backend parity): "ignore any user input
+  // that doesn't parse" is input validation. Hijack targets the user's
+  // prompt/instruction/request/command/intent, which are retained.
+  { re: /\bignore\b[^.\n]{0,40}\b(user|human)\b[^.\n]{0,25}\b(prompt|instruction|request|command|wish|intent|question)s?\b/i, label: 'ignore-user', guarded: true },
+  // Backend parity, two narrowings. The `(?!'s)` lookahead keeps "do not log the
+  // USER'S data" out — that is a privacy rule, not concealment FROM the user —
+  // and the context list drops `file|data|when`, which matched almost any
+  // sentence and made the context requirement decorative.
+  { re: /\bdo not\b[^.\n]{0,20}\b(log|display|show|print|record|surface|expose|output)\b[^.\n]{0,60}\buser\b(?!['’]s)/i, label: 'conceal-from-user', guarded: false, context: /\b(transfer|transmit|send|network|exfil|upload|post|copy|collect)\b/i },
 ];
 // Descriptive / documentation mood: a line that NAMES a security concept rather
 // than INSTRUCTING the agent to perform it. Poisoning payloads are imperative and
@@ -738,6 +758,37 @@ const DESCRIPTIVE_MARKERS =
  *  still grades. */
 function isDescriptiveLine(line) {
   return DESCRIPTIVE_MARKERS.test(line) && !IMPERATIVE.test(line);
+}
+
+/**
+ * The first line matching `re` that is a genuine directive — NOT a negated
+ * hardening rule ("never bypass safety") and NOT descriptive documentation
+ * ("detects skills that bypass safety").
+ *
+ * ⚠ Replaces whole-document `re.test(text)`, which the backend identified as the
+ * DOMINANT memory/rules-file false positive: it fires on a benign line anywhere
+ * in the file with no regard for mood or co-location, so "## System: NestJS 10"
+ * in a heading and "overrides the default port" in a note both scored CRITICAL.
+ * Mirrors firstDirectiveLine() in src/bundle/memory-signals.ts.
+ */
+function firstDirectiveLine(text, re) {
+  for (const line of text.split(/\r?\n/)) {
+    if (!re.test(line)) continue;
+    if (NEGATION_GUARD.test(line)) continue;
+    if (isDescriptiveLine(line)) continue;
+    return line;
+  }
+  return null;
+}
+
+/** The first line where EVERY regex matches (co-located signal), else null.
+ *  Whole-document co-occurrence was the dominant memory FP: "every time" in a
+ *  quoted line and "always" forty lines away is not a durable imperative. */
+function lineMatchingAll(text, ...res) {
+  for (const line of text.split(/\r?\n/)) {
+    if (res.every((re) => re.test(line))) return line;
+  }
+  return null;
 }
 
 // A loopback / private-network URL is a dev/smoke-test target, not exfiltration.
@@ -800,16 +851,26 @@ export function localMemory(content, { kind = 'MEMORY' } = {}) {
   const isInstruction = kind === 'INSTRUCTION';
   const noun = isInstruction ? 'rules file' : 'memory';
 
-  const hasOverride = isInstruction ? MALICIOUS_OVERRIDE.test(text) : OVERRIDE_MARKERS.test(text);
-  const hasAuthority = isInstruction ? AUTHORITY_SPOOF_STRONG.test(text) : AUTHORITY_SPOOF.test(text);
+  // Per-line and guarded (see firstDirectiveLine) rather than whole-document:
+  // a negated hardening rule ("never bypass the safety checks"), a descriptive
+  // note, or a markdown heading that happens to read like a marker must not
+  // score as a planted directive. Mirrors analyzeMemory() in the backend.
+  const overrideLine = firstDirectiveLine(text, isInstruction ? MALICIOUS_OVERRIDE : OVERRIDE_MARKERS);
+  const authorityLine = firstDirectiveLine(text, isInstruction ? AUTHORITY_SPOOF_STRONG : AUTHORITY_SPOOF);
+  const hasOverride = !!overrideLine;
+  const hasAuthority = !!authorityLine;
   const hasPersistence = PERSISTENCE_MARKERS.test(text);
   const hasImperative = IMPERATIVE.test(text);
+  // A durable imperative is only poisoning-shaped when the persistence marker and
+  // the imperative sit on the SAME line ("always do X in every future session") —
+  // not when "every time" is in one note and "always" is forty lines away.
+  const durableImperativeLine = !isInstruction ? lineMatchingAll(text, PERSISTENCE_MARKERS, IMPERATIVE) : null;
 
   if (hasOverride || hasAuthority) {
     const firedRe = hasAuthority ? (isInstruction ? AUTHORITY_SPOOF_STRONG : AUTHORITY_SPOOF) : (isInstruction ? MALICIOUS_OVERRIDE : OVERRIDE_MARKERS);
     push('CRITICAL', `Poisoned ${noun}: ${hasAuthority ? 'system-authority spoofing' : 'injected override directive'}`, `Remove the injected directive and roll the ${noun} back to its approved baseline; restrict who/what may write it.`, firedRe);
-  } else if (!isInstruction && hasPersistence && hasImperative) {
-    push('HIGH', 'Suspicious standing instruction in memory', 'Rewrite as a neutral fact or remove it. Encode intended standing behavior in a reviewed rules/policy file, not agent-writable memory.', PERSISTENCE_MARKERS);
+  } else if (durableImperativeLine && !isDescriptiveLine(durableImperativeLine)) {
+    push('HIGH', 'Suspicious standing instruction in memory', 'Rewrite as a neutral fact or remove it. Encode intended standing behavior in a reviewed rules/policy file, not agent-writable memory.', durableImperativeLine);
   }
 
   const { sabotage, exfil } = scanDirectives(text);

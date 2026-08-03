@@ -476,20 +476,62 @@ function detectEnv() {
     return undefined;
   };
   let ci = null;
-  if (e.GITHUB_ACTIONS) ci = { ciProvider: 'github-actions', repo: e.GITHUB_REPOSITORY, ref: e.GITHUB_REF_NAME, commit: e.GITHUB_SHA };
-  else if (e.GITLAB_CI) ci = { ciProvider: 'gitlab-ci', repo: e.CI_PROJECT_PATH, ref: e.CI_COMMIT_REF_NAME, commit: e.CI_COMMIT_SHA };
-  else if (e.CIRCLECI) ci = { ciProvider: 'circleci', repo: e.CIRCLE_PROJECT_REPONAME, ref: e.CIRCLE_BRANCH, commit: e.CIRCLE_SHA1 };
-  else if (e.TF_BUILD) ci = { ciProvider: 'azure-pipelines', repo: e.BUILD_REPOSITORY_NAME, ref: e.BUILD_SOURCEBRANCHNAME, commit: e.BUILD_SOURCEVERSION };
-  else if (e.BITBUCKET_BUILD_NUMBER) ci = { ciProvider: 'bitbucket-pipelines', repo: e.BITBUCKET_REPO_FULL_NAME, ref: e.BITBUCKET_BRANCH, commit: e.BITBUCKET_COMMIT };
-  else if (e.JENKINS_URL) ci = { ciProvider: 'jenkins', repo: pick('JOB_NAME'), ref: e.GIT_BRANCH, commit: e.GIT_COMMIT };
-  else if (e.CI) ci = { ciProvider: 'ci', repo: undefined, ref: undefined, commit: undefined };
+  // `repoUrl` is the FULL remote URL, and it is the field that matters: `repo`
+  // is an owner/name slug with no host, so it cannot identify a repository (see
+  // the backend's common/repo-identity.ts). Every provider below exposes a real
+  // URL variable — send it, and let the slug stay a display label.
+  if (e.GITHUB_ACTIONS)
+    ci = {
+      ciProvider: 'github-actions',
+      repo: e.GITHUB_REPOSITORY,
+      // GITHUB_SERVER_URL is github.com on the hosted runner and the appliance
+      // host on GitHub Enterprise Server — which is exactly the distinction the
+      // slug loses.
+      repoUrl: e.GITHUB_SERVER_URL && e.GITHUB_REPOSITORY ? `${e.GITHUB_SERVER_URL.replace(/\/+$/, '')}/${e.GITHUB_REPOSITORY}` : undefined,
+      ref: e.GITHUB_REF_NAME,
+      commit: e.GITHUB_SHA,
+    };
+  else if (e.GITLAB_CI)
+    ci = { ciProvider: 'gitlab-ci', repo: e.CI_PROJECT_PATH, repoUrl: e.CI_PROJECT_URL, ref: e.CI_COMMIT_REF_NAME, commit: e.CI_COMMIT_SHA };
+  else if (e.CIRCLECI)
+    ci = {
+      ciProvider: 'circleci',
+      repo: e.CIRCLE_PROJECT_REPONAME,
+      repoUrl: e.CIRCLE_REPOSITORY_URL,
+      ref: e.CIRCLE_BRANCH,
+      commit: e.CIRCLE_SHA1,
+    };
+  else if (e.TF_BUILD)
+    ci = {
+      ciProvider: 'azure-pipelines',
+      repo: e.BUILD_REPOSITORY_NAME,
+      repoUrl: e.BUILD_REPOSITORY_URI,
+      ref: e.BUILD_SOURCEBRANCHNAME,
+      commit: e.BUILD_SOURCEVERSION,
+    };
+  else if (e.BITBUCKET_BUILD_NUMBER)
+    ci = {
+      ciProvider: 'bitbucket-pipelines',
+      repo: e.BITBUCKET_REPO_FULL_NAME,
+      repoUrl: e.BITBUCKET_GIT_HTTP_ORIGIN,
+      ref: e.BITBUCKET_BRANCH,
+      commit: e.BITBUCKET_COMMIT,
+    };
+  // Jenkins' JOB_NAME is a job label, NOT a repository — it is kept as the
+  // display `repo` but must never be completed into a URL. GIT_URL is the real
+  // remote when the job checked one out.
+  else if (e.JENKINS_URL) ci = { ciProvider: 'jenkins', repo: pick('JOB_NAME'), repoUrl: pick('GIT_URL'), ref: e.GIT_BRANCH, commit: e.GIT_COMMIT };
+  else if (e.CI) ci = { ciProvider: 'ci', repo: undefined, repoUrl: undefined, ref: undefined, commit: undefined };
 
   if (ci) {
+    // The checkout on the runner is the same repository the provider variables
+    // describe, so git fills any variable the provider didn't set.
     const git = gitContext();
     return {
       environment: 'CI',
       ciProvider: ci.ciProvider,
       repo: ci.repo ?? git.repo,
+      repoUrl: ci.repoUrl ?? git.repoUrl,
       ref: ci.ref ?? git.ref,
       commit: ci.commit ?? git.commit,
     };
@@ -515,7 +557,20 @@ function gitContext() {
     const m = origin.match(/[:/]([^/:]+\/[^/]+?)(?:\.git)?$/);
     repo = m ? m[1] : undefined;
   }
-  return { repo, ref: run('rev-parse --abbrev-ref HEAD'), commit: run('rev-parse HEAD') };
+  // ⚠ `repo` above is an owner/name slug with the HOST STRIPPED, so it is a
+  // display label and nothing more: `acme/api` on github.com and on a
+  // self-hosted GitLab produce the identical string, and keying developer
+  // activity on it would attribute one org's work to another org's repository.
+  // The raw origin URL is sent alongside it; the backend canonicalises that
+  // into the join key (common/repo-identity.ts).
+  //
+  // Credentials in a remote (`https://x-token:ghp_…@host/owner/repo`) are
+  // stripped here rather than at the backend — a token should not leave the
+  // machine at all, and the backend's key would drop it anyway, so nothing is
+  // lost by removing it early.
+  let repoUrl = origin || undefined;
+  if (repoUrl) repoUrl = repoUrl.replace(/^([a-z][\w+.-]*:\/\/)[^/@]*@/i, '$1');
+  return { repo, repoUrl, ref: run('rev-parse --abbrev-ref HEAD'), commit: run('rev-parse HEAD') };
 }
 
 /**
