@@ -515,6 +515,50 @@ function gitContext() {
   return { repo, ref: run('rev-parse --abbrev-ref HEAD'), commit: run('rev-parse HEAD') };
 }
 
+/**
+ * Relative paths of the files shipped ALONGSIDE the gated file — names only.
+ *
+ * A `shomra gate ./skills/foo/SKILL.md` sends one file, so a `luau.exe` sitting
+ * next to it is never transmitted and the backend cannot see the shape of the
+ * install at all. This walks the artifact's own directory (bounded) and sends
+ * the LISTING, which costs nothing in privacy terms — no bytes, no content —
+ * and is exactly what the co-occurrence rules need.
+ *
+ * Total: any failure returns [] and the backend reports the checks as not
+ * attempted. Never throws — a listing problem must not fail an install check.
+ */
+function collectSiblings(fullTarget, relPath) {
+  const MAX = 400;
+  const MAX_DEPTH = 3;
+  const SKIP = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', 'dist', 'build']);
+  if (!fullTarget || !relPath) return [];
+  try {
+    const root = path.dirname(fullTarget);
+    const rootRel = path.dirname(relPath);
+    const out = [];
+    const walk = (dir, depth) => {
+      if (out.length >= MAX || depth > MAX_DEPTH) return;
+      let entries;
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (out.length >= MAX) return;
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          if (!SKIP.has(e.name)) walk(full, depth + 1);
+          continue;
+        }
+        if (!e.isFile() || full === fullTarget) continue;
+        const rel = path.relative(root, full).split(path.sep).join('/');
+        out.push(rootRel && rootRel !== '.' ? `${rootRel}/${rel}` : rel);
+      }
+    };
+    walk(root, 0);
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 // Shape a localGate() result into the same object the backend /gate/check
 // returns, so the printer/exit logic treats local and server results uniformly.
 function localAsGateResult(local, name, kind) {
@@ -557,6 +601,11 @@ function printGateResult(res, source, flags) {
   if (res.decision === 'BLOCK') console.log(`\n  ${red('✗ Blocked.')}${orgNote} ${dim('Review the findings above.')}\n`);
   else if (res.decision === 'FLAG') console.log(`\n  ${yellow('⚠ Flagged.')}${orgNote} ${dim('Proceed with caution.')}\n`);
   else console.log(`\n  ${green('✓ Allowed.')}${orgNote} ${dim('No high-risk findings.')}\n`);
+
+  for (const n of res.notAttempted || []) {
+    console.log(`  ${yellow('!')} ${bold('Not checked:')} ${n.why}`);
+    console.log(`     ${dim(n.enabledBy)}\n`);
+  }
 }
 
 async function cmdGate(flags, positional) {
@@ -611,11 +660,13 @@ async function cmdGate(flags, positional) {
   if (apiKey) {
     if (!flags.json) process.stdout.write(dim('  Checking with Shomra gate… '));
     try {
+      const siblings = collectSiblings(fullTarget, relPath);
       res = await api(url, apiKey, '/gate/check', {
         ...(kind ? { kind } : {}),
         ...(flags.name ? { name: String(flags.name) } : {}),
         ...(relPath ? { path: relPath } : {}),
         content,
+        ...(siblings.length ? { siblings } : {}),
         machine: gateMachine(),
         env: detectEnv(),
         ...(flags.project ? { projectId: String(flags.project) } : {}),
@@ -3507,23 +3558,59 @@ function cmdDoctor(flags) {
   const keys = by('MODEL_KEY'), tools = by('AI_TOOL');
 
   // Local risk scan of whatever content discovery captured (no backend).
-  const risky = [];
+  let risky = [];
   const scanAsset = (a, kind) => {
     const content = a.content || a.metadata?.content;
     if (!content) return;
-    const g = localGate(content, { kind, path: a.metadata?.configFile || a.metadata?.file || a.name });
-    if (g.verdict !== 'ALLOW') risky.push({ name: a.name, kind, decision: g.verdict, riskScore: g.riskScore, top: (g.findings[0] || {}).title });
+    // `identifier` is the discovered absolute path; the metadata fallbacks cover
+    // asset kinds that don't set it. A real path makes the dedup key exact and
+    // gives each row a location instead of a bare ".".
+    const p = a.identifier || a.metadata?.configFile || a.metadata?.file || a.name;
+    const g = localGate(content, { kind, path: p });
+    if (g.verdict !== 'ALLOW') risky.push({ name: a.name, kind, decision: g.verdict, riskScore: g.riskScore, top: (g.findings[0] || {}).title, path: p });
   };
   for (const m of mcps) scanAsset(m, 'mcp');
   for (const r of rules) scanAsset(r, 'rules');
+  // The same physical artifact is often discovered via several sources — one
+  // CLAUDE.md copied into a dozen package caches, an MCP server named in two
+  // configs. Collapse exact (path, verdict, finding) repeats so one real issue
+  // is one row. A list that prints the same nameless finding twenty times reads
+  // as noise and buries the distinct risks under it.
+  {
+    const seen = new Set();
+    risky = risky.filter((r) => {
+      const k = `${r.path}|${r.decision}|${r.top}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  }
+
+  // Group the SAME finding across distinct files into ONE issue. A package
+  // manager that vendors a poisoned CLAUDE.md into twenty read-only caches is one
+  // problem to fix, not twenty — scoring and counting per-copy would let a
+  // dependency's cache layout, not the user's risk, drive the posture grade.
+  // `risky` (every copy, with paths) is still returned in --json for fidelity.
+  const issues = [];
+  {
+    const byIssue = new Map();
+    for (const r of risky) {
+      const k = `${r.name}|${r.kind}|${r.decision}|${r.top}`;
+      const grp = byIssue.get(k) || { name: r.name, kind: r.kind, decision: r.decision, top: r.top, riskScore: r.riskScore, paths: [] };
+      grp.paths.push(r.path);
+      byIssue.set(k, grp);
+    }
+    issues.push(...byIssue.values());
+  }
 
   const unguarded = agents.filter((a) => !a.metadata?.guarded);
   const dotenvKeys = keys.filter((k) => k.metadata?.source === 'dotenv');
-  const blockCount = risky.filter((r) => r.decision === 'BLOCK').length;
+  const blockCount = issues.filter((r) => r.decision === 'BLOCK').length;
 
   let score = 100;
   score -= Math.min(40, unguarded.length * 8);
-  for (const r of risky) score -= r.decision === 'BLOCK' ? 15 : 5;
+  // Penalize DISTINCT issues, not copies — see the grouping note above.
+  for (const r of issues) score -= r.decision === 'BLOCK' ? 15 : 5;
   score -= Math.min(30, dotenvKeys.length * 10);
   score = Math.max(0, Math.round(score));
   const g = score >= 90 ? 'A' : score >= 75 ? 'B' : score >= 60 ? 'C' : score >= 40 ? 'D' : 'F';
@@ -3535,7 +3622,9 @@ function cmdDoctor(flags) {
       codingAgents: agents.length, unguarded: unguarded.length,
       mcpServers: mcps.length, rulesFiles: rules.length, aiTools: tools.length,
       modelKeys: keys.length, modelKeysInDotenv: dotenvKeys.length,
-      riskyArtifacts: risky.length, risky,
+      // riskyArtifacts = every risky file (with paths); riskyIssues = distinct
+      // findings after grouping copies. Both, so a consumer can pick its unit.
+      riskyArtifacts: risky.length, riskyIssues: issues.length, risky,
     }, null, 2));
     return;
   }
@@ -3549,17 +3638,29 @@ function cmdDoctor(flags) {
   row('Model keys', keys.length, dotenvKeys.length ? yellow(`${dotenvKeys.length} in .env files`) : '');
   row('AI tools', tools.length, '');
 
-  if (risky.length) {
+  if (issues.length) {
     console.log(dim('\n  Risky artifacts:'));
-    for (const r of risky.slice(0, 6)) {
-      const dc = r.decision === 'BLOCK' ? red : yellow;
-      console.log(`    ${dc('●')} ${bold(r.name)} ${dim('(' + r.kind + ')')} ${dc(r.decision)} ${dim(r.top || '')}`);
+    const shortDir = (p) => path.dirname(String(p || '')).replace(os.homedir(), '~').split(path.sep).join('/');
+    const shown = issues.slice(0, 6);
+    for (const grp of shown) {
+      const dc = grp.decision === 'BLOCK' ? red : yellow;
+      const n = grp.paths.length;
+      const loc = shortDir(grp.paths[0]);
+      const where = n > 1 ? dim(`×${n}`) + dim(` · ${loc}, …`) : dim(loc);
+      console.log(`    ${dc('●')} ${bold(grp.name)} ${where} ${dim('(' + grp.kind + ')')} ${dc(grp.decision)} ${dim(grp.top || '')}`);
     }
+    // Never truncate silently — say how many distinct issues were not shown.
+    if (issues.length > shown.length) console.log(dim(`    …and ${issues.length - shown.length} more distinct issue${issues.length - shown.length > 1 ? 's' : ''}`));
   }
 
   const fixes = [];
   if (unguarded.length) fixes.push(`${red('!')} ${unguarded.length} coding agent${unguarded.length > 1 ? 's have' : ' has'} no runtime firewall → ${bold('shomra protect')}`);
-  if (risky.length) fixes.push(`${yellow('!')} ${risky.length} risky MCP/rules artifact${risky.length > 1 ? 's' : ''} → ${bold('shomra check')} ${dim('or')} ${bold('shomra gate <file>')}`);
+  if (issues.length) {
+    // Count distinct issues (what you fix), noting the file spread when copies
+    // inflate it — consistent with the score and the list above.
+    const spread = risky.length > issues.length ? dim(` across ${risky.length} files`) : '';
+    fixes.push(`${yellow('!')} ${issues.length} risky MCP/rules issue${issues.length > 1 ? 's' : ''}${spread} → ${bold('shomra check')} ${dim('or')} ${bold('shomra gate <file>')}`);
+  }
   if (dotenvKeys.length) fixes.push(`${yellow('!')} ${dotenvKeys.length} model key${dotenvKeys.length > 1 ? 's' : ''} in .env file${dotenvKeys.length > 1 ? 's' : ''} → rotate + ensure .gitignore covers them`);
   if (fixes.length) {
     console.log(bold('\n  Top fixes:'));

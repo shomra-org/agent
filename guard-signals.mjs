@@ -73,9 +73,12 @@ export const DANGEROUS_SHELL = [
   { name: 'Fetches from a raw IP address', re: /\b(curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n]{0,220}https?:\/\/\d{1,3}(\.\d{1,3}){3}/i, severity: 'HIGH' },
   { name: 'Writes to shell profile / SSH keys / crontab', re: /(\.bashrc|\.zshrc|\.bash_profile|\.profile|authorized_keys|id_rsa\b|\bcrontab\b)/i, severity: 'HIGH' },
   { name: 'Recursive force delete (rm -rf)', re: /\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r/i, severity: 'HIGH', refine: rmTargetsRealData },
-  // BARE `eval(`/`exec(` only — the lookbehind drops method calls that merely end
-  // in those letters (`db.exec(`, `RE.exec(`, `page.$eval(`, `$pdo->exec(`).
-  { name: 'Inline eval / exec of a string', re: /(?<![.\w$>:])(eval|exec)\s*[("`']/i, severity: 'HIGH' },
+  // BARE `eval(`/`exec(` only — the lookbehind drops anything that merely ENDS in
+  // those letters: method calls (`db.exec(`, `RE.exec(`, `page.$eval(`, `$pdo->exec(`)
+  // AND hyphen/quote-joined identifiers like `sandbox-exec` (macOS Seatbelt) or a
+  // `"…exec"` string in prose. Kept byte-identical to the backend rule
+  // (bundle/signals.ts) so the local gate and the server never disagree on it.
+  { name: 'Inline eval / exec of a string', re: /(?<![-.\w$>:`"'])(eval|exec)\s*[("`']/i, severity: 'HIGH' },
   { name: 'Pipes an env dump to the network', re: /\b(env|printenv|set)\b[^\n|]{0,80}\|[^\n]{0,80}(curl|wget|nc\b|http)/i, severity: 'HIGH' },
   { name: 'Disables TLS / cert verification', re: /(NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*0|GIT_SSL_NO_VERIFY|--no-check-certificate|--insecure\b|verify\s*=\s*False)/i, severity: 'MEDIUM' },
   { name: 'python -c one-liner', re: /python[0-9.]*\s+-c\b/i, severity: 'MEDIUM' },

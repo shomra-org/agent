@@ -41,6 +41,25 @@ const OLLAMA = /\bollama\s+(?:pull|run|cp|create)\s+([a-z0-9][\w.:\/-]*)/gi;
 // torch.hub.load("pytorch/vision", …) — a GitHub owner/repo that runs hubconf.py.
 const TORCH_HUB = /torch\.hub\.load\s*\(\s*['"]([A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*)['"]/g;
 
+// Hosted-API model families. A bare `model="gpt-4o"` / `model="claude-…"` is an
+// OpenAI/Anthropic/Google/etc API call, NOT a Hugging Face repo — but `model=` is
+// their SDK param too, so KW_ID/from_pretrained would otherwise tag these 'hf' and
+// trigger a doomed HF-Index lookup ("gpt-4o (hf) lookup failed"). Recognize them
+// and tag 'api' with the provider. Prefix-anchored to avoid matching HF repos.
+const API_MODEL = /^(?:gpt-|gpt4|o[1-4](?:-|$)|text-embedding-|text-(?:davinci|curie|babbage|ada)|davinci|dall-e|whisper-|tts-|chatgpt|claude[-\d]|gemini[-.]|gemini$|models\/gemini|mistral-|mixtral-|codestral-|command(?:-|$)|command-r|grok-|deepseek-(?:chat|coder|reasoner)|sonar-)/i;
+function apiProvider(id) {
+  const s = String(id || '').toLowerCase();
+  if (/^(gpt|o[1-4]|text-|davinci|curie|babbage|ada|dall-e|whisper|tts-|chatgpt)/.test(s)) return 'openai';
+  if (/^claude/.test(s)) return 'anthropic';
+  if (/^(gemini|models\/gemini)/.test(s)) return 'google';
+  if (/^(mistral|mixtral|codestral)/.test(s)) return 'mistral';
+  if (/^command/.test(s)) return 'cohere';
+  if (/^grok/.test(s)) return 'xai';
+  if (/^deepseek/.test(s)) return 'deepseek';
+  if (/^sonar/.test(s)) return 'perplexity';
+  return 'api';
+}
+
 // Reject ids that are really file paths, packages, or non-model strings.
 const ASSET_EXT = /\.(py|pyc|ipynb|[mc]?[jt]sx?|json|ya?ml|toml|txt|md|lock|cfg|ini|sh|env|png|jpg|svg|css|html?|csv|tsv|parquet)$/i;
 // First path segment on huggingface.co that is a SITE section, not an org — so
@@ -83,6 +102,13 @@ export function scanModelRefs(text, file = '') {
   // position (from_pretrained/SentenceTransformer/model=); ollama ids are freeform.
   const add = (id, { revision, source, line, via, bare }) => {
     if (!id) return;
+    // A bare hosted-API model name reached us via an HF-shaped matcher (`model=`,
+    // from_pretrained). It is not an HF repo — reclassify to 'api' + provider so it
+    // is labeled correctly and skips the HF-Index lookup. See API_MODEL.
+    if (source === 'hf' && !id.includes('/') && API_MODEL.test(id)) {
+      source = 'api';
+      via = `${via} · ${apiProvider(id)} API`;
+    }
     if (source !== 'ollama' && !(bare ? validBareId(id) : looksLikeModelId(id))) return;
     const key = `${source}:${id}:${revision || ''}`;
     if (seen.has(key)) return;
