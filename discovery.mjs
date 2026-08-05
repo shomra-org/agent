@@ -21,6 +21,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { scanAiUsage, rollupAiUsage, isAiUsageScannable, AI_USAGE_CATEGORY_LABEL } from './ai-usage.mjs';
+import { readVendorPosture, canonicalGrant } from './agent-posture.mjs';
 
 const HOME = os.homedir();
 const APPDATA = process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming');
@@ -860,12 +861,45 @@ export function discoverCodingAgents(roots = [process.cwd()]) {
       const t = readText(f, 20_000);
       return t != null && /shomra/i.test(t);
     });
+    // PERMISSION POSTURE — what this agent may do without asking. The user-scope
+    // settings read here govern every project on the machine and live in no
+    // repository, so this is the one surface a repo scan structurally cannot
+    // reach. `content` carries ONLY the canonical grant document (see
+    // agent-posture.mjs); the settings files themselves never leave the machine.
+    const posture = readVendorPosture(a.vendor, cwd);
+    const grant = canonicalGrant(posture);
     assets.push({
       type: 'AI_AGENT',
       name: a.name,
       identifier: `agent:${a.vendor}`,
       vendor: a.vendor,
-      metadata: { detectedAt: installedAt, guarded: !!guardFile, guardFile: guardFile || null },
+      ...(grant ? { content: grant } : {}),
+      metadata: {
+        detectedAt: installedAt,
+        guarded: !!guardFile,
+        guardFile: guardFile || null,
+        posture: posture
+          ? {
+              tier: posture.tier,
+              readable: posture.readable,
+              claim: posture.claim,
+              mode: posture.mode,
+              allowCount: posture.allow.length,
+              denyCount: posture.deny.length,
+              askCount: posture.ask.length,
+              allow: posture.allow.slice(0, 25),
+              enableAllProjectMcpServers: posture.enableAllProjectMcpServers,
+              switches: posture.switches,
+              mcpServerCount: posture.mcpServers.length,
+              autoApprovedMcp: posture.autoApprovedMcp,
+              unreadableCount: posture.unreadableCount,
+              // Paths only — which files were consulted and whether each parsed.
+              // Needed so an operator can tell "configured safely" from "we could
+              // not open the file that decides it".
+              sources: posture.sources.map((s) => ({ path: s.path, scope: s.scope, state: s.state, reason: s.reason })),
+            }
+          : null,
+      },
     });
   }
   return assets;
