@@ -725,31 +725,11 @@ const AUTHORITY_SPOOF = AUTHORITY_SPOOF_STRONG;
 // developer's memory, and the `.` wildcard crossed lines. The MemoryTrap vector
 // is a LIFECYCLE hook, not the npm CLI.
 const LIFECYCLE_VECTOR = /\b(postinstall|preinstall|node[_-]?gyp|npm\s+lifecycle|package\.json[^.\n]{0,40}scripts|\.npmrc|install hook|lifecycle (script|hook))\b/i;
-// ── self-reinforcement: the entry that makes itself survive ──
-// Backend parity (SELF_* in src/bundle/memory-signals.ts). Every other signal
-// here grades what a poisoned entry tells the agent to DO; this one grades what
-// it says about the ENTRY ITSELF, which is a different and worse thing: an entry
-// that arranges its own re-creation survives the remediation. Delete it and the
-// next session writes it back; roll one store back and it has already been
-// copied into the others.
-//
-// This matters more offline than anywhere else. The Tier-0 floor is what decides
-// with no network, and these payloads carry no override phrasing, no exfil verb
-// and no shell command — every other rule in this file reads them as clean prose.
-//
-// Graded as a co-location: a SELF-REFERENCE on the same line as a SURVIVAL
-// directive. Three forms, and the split is what keeps rules files quiet:
-//   RECREATE   — "restore this note if it is deleted". Poison anywhere.
-//   PROPAGATE  — "copy this into every new project". Poison anywhere.
-//   UNDELETABLE— "never remove this entry". MEMORY only; in a curated rules file
-//                "do not delete this section without asking the team" is an
-//                ordinary, honest thing for a maintainer to write.
-// ⚠ NEGATION_GUARD is deliberately NOT applied to UNDELETABLE — everywhere else
-// a negated line is a hardening rule, but here the negation IS the attack.
-const SELF_REFERENCE = /\b(th(is|ese) (note|entry|entries|memory|memories|instruction|directive|rule|line|section|block|paragraph|file|text)s?|the (above|following|preceding) (instruction|directive|note|rule|entry|section|line)s?|your memor(y|ies)|the memory (file|store|entry)|MEMORY\.md|CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules|\.windsurfrules)\b/i;
-const SELF_RECREATE = /\b(re-?(add|writ(e|ing)|creat(e|ing)|insert(ing)?|instat(e|ing)|appl(y|ying)|introduc(e|ing))|restor(e|ing)|recreat(e|ing)|reinstat(e|ing)|re-?establish(ing)?|put .{0,20}back|add .{0,20}back)\b/i;
-const SELF_PROPAGATE = /\b(copy|copies|duplicat(e|ing)|replicat(e|ing)|propagat(e|ing)|carry (it |this )?over|mirror|append|add|includ(e|ing)|writ(e|ing)|sav(e|ing))\b[^.\n]{0,60}\b(every|each|all|any (new|other)|other|future|subsequent)\b[^.\n]{0,40}\b(session|conversation|chat|project|repo|repositor(y|ies)|workspace|memor(y|ies)|context|file|store)s?\b/i;
-const SELF_UNDELETABLE = /\b(do not|don'?t|never|must not|should not|shall not)\s+(delete|remove|erase|clear|drop|strip|discard|overwrite|forget|prune|purge|edit|modify|alter|change)\b/i;
+// ⚠ The self-reinforcement signal (SELF_REFERENCE / SELF_RECREATE /
+// SELF_PROPAGATE / SELF_UNDELETABLE + detectSelfReinforcement) lives further
+// down, just below scanDirectives — it is declared exactly once. Two branches
+// landed it independently once already; the merge kept both copies and the
+// duplicate `const` took the whole CLI down at parse time.
 
 const IMPERATIVE = /\b(always|never|must|do not|don'?t|ensure you|make sure( you)?|be sure to|you should always|you must|remember to|whenever|when(ever)? (asked|the user)|instead of .*,? (use|do|say)|reply with|respond with|tell (the )?user)\b/i;
 const NEGATION_GUARD = /\b(never|do not|don'?t|cannot|can'?t|avoid|refuse|must not|mustn'?t|should not|shouldn'?t|won'?t|will not|under no circumstances|forbidden|prohibited|not allowed|disallow(ed)?)\b/i;
@@ -805,32 +785,6 @@ function firstDirectiveLine(text, re) {
     return line;
   }
   return null;
-}
-
-/**
- * The strongest self-reinforcement form on any line, else null. `recreate` and
- * `propagate` outrank `undeletable` — the first two request an action a
- * legitimate note has no reason to want, the third is merely anomalous.
- *
- * ⚠ The descriptive-mood guard runs against the line with the SELF-REFERENCE
- * REMOVED. This branch's vocabulary collides with DESCRIPTIVE_MARKERS — "note",
- * "rule", "line" and "section" are on both lists — so "if this NOTE is missing,
- * add it back" reads as documentation purely because of the noun the directive
- * acts on. Stripping the reference leaves the sentence's actual mood, which is
- * what the guard is for: "the DETECTOR FLAGS memory that restores this entry"
- * is still suppressed. Mirrors detectSelfReinforcement() in the backend.
- */
-function selfReinforcementLine(text, isInstruction) {
-  let weak = null;
-  for (const line of text.split(/\r?\n/)) {
-    const ref = SELF_REFERENCE.exec(line);
-    if (!ref) continue;
-    if (isDescriptiveLine(line.replace(ref[0], ' '))) continue;
-    if (SELF_RECREATE.test(line)) return { form: 'recreate', line };
-    if (SELF_PROPAGATE.test(line)) return { form: 'propagate', line };
-    if (!isInstruction && !weak && SELF_UNDELETABLE.test(line)) weak = { form: 'undeletable', line };
-  }
-  return weak;
 }
 
 /** The first line where EVERY regex matches (co-located signal), else null.
