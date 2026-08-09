@@ -6689,7 +6689,22 @@ ${bold(cyan('shomra admin'))} ${dim('— governance & advanced security operatio
 `);
 }
 
+// A rejection anywhere the CLI does not await — a fire-and-forget POST, a
+// stream handler — otherwise printed Node's raw stack over whatever the command
+// was drawing, and on Node ≥15 exited mid-render. Same one-line failure format
+// as every other error the CLI reports.
+process.on('unhandledRejection', (reason) => {
+  const e = reason instanceof Error ? reason : new Error(String(reason));
+  console.error(red('✗ ' + e.message));
+  if (process.env.SHOMRA_DEBUG) console.error(dim(e.stack ?? ''));
+  process.exit(1);
+});
+
 main().catch((e) => {
   console.error(red('✗ ' + e.message));
+  // The message alone is the right default — a stack in front of someone
+  // running `shomra scan` in CI is noise. SHOMRA_DEBUG=1 when it is not enough
+  // to say what went wrong.
+  if (process.env.SHOMRA_DEBUG) console.error(dim(e.stack ?? ''));
   process.exit(1);
 });

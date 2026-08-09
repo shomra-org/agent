@@ -165,10 +165,13 @@ export const RISKY_CONFIG_MARKERS = [
 ];
 
 // ── PII (patterns + Luhn gate) ──
+// ⚠ Bounded quantifiers, mirroring checks/patterns.ts — the unbounded `+`/`[ -]*?`
+// forms are O(n²) ReDoS on a long single-class run (100KB of "AAAA…" → ~7s of
+// pegged CPU). RFC-correct maxima, so no real email/card is missed.
 export const PII_PATTERNS = [
-  { name: 'Email address', re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/ },
+  { name: 'Email address', re: /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}/ },
   { name: 'US SSN', re: /\b\d{3}-\d{2}-\d{4}\b/ },
-  { name: 'Credit card number', re: /\b(?:\d[ -]*?){13,16}\b/ },
+  { name: 'Credit card number', re: /\b(?:\d[ -]?){13,16}\b/ },
   { name: 'Phone number', re: /\b(?:\+?1[ .-]?)?\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4}\b/ },
   { name: 'IPv4 address', re: /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/ },
 ];
