@@ -14,7 +14,7 @@
  */
 
 // A line must carry one of these to be considered a model load.
-const LOADER_HINT = /\b(from_pretrained|SentenceTransformer|CrossEncoder|hf_hub_download|snapshot_download|InferenceClient|AutoModel\w*|AutoTokenizer|AutoConfig|AutoProcessor|AutoFeatureExtractor|from_hf_hub|hf_hub|load_dataset|torch\.hub\.load|ollama)\b|\bpipeline\s*\(|\bmodel\s*=\s*['"]|huggingface\.co|\bhf\.co\b/i;
+const LOADER_HINT = /\b(from_pretrained|SentenceTransformer|CrossEncoder|hf_hub_download|snapshot_download|InferenceClient|AutoModel\w*|AutoTokenizer|AutoConfig|AutoProcessor|AutoFeatureExtractor|from_hf_hub|hf_hub|load_dataset|torch\.hub\.load|ollama)\b|\bpipeline\s*\(|\bmodel\s*[=:]\s*['"]|huggingface\.co|\bhf\.co\b/i;
 
 // A quoted HF-style id: "org/model" (one slash, HF-legal chars, no path/URL/ext).
 const QUOTED_ID = /['"]([A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*)['"]/g;
@@ -22,7 +22,25 @@ const QUOTED_ID = /['"]([A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*)['"]/g;
 // accept BARE ids (no org, e.g. "gpt2", "distilbert-base-uncased") from them.
 const FROM_PRETRAINED_ARG = /\bfrom_pretrained\s*\(\s*(?:[A-Za-z_][\w.]*\s*,\s*)?['"]([\w./-]+)['"]/g;
 const ST_ARG = /\b(?:SentenceTransformer|CrossEncoder)\s*\(\s*['"]([\w./-]+)['"]/g;
-const KW_ID = /\b(?:model|repo_id|model_name|model_id|model_name_or_path|pretrained_model_name_or_path|checkpoint|base_model)\s*=\s*['"]([\w./-]+)['"]/gi;
+// ⚠ `[=:]`, not `=`. This required an equals sign, so it saw Python and nothing
+// else: JS/TS object literals and JSON all write `model: "gpt-4o"`, which is how
+// every Node OpenAI/Anthropic SDK call declares its model. A JS repo full of
+// model calls reported "✓ No AI model references found in the code." — a green
+// pass over a blind spot, and no vuln lookups ran for the whole estate.
+//
+// The VALUE STAYS QUOTED. An unquoted value matches any identifier, so
+// `const model = keyword` and `model: capabilities` came back as models named
+// "keyword" and "capabilities" — an inventory of things that do not exist is
+// worse than a short one. YAML's unquoted form is handled by YAML_KW below,
+// where line anchoring makes it safe.
+const KW_ID = /\b(?:model|repo_id|model_name|model_id|model_name_or_path|pretrained_model_name_or_path|checkpoint|base_model)\s*[=:]\s*['"]([\w./-]+)['"]/gi;
+
+// YAML: `model: gpt-4o` with no quotes. Anchored to the start of a line and to
+// end-of-value, so it cannot fire inside expressions the way a free-floating
+// pattern does. The value must carry a digit, a slash or a dot — model ids do
+// (`gpt-4o`, `openai-community/gpt2`, `claude-opus-4-8`); bare English words
+// like `capabilities` do not.
+const YAML_KW = /^[ \t-]*(?:model|model_name|model_id|base_model|checkpoint)\s*:\s*([A-Za-z0-9][\w./-]*[\w/.-])\s*(?:#.*)?$/gim;
 // A pinned revision/commit in the same call.
 const REVISION = /\b(?:revision|commit|sha)\s*=\s*['"]([\w.-]{4,})['"]/i;
 // Bare-id positions can accidentally grab a pipeline TASK / device / dtype — drop those.
@@ -147,6 +165,11 @@ export function scanModelRefs(text, file = '') {
     for (const m of raw.matchAll(FROM_PRETRAINED_ARG)) add(m[1], { revision: rev, source: 'hf', line: ln, via: 'from_pretrained', bare: true });
     for (const m of raw.matchAll(ST_ARG)) add(m[1], { revision: rev, source: 'hf', line: ln, via: 'sentence-transformers', bare: true });
     for (const m of raw.matchAll(KW_ID)) add(m[1], { revision: rev, source: 'hf', line: ln, via: 'model= keyword', bare: true });
+    // Unquoted YAML values, only where a model id is plausible (see YAML_KW).
+    for (const m of raw.matchAll(YAML_KW)) {
+      if (!/[0-9./]/.test(m[1])) continue; // no digit, slash or dot → an English word, not a model id
+      add(m[1], { revision: rev, source: 'hf', line: ln, via: 'model: yaml key', bare: true });
+    }
 
     // 4b. Any other loader line with a quoted org/model id (hf_hub_download,
     //     snapshot_download, InferenceClient(model=…), etc.).

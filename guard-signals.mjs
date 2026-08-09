@@ -127,7 +127,33 @@ export const SECRET_PATTERNS = [
   { name: 'OpenAI key', re: /\bsk-[A-Za-z0-9]{20,}/ },
   { name: 'AWS access key id', re: /\bAKIA[0-9A-Z]{16}/ },
   { name: 'GitHub token', re: /ghp_[0-9A-Za-z]{20,}/ },
+  // ── AI-provider keys ──────────────────────────────────────────────────────
+  // ⚠ These seven were in `checks/patterns.ts` and NOT here, so the mirror was
+  // silently the weaker half: `shomra secrets` found 3 of 6 planted credentials
+  // in a .env that `shomra gate` (server-side) scored 6 CRITICAL on. The command
+  // named after the job was the one that missed them.
+  //
+  // `sk-[A-Za-z0-9]{20,}` above cannot match `sk-ant-api03-…` OR `sk-proj-…`:
+  // the HYPHEN after the vendor segment is outside the character class, so the
+  // quantifier dies on the fourth character. That covers both the provider this
+  // product is built on and the CURRENT OpenAI project-key format.
+  { name: 'Anthropic API key', re: /\bsk-ant-[A-Za-z0-9_-]{20,}/ },
+  { name: 'OpenAI project key', re: /\bsk-proj-[A-Za-z0-9_-]{20,}/ },
+  { name: 'Google API key', re: /\bAIza[0-9A-Za-z_-]{35}\b/ },
+  { name: 'Hugging Face token', re: /\bhf_[A-Za-z0-9]{30,}/ },
+  { name: 'GitLab PAT', re: /\bglpat-[A-Za-z0-9_-]{20,}/ },
+  { name: 'npm token', re: /\bnpm_[A-Za-z0-9]{30,}/ },
   { name: 'Slack token', re: /xox[baprs]-[0-9A-Za-z-]{10,}/ },
+  // Keyed forms: the VALUE alone is unremarkable (40 base64-ish chars), so the
+  // assignment is the evidence. Without these an AWS secret key and a database
+  // password sit in a .env looking like configuration.
+  { name: 'AWS secret access key (keyed)', re: /\bAWS_SECRET_ACCESS_KEY\s*[=:]\s*['"]?[A-Za-z0-9/+=]{40}\b/ },
+  // The negative lookahead mirrors checks/patterns.ts — `postgres://user:pass@host/db`
+  // is the documentation placeholder, not a credential.
+  {
+    name: 'Database URL with password',
+    re: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/(?!(?:user|username|admin|root|myuser|dbuser):(?:pass|password|passwd|secret|changeme|mypassword|yourpassword|xxx+|123456)@)[^\s:@/]+:[^\s:@/]{4,}@/i,
+  },
   { name: 'Generic bearer', re: /bearer\s+[A-Za-z0-9._-]{20,}/i },
   { name: 'Private key block', re: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/ },
 ];
@@ -328,11 +354,24 @@ function lineOf(text, needle) {
 // sits in such a code/data context (→ safe to down-rank) rather than as a bare,
 // runnable command line (→ still dangerous).
 
-// Single-pass mask of the "code/data" regions of a text: string literals (', ",
-// backtick — multi-line aware), line comments (//, #), block comments (/* */,
-// <!-- -->), regex literals (/…/), and fenced code blocks. mask[i] === 1 means
-// offset i is inside such a region, i.e. any pattern there is DATA (a rule
-// definition, a quoted sample, a documented example), not a live command line.
+// Two marks, because "not a live command line" splits into two OPPOSITE cases.
+//
+//   1 = QUOTED. String literals, `//` and `#` line comments, /* */ blocks,
+//       regex literals, fenced code blocks. The reader SEES this text. A rule
+//       definition, a docs example, a quoted sample — safe to down-rank.
+//
+//   2 = CONCEALED. An HTML comment. The reader does NOT see this text and the
+//       model does. That is not a quotation, it is a hiding place, and it is the
+//       single most common way a poisoned document carries a payload past human
+//       review.
+//
+// ⚠ These were both 1, so wrapping a payload in `<!-- -->` was a ONE-LINE
+// bypass: an identical instruction-override scored HIGH/QUARANTINE as bare
+// prose and LOW/REVIEW inside a comment, labelled "[in a code block]" so the
+// reviewer would dismiss it. Concealment must never buy a discount. Anything
+// reading this mask must test `=== 1`, never truthiness.
+const MARK_CONCEALED = 2;
+// Single-pass mask of the non-plain regions of a text.
 // A best-effort tokenizer — it biases toward marking (fewer false positives),
 // which is the correct trade for a security tool scanning content it will merely
 // read; execution is gated separately by the pre-call firewall.
@@ -367,19 +406,19 @@ function codeMask(text) {
       if (c === '/' && c2 === '/') { state = 4; mask[i++] = 1; continue; }
       if (c === '#' && (i === 0 || /\s/.test(text[i - 1]))) { state = 4; mask[i++] = 1; continue; }
       if (c === '/' && c2 === '*') { state = 5; mask[i++] = 1; continue; }
-      if (c === '<' && text.startsWith('<!--', i)) { state = 6; mask[i++] = 1; continue; }
+      if (c === '<' && text.startsWith('<!--', i)) { state = 6; mask[i++] = MARK_CONCEALED; continue; }
       if (c === '/' && REGEX_START.has(prevSig)) { state = 7; inClass = false; mask[i++] = 1; continue; }
       if (!/\s/.test(c)) prevSig = c;
       i++;
       continue;
     }
-    mask[i] = 1;
+    mask[i] = state === 6 ? MARK_CONCEALED : 1;
     if (state === 1) { if (c === '\\') { if (i + 1 < n) mask[++i] = 1; i++; continue; } if (c === "'") { state = 0; prevSig = "'"; } i++; continue; }
     if (state === 2) { if (c === '\\') { if (i + 1 < n) mask[++i] = 1; i++; continue; } if (c === '"') { state = 0; prevSig = '"'; } i++; continue; }
     if (state === 3) { if (c === '\\') { if (i + 1 < n) mask[++i] = 1; i++; continue; } if (c === '`') { state = 0; prevSig = '`'; } i++; continue; }
     if (state === 4) { if (c === '\n') state = 0; i++; continue; }
     if (state === 5) { if (c === '*' && c2 === '/') { mask[i + 1] = 1; i += 2; state = 0; } else i++; continue; }
-    if (state === 6) { if (text.startsWith('-->', i)) { mask[i + 1] = 1; mask[i + 2] = 1; i += 3; state = 0; } else i++; continue; }
+    if (state === 6) { if (text.startsWith('-->', i)) { mask[i + 1] = MARK_CONCEALED; mask[i + 2] = MARK_CONCEALED; i += 3; state = 0; } else i++; continue; }
     if (state === 7) { // regex literal
       if (c === '\\') { if (i + 1 < n) mask[++i] = 1; i++; continue; }
       if (c === '\n') { state = 0; } // unterminated → bail
@@ -404,8 +443,10 @@ function locate(text, needle, mask) {
     const m = text.match(needle);
     idx = m && m.index != null ? m.index : -1;
   }
-  if (idx < 0) return { line: undefined, codeContext: false };
-  return { line: lineAt(text, idx), codeContext: mask[idx] === 1 };
+  if (idx < 0) return { line: undefined, codeContext: false, concealed: false };
+  // `codeContext` stays strictly the QUOTED case — it is what down-ranking keys
+  // on, and a concealed payload must not qualify for that discount.
+  return { line: lineAt(text, idx), codeContext: mask[idx] === 1, concealed: mask[idx] === MARK_CONCEALED };
 }
 
 // Obvious non-secrets: documented sample keys, placeholders, masked values.

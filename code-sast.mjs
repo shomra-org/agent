@@ -278,15 +278,25 @@ const PY_RULES = [
   },
   {
     id: 'python.network_egress',
-    title: 'Network egress from model code',
-    severity: 'HIGH',
+    title: 'Network egress',
+    // ⚠ MEDIUM, and titled 'Network egress' NOT 'from model code' — in lockstep
+    // with checks/code-sast.ts (python.network_egress). This rule fires on ANY
+    // `requests.get`/`httpx`/`socket`, and this SAST tier runs over EVERY source
+    // file in a repo, not just model loaders — so an ordinary RAG/app file that
+    // makes an outbound call (`benign/src/rag.py`) got a HIGH "from model code"
+    // finding for doing the most normal thing an application does. A bare
+    // outbound call is an informational capability standalone; it is DANGEROUS
+    // only chained with a remote-code load, which `chain.remote_code_egress`
+    // already escalates to CRITICAL. Drifting this back to HIGH re-breaks the
+    // parity the local-mirror bench exists to protect.
+    severity: 'MEDIUM',
     category: 'egress',
-    confidence: 0.6,
+    confidence: 0.5,
     re: /\b(requests|httpx)\.(get|post|put|request)\s*\(|\burllib\.request\.(urlopen|urlretrieve)\s*\(|\bsocket\.(socket|create_connection)\s*\(|\baiohttp\.ClientSession\s*\(/,
     sink: (m) => m[0].replace(/\s*\($/, '').trim(),
     source: 'network',
-    message: 'Model code opens a network connection. Legitimate modeling/tokenizer code has no reason to phone out — this is the exfiltration / second-stage-download shape.',
-    remediation: 'Review the destination and payload. Model inference code should never make outbound requests; treat this model as hostile until proven otherwise.',
+    message: 'Opens an outbound network connection. Normal in application code; in model/tokenizer code that should never phone out, or chained with a remote-code load, this is the exfiltration / second-stage-download shape.',
+    remediation: 'Confirm the destination and payload. Model inference code should never make outbound requests; treat a phoning-out model as hostile until proven otherwise.',
     cwe: 'CWE-913',
   },
   {
@@ -439,14 +449,17 @@ const JS_RULES = [
   },
   {
     id: 'js.network_egress',
-    title: 'Network egress from tool code',
-    severity: 'HIGH',
+    title: 'Network egress',
+    // MEDIUM + neutral title, in lockstep with checks/code-sast.ts js.network_egress.
+    // Same reasoning as the python twin above: a bare outbound call is ordinary
+    // application behaviour, HIGH only when chained with a remote-code load.
+    severity: 'MEDIUM',
     category: 'egress',
-    confidence: 0.6,
+    confidence: 0.5,
     re: /\baxios\s*\.\s*(get|post|put|request)\s*\(|\bhttps?\.request\s*\(|\bnet\.(connect|createConnection)\s*\(|\bnew\s+WebSocket\s*\(|require\(\s*['"](node-fetch|got|undici|axios)['"]/,
     sink: (m) => m[0].replace(/\s*\($/, '').trim(),
     source: 'network',
-    message: 'Opens an outbound connection from tool code. Paired with reads of secrets or files this is the exfiltration / second-stage-download shape.',
+    message: 'Opens an outbound network connection. Normal in application code; chained with a reads-secrets or remote-code-load finding this is the exfiltration / second-stage-download shape.',
     remediation: 'Confirm the destination is expected and necessary; agent tools should not phone out to arbitrary hosts.',
     cwe: 'CWE-913',
   },

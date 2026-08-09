@@ -197,7 +197,14 @@ async function api(url, key, route, body, opts = {}) {
   }
   if (!res.ok) {
     const msg = json?.message || json?.raw || res.statusText;
-    throw new Error(`${res.status} ${Array.isArray(msg) ? msg.join(', ') : msg}`);
+    const err = new Error(`${res.status} ${Array.isArray(msg) ? msg.join(', ') : msg}`);
+    // The STATUS, so callers can tell "the backend refused THIS request" from
+    // "the backend is down". Conflating them is how one artifact with an
+    // unsupported kind took a whole `shomra check` run off org policy and
+    // reported the backend as unavailable while it was serving fine.
+    err.status = res.status;
+    err.rejected = res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429;
+    throw err;
   }
   return json;
 }
@@ -656,9 +663,21 @@ function printGateResult(res, source, flags) {
   const triaged = (res.policyHits || []).filter((p) => p.suppressed).length;
   if (triaged) console.log(`     ${dim(`${triaged} policy hit(s) suppressed by triage — reopen or let the acceptance expire to re-enforce.`)}`);
   const orgNote = source === 'local' ? dim(' (on-machine analysis; org policy not applied)') : '';
+  // ⚠ The decision is a fact about POLICY; "no high-risk findings" is a fact
+  // about the FINDINGS. They were the same sentence, so an org whose policy
+  // takes no action on a CRITICAL got "✓ Allowed. No high-risk findings."
+  // printed directly beneath the CRITICAL it had just listed. Derive the claim
+  // from what was actually found, and if the two disagree, say so — a policy
+  // that permits a high-risk artifact is a decision someone should see.
+  const sev = (res.findings || []).reduce((a, f) => { a[f.severity] = (a[f.severity] || 0) + 1; return a; }, {});
+  const highish = (sev.CRITICAL || 0) + (sev.HIGH || 0);
+  const highNote = highish
+    ? `${sev.CRITICAL || 0} critical · ${sev.HIGH || 0} high still present — allowed by your org policy, not by the analysis.`
+    : 'No high-risk findings.';
   if (res.decision === 'BLOCK') console.log(`\n  ${red('✗ Blocked.')}${orgNote} ${dim('Review the findings above.')}\n`);
   else if (res.decision === 'FLAG') console.log(`\n  ${yellow('⚠ Flagged.')}${orgNote} ${dim('Proceed with caution.')}\n`);
-  else console.log(`\n  ${green('✓ Allowed.')}${orgNote} ${dim('No high-risk findings.')}\n`);
+  else if (highish) console.log(`\n  ${green('✓ Allowed')} ${yellow('by policy.')}${orgNote} ${dim(highNote)}\n`);
+  else console.log(`\n  ${green('✓ Allowed.')}${orgNote} ${dim(highNote)}\n`);
 
   for (const n of res.notAttempted || []) {
     console.log(`  ${yellow('!')} ${bold('Not checked:')} ${n.why}`);
@@ -911,6 +930,12 @@ const ARTIFACT_MATCHERS = [
   { kind: 'rules', re: /(^|\/)\.(cursorrules|windsurfrules|clinerules|aiderrules|continuerules|goosehints)$/i },
   { kind: 'rules', re: /(^|\/)\.github\/copilot-instructions\.md$/i },
   { kind: 'rules', re: /(^|\/)\.cursor\/rules\/[^/]+\.mdc$/i },
+  // ⚠ `check` answers "is my repo safe?" and did not look at .env at all, while
+  // `gate .env` returned BLOCK with five CRITICALs on the same file. A repo with
+  // live provider keys committed passed the command people run in CI. Templates
+  // are excluded on purpose — `.env.example` exists to hold fake values, and
+  // flagging it trains everyone to ignore the category.
+  { kind: 'env', re: /(^|\/)\.env(\.(local|development|dev|production|prod|staging|stage|test))?$/i },
   { kind: 'memory', re: /(^|\/)MEMORY\.md$/i },
   { kind: 'memory', re: /(^|\/)(mem0|letta_memory|memgpt_memory)\.json$/i },
   { kind: 'memory', re: /(^|\/)(\.mem0|\.letta|\.memgpt|memory)\/[^/]+\.(md|json)$/i },
@@ -1229,6 +1254,10 @@ async function gateArtifactList(artifacts, { apiKey, url, env, flags, root }) {
   let flagged = 0;
   let suppressed = 0;
   let backendDown = false;
+  // Artifacts the backend REFUSED individually (4xx). Not an outage — the run
+  // continues under org policy for everything else, and these are reported by
+  // name at the end rather than disappearing into a local verdict.
+  const rejected = [];
   // Suppression context (loaded once): .shomraignore + baseline + inline cache.
   const suppress = !flags['no-suppress'];
   const rules = suppress ? loadIgnoreRules(root || process.cwd()) : { fileGlobs: [], findingRules: [] };
@@ -1270,6 +1299,15 @@ async function gateArtifactList(artifacts, { apiKey, url, env, flags, root }) {
             ...(flags.project ? { projectId: String(flags.project) } : {}),
           });
         } catch (e) {
+          // ⚠ A 4xx is the backend REFUSING THIS ONE ARTIFACT — it is up, and
+          // every other artifact in the run can still be judged against org
+          // policy. Treating it as an outage silently downgraded the whole run
+          // to on-machine analysis because of a single unsupported kind, and
+          // told the operator the backend was unavailable while it was serving.
+          if (e?.rejected) {
+            rejected.push({ path: a.rel, kind: a.kind, reason: e.message });
+            continue;
+          }
           if (!backendDown && !quiet) console.log(`  ${yellow('⚠')} ${dim('backend unavailable (' + e.message + ') — on-machine analysis for the rest')}`);
           backendDown = true;
           return;
@@ -1308,7 +1346,7 @@ async function gateArtifactList(artifacts, { apiKey, url, env, flags, root }) {
       if (more > 0) console.log(`      ${dim(`… and ${more} more (run with --json for all)`)}`);
     }
   }
-  return { results, blocked, flagged, suppressed, backendDown };
+  return { results, blocked, flagged, suppressed, backendDown, rejected };
 }
 
 async function cmdGateAll(flags, positional, { apiKey, url }) {
@@ -1326,7 +1364,7 @@ async function cmdGateAll(flags, positional, { apiKey, url }) {
 
   if (!flags.json && !flags.sarif) console.log(bold(cyan('\n  Shomra gate')) + dim(` — batch (${artifacts.length} artifact${artifacts.length > 1 ? 's' : ''} · ${env.environment}${env.ciProvider ? ' · ' + env.ciProvider : ''})`));
 
-  const { results, blocked, flagged, suppressed, backendDown } = await gateArtifactList(artifacts, { apiKey, url, env, flags, root });
+  const { results, blocked, flagged, suppressed, backendDown, rejected } = await gateArtifactList(artifacts, { apiKey, url, env, flags, root });
 
   // --strict is fail-closed: if the backend was unreachable we can't confirm org
   // policy, so fail the build even if local analysis was clean.
@@ -1339,7 +1377,7 @@ async function cmdGateAll(flags, positional, { apiKey, url }) {
     return;
   }
   if (flags.json) {
-    console.log(JSON.stringify({ scanned: results.length, blocked, flagged, suppressed, backendDown, environment: env.environment, results }, null, 2));
+    console.log(JSON.stringify({ scanned: results.length, blocked, flagged, suppressed, backendDown, rejected, environment: env.environment, results }, null, 2));
   } else {
     console.log(
       '\n  ' +
@@ -1401,7 +1439,7 @@ async function cmdCheck(flags, positional) {
     if (!apiKey) console.error(`  ${dim('On-machine analysis only — run')} ${bold('shomra init')} ${dim('to also apply org policy.')}`);
   }
 
-  const { results, blocked, flagged, suppressed, backendDown } = await gateArtifactList(artifacts, { apiKey, url, env, flags, root });
+  const { results, blocked, flagged, suppressed, backendDown, rejected } = await gateArtifactList(artifacts, { apiKey, url, env, flags, root });
 
   if (flags.sarif) {
     console.log(JSON.stringify(toSarif(results), null, 2));
@@ -1428,18 +1466,31 @@ async function cmdCheck(flags, positional) {
 
   const strictOutage = backendDown && flags.strict;
   if (flags.json) {
-    console.log(JSON.stringify({ scanned: results.length, blocked, flagged, suppressed, fixed, backendDown, environment: env.environment, results }, null, 2));
+    console.log(JSON.stringify({ scanned: results.length, blocked, flagged, suppressed, fixed, backendDown, rejected, environment: env.environment, results }, null, 2));
   } else {
     console.log(
       '\n  ' +
+        // ⚠ "clean" is a claim about the ARTIFACTS; suppression is a claim about
+        // the OPERATOR having already accepted them. A baselined repo full of
+        // reverse shells reported "✓ All 8 clean." — true of the queue, false
+        // of the code, and it is the sentence people quote. Once anything is
+        // suppressed the headline says "accepted", never "clean".
         (blocked
           ? red(`✗ ${blocked} blocked`) + dim(` · ${flagged} flagged · ${results.length - blocked - flagged} clean`)
           : flagged
             ? yellow(`⚠ ${flagged} flagged`) + dim(` · ${results.length - flagged} clean`)
-            : green(`✓ All ${results.length} clean.`)) +
-        (suppressed ? dim(` · ${suppressed} suppressed`) : '') +
-        (backendDown ? yellow('  (on-machine only — org policy not applied)') : ''),
+            : suppressed
+              ? green(`✓ ${results.length} passing`) + dim(' — nothing NEW; previously accepted findings are still there')
+              : green(`✓ All ${results.length} clean.`)) +
+        (suppressed ? dim(` · ${suppressed} accepted by baseline/ignore`) : '') +
+        (backendDown ? yellow('  (on-machine only — org policy not applied)') : '') +
+        (rejected.length
+          ? yellow(`  (${rejected.length} artifact(s) the backend refused — org policy not applied to those)`)
+          : ''),
     );
+    // Named, not just counted: an artifact the backend would not judge is a
+    // coverage hole, and a hole nobody can see is indistinguishable from a pass.
+    for (const r of rejected) console.log(`  ${yellow('!')} ${dim(`${r.path} (${r.kind}) — ${r.reason}`)}`);
     if (flags.fix && fixed) console.log(`  ${green('✓')} ${dim(`applied ${fixed} fix${fixed > 1 ? 'es' : ''} — re-run`)} ${bold('shomra check')} ${dim('to confirm.')}`);
     else if (!flags.fix && (blocked || flagged)) console.log(dim('  Run ') + bold('shomra fix <file>') + dim(' or ') + bold('shomra check --fix') + dim(' to remediate.'));
     if (strictOutage) console.log(`  ${red('✗ Failing closed (--strict): backend unreachable, org policy unverified.')}`);
@@ -4441,6 +4492,10 @@ async function cmdCorpus(flags, positional) {
     // Same reasoning as the result guard: a payload quoted inside a fenced block
     // is an example, and a docs corpus is FULL of examples. A directive in prose
     // is the actual threat, and it is the one that survives down-ranking.
+    // ⚠ `codeContext` is the QUOTED case only. A payload inside an HTML comment
+    // is marked `concealed` instead and never reaches this down-rank — hiding a
+    // directive from the human reviewer while leaving it legible to the model is
+    // an aggravating fact about a document, not a mitigating one.
     const findings = downrankCodeContext(scan.findings || []);
     const liveInjection = scan.findings.some((f2) => f2.category === 'injection' && !f2.codeContext);
     const liveCritical = scan.findings.some((f2) => f2.severity === 'CRITICAL' && !f2.codeContext);
@@ -4455,6 +4510,7 @@ async function cmdCorpus(flags, positional) {
       severity: x.severity, category: x.category, label: x.label, line: x.line ?? null,
       chunk: chunkIndexForLine(text, x.line, chunkSize),
       codeContext: !!x.codeContext,
+      concealed: !!x.concealed,
     }));
     if (invisible) rows.unshift({ severity: 'CRITICAL', category: 'injection', label: 'Invisible / bidirectional characters', line: null, chunk: null, codeContext: false });
     results.push({ path: f.rel, verdict, findings: rows });
@@ -4489,7 +4545,15 @@ async function cmdCorpus(flags, positional) {
       console.log(`\n  ${vc(r.verdict === 'BLOCK' ? '✗ QUARANTINE' : '⚠ REVIEW')} ${bold(r.path)}`);
       for (const f of r.findings) {
         const where = f.chunk !== null && f.chunk !== undefined ? dim(` (line ${f.line} · chunk ${f.chunk})`) : f.line ? dim(` (line ${f.line})`) : '';
-        console.log(`    ${(SEV_COLOR[f.severity] || dim)(String(f.severity).padEnd(8))} ${f.label}${where}${f.codeContext ? dim(' [in a code block]') : ''}`);
+        // Two different facts, two different labels. Calling a hidden payload
+        // "[in a code block]" told the reviewer to dismiss the one row that
+        // most deserved their attention.
+        const ctx = f.concealed
+          ? yellow(' [hidden in an HTML comment — invisible to a reader, read by the model]')
+          : f.codeContext
+            ? dim(' [quoted in a code block]')
+            : '';
+        console.log(`    ${(SEV_COLOR[f.severity] || dim)(String(f.severity).padEnd(8))} ${f.label}${where}${ctx}`);
       }
     }
     console.log('');
@@ -5248,7 +5312,31 @@ function walkSourceFiles(root, cap) {
  * note above: a security tool that emits a rules file its own checker blocks has
  * shipped the bug it sells the fix for.
  */
-function generateRules(ctx, { orgLines = [] } = {}) {
+/**
+ * A finding TITLE, rendered so the rules gate cannot read the report as the
+ * thing being reported.
+ *
+ * ⚠ This is the mention-vs-do problem turned on the generator itself. The
+ * "already present in this repo" section quotes each finding's title, and a
+ * title like `Self-reinforcing memory entry (recreate)` tripped the rules
+ * file's OWN self-reinforcement detector — so `shomra rules` failed its own
+ * gate and refused to write on every repo that had findings, i.e. exactly the
+ * repos the feature exists for. It worked only on clean ones.
+ *
+ * Dropping the parenthetical qualifier (which carries the trigger verb) and
+ * capping the length keeps the line informative — severity, subject, file —
+ * without replaying directive phrasing. The rebuild-without-observed fallback
+ * below covers whatever this misses.
+ */
+function neutralizeFindingTitle(title) {
+  return String(title || '')
+    .replace(/\s*\([^)]*\)\s*$/, '')   // trailing "(recreate)", "(line 3)" …
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+}
+
+function generateRules(ctx, { orgLines = [], includeObserved = true } = {}) {
   const parts = [];
   parts.push('## Security rules (Shomra)');
   parts.push('');
@@ -5272,7 +5360,7 @@ function generateRules(ctx, { orgLines = [] } = {}) {
     for (const l of orgLines) parts.push(`- ${l}`);
   }
 
-  if (ctx.observed.length) {
+  if (ctx.observed.length && includeObserved) {
     used.push('observed');
     parts.push('', '### Already present in this repo', '');
     parts.push(
@@ -5280,7 +5368,7 @@ function generateRules(ctx, { orgLines = [] } = {}) {
         'Do not add more of the same shape, and prefer fixing one when you are already editing that file.',
     );
     parts.push('');
-    for (const o of ctx.observed) parts.push(`- ${o.severity} — ${o.title} (${o.files.join(', ')})`);
+    for (const o of ctx.observed) parts.push(`- ${o.severity} — ${neutralizeFindingTitle(o.title)} (${o.files.join(', ')})`);
   }
 
   parts.push('', '### Closing a task', '');
@@ -5293,6 +5381,19 @@ function generateRules(ctx, { orgLines = [] } = {}) {
   // check and still ships a file the same product flags.
   let gate;
   try { gate = localGate(rulesBlock(body), { kind: 'rules', path: 'CLAUDE.md' }); } catch { gate = null; }
+
+  // ⚠ DEGRADE, don't refuse. The only part of this block quoting arbitrary
+  // repo-derived text is the observed-issues section, so if the block trips our
+  // own rules gate, drop that section and re-gate. The rest — the enforced
+  // rules the agent needs — still lands. Refusing outright meant a repo with
+  // findings got NO rules file at all, which is precisely backwards: the block
+  // is most valuable exactly where the repo is messiest.
+  if (gate && gate.verdict === 'BLOCK' && includeObserved && ctx.observed.length) {
+    const retry = generateRules(ctx, { orgLines, includeObserved: false });
+    if (!retry.gate || retry.gate.verdict !== 'BLOCK') {
+      return { ...retry, observedOmitted: ctx.observed.length };
+    }
+  }
   return { body, sections: used, gate };
 }
 
@@ -5366,7 +5467,7 @@ async function cmdRules(flags, positional) {
     }
   }
 
-  const { body, sections, gate } = generateRules(ctx, { orgLines });
+  const { body, sections, gate, observedOmitted } = generateRules(ctx, { orgLines });
   const block = rulesBlock(body);
   const targets = resolveRulesTargets(root, flags);
 
@@ -5413,11 +5514,19 @@ async function cmdRules(flags, positional) {
   // The block is itself a rules artifact. If it does not pass our own gate,
   // refuse to write it — shipping a rules file that `shomra check` blocks would
   // hand every user a finding we authored.
+  // Reached only when even the reduced block (see generateRules) fails — i.e.
+  // the fixed rule text itself is at fault, which IS a CLI bug. Repo content can
+  // no longer cause it.
   if (gate && gate.verdict === 'BLOCK') {
     emitJson();
     if (!flags.json) console.error('\n' + red('✗') + ' The generated block does not pass Shomra\'s own rules-file gate — refusing to write. This is a bug in the CLI; please report it.');
     process.exitCode = 1;
     return;
+  }
+  if (observedOmitted && !flags.json) {
+    console.log(
+      `  ${yellow('!')} ${dim(`Left out the "already present in this repo" section (${observedOmitted} issue${observedOmitted === 1 ? '' : 's'}) — quoting those titles tripped the rules gate. Run `)}${bold('shomra check')}${dim(' to see them.')}`,
+    );
   }
 
   // --check: CI drift gate. A rules block that silently rots is worse than none,
@@ -5792,6 +5901,27 @@ async function cmdMcp(flags, positional) {
   if (cmdTokens.length) { server.command = cmdTokens[0]; if (cmdTokens.length > 1) server.args = cmdTokens.slice(1); }
   if (flags.env) server.env = parseEnvKV(flags.env);
   if (!server.url && !server.command) { console.error(red('✗') + ' Provide a launch command or --url.'); process.exit(EXIT_USAGE); }
+
+  // ── The launch spec has to be launchable ────────────────────────────────────
+  //
+  // ⚠ The NAME is positional[1] and everything after it is the command, so
+  // omitting the name shifts the whole line by one: `add mcp npx -y <pkg> /`
+  // registered a server literally called "npx" whose command was "-y". That
+  // entry can never start, and it was written to disk under "✓ clean" —
+  // a config the product vouched for and nothing could run.
+  if (server.command) {
+    const RUNNERS = /^(npx|bunx|pnpx|uvx|uv|node|deno|bun|python3?|py|docker|podman|sh|bash|zsh|ruby|go|cargo|dotnet)$/i;
+    if (String(server.command).startsWith('-')) {
+      console.error(red('✗') + ` "${server.command}" is a flag, not a command — the server NAME comes first.`);
+      console.error(dim('  Try: ') + bold(`shomra mcp add <name> ${[server.command, ...(server.args || [])].join(' ')}`));
+      process.exit(EXIT_USAGE);
+    }
+    if (RUNNERS.test(String(name))) {
+      console.error(red('✗') + ` "${name}" is a runner, not a server name — it looks like the NAME argument was left out.`);
+      console.error(dim('  Try: ') + bold(`shomra mcp add <name> ${[name, ...cmdTokens].join(' ')}`));
+      process.exit(EXIT_USAGE);
+    }
+  }
 
   // Vet the candidate BEFORE writing it anywhere: (1) local heuristics, then
   // (2) the platform's pre-scanned MCP Security Index (GET /catalog/lookup) so a
