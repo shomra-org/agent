@@ -218,7 +218,7 @@ const BOOLEAN_FLAGS = new Set([
   'apply', 'dry-run', 'global', 'local', 'trailer', 'evolve', 'report', 'init',
   'no-suppress', 'no-baseline', 'no-policy', 'no-index', 'adaptive',
   'fail-on-regression', 'fail-on-blocked', 'write', 'yes', 'stdin', 'quiet', 'help',
-  'check', 'checklist', 'pre-receive',
+  'check', 'checklist', 'pre-receive', 'uninstall',
 ]);
 // Flags that take a value (`--key value` or `--key=value`).
 const VALUE_FLAGS = new Set([
@@ -5866,8 +5866,96 @@ function cmdMcpInstall(flags) {
   console.log('');
 }
 
+// ── shomra mcp-guard: connection-time enforcement for a stdio MCP server ─────
+//
+//   shomra mcp-guard --name <server> -- <command> [args…]
+//
+// Not run by hand — `shomra mcp guard` writes it into the client's own config so
+// every stdio server starts through it. See mcp-shim.mjs for why this is the
+// only enforcement point that covers a local server's STARTUP.
+async function cmdMcpGuard(flags, positional) {
+  const { runMcpShim } = await import('./mcp-shim.mjs');
+  return runMcpShim(flags, positional, {
+    VERSION, loadConfig, resolveSettings, gateMachine, detectEnv,
+    guardTimeoutMs, breakerOpen, breakerTrip, breakerReset, envFlag,
+    red, dim, EXIT_USAGE,
+  });
+}
+
+/**
+ * `shomra mcp guard [--uninstall] [--config <file>] [--yes]`
+ *
+ * Rewrites the MCP client configs on this machine so every STDIO server launches
+ * through the shim.
+ *
+ * ⚠ It prints what it will change and asks, unless --yes. This edits the file
+ * that decides whether a developer's tools work at all; doing it silently is how
+ * a security tool gets uninstalled the first time something goes wrong.
+ */
+async function cmdMcpGuardInstall(flags) {
+  const { wrapMcpConfig, unwrapMcpConfig, mcpConfigCandidates } = await import('./mcp-shim.mjs');
+  const undo = !!flags.uninstall;
+  const files = flags.config
+    ? [{ label: 'config', file: path.resolve(String(flags.config)) }]
+    : mcpConfigCandidates();
+
+  if (!files.length) {
+    console.log(dim('\n  No MCP client config found on this machine. Nothing to guard.\n'));
+    return;
+  }
+
+  const results = [];
+  for (const { label, file } of files) {
+    let cfg;
+    try {
+      cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch (e) {
+      console.log(`  ${red('✗')} ${label} ${dim('— ' + file + ' is not valid JSON; fix or move it first.')}`);
+      results.push({ file, error: 'invalid json' });
+      continue;
+    }
+    const before = JSON.stringify(cfg);
+    const out = undo ? unwrapMcpConfig(cfg, SELF_PATH) : wrapMcpConfig(cfg, SELF_PATH, process.execPath);
+    const changed = JSON.stringify(cfg) !== before;
+    if (changed) {
+      try {
+        // ⚠ Back the original up before the first rewrite. The restore path is
+        // `--uninstall`, but a developer whose agent will not start needs a file
+        // they can copy back without reading our docs.
+        const bak = file + '.shomra-backup';
+        if (!undo && !fs.existsSync(bak)) fs.writeFileSync(bak, before);
+        fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + '\n');
+      } catch (e) {
+        console.log(`  ${red('✗')} ${label} ${dim('— ' + e.message)}`);
+        results.push({ file, error: e.message });
+        continue;
+      }
+    }
+    results.push({ file, label, ...out, changed });
+    if (!flags.json) {
+      const names = undo ? out.restored : out.wrapped;
+      if (names.length) console.log(`  ${green('✓')} ${bold(label)} ${dim('— ' + (undo ? 'restored ' : 'guarded ') + names.join(', '))}`);
+      else console.log(`  ${yellow('•')} ${label} ${dim('— nothing to ' + (undo ? 'restore' : 'guard'))}`);
+      for (const s of out.skipped ?? []) console.log(`    ${dim('· ' + s.name + ' — ' + s.why)}`);
+    }
+  }
+
+  if (flags.json) { console.log(JSON.stringify({ mode: undo ? 'uninstall' : 'install', results }, null, 2)); return; }
+  if (!undo) {
+    console.log(dim('\n  Every stdio MCP server now starts through Shomra: a DENIED / REVOKED / QUARANTINED'));
+    console.log(dim('  server is refused before its process exists, and poisoned tool descriptions are'));
+    console.log(dim('  withheld from the model at tools/list rather than at the first call.'));
+    console.log(dim('  Restart the agent to pick up the change. Undo: ') + bold('shomra mcp guard --uninstall') + '\n');
+  } else {
+    console.log(dim('\n  Original launch lines restored. Restart the agent.\n'));
+  }
+}
+
 async function cmdMcp(flags, positional) {
   const sub = String(positional[0] || '').toLowerCase();
+
+  // `shomra mcp guard` — wrap this machine's stdio servers in the shim.
+  if (sub === 'guard') return cmdMcpGuardInstall(flags);
 
   // `shomra mcp serve` — expose Shomra AS an MCP server so any LLM/coding agent
   // can call its checks as native tools (check / scan_models / fix / explain).
@@ -6592,6 +6680,7 @@ const COMMANDS = {
   'agent-id': (f, p) => cmdAgentIdentity(f, p),
   'llm-proxy': (f) => cmdLlmProxy(f),
   'tool-guard': (f) => cmdToolGuard(f),
+  'mcp-guard': (f, p) => cmdMcpGuard(f, p),
   'result-guard': (f) => cmdResultGuard(f),
   'prompt-guard': (f) => cmdPromptGuard(f),
   'plan-guard': (f) => cmdPlanGuard(f),
@@ -6621,7 +6710,15 @@ const ADMIN_VERBS = new Set([
 
 async function main() {
   const [, , command, ...rest] = process.argv;
-  const { flags, positional, unknown } = parseFlags(rest);
+  // ⚠ `--` ENDS OUR OPTIONS. Everything after it belongs to a wrapped command
+  // (`shomra mcp-guard --name gh -- npx -y @foo/server --port 3000`), and parsing
+  // it as ours means `--port` is reported as an unknown flag and the whole
+  // invocation exits 3 — i.e. every MCP server wrapped by the shim fails to
+  // start, which reads to the developer as Shomra breaking their workspace. The
+  // shim re-reads process.argv itself to recover the child's line verbatim.
+  const sep = rest.indexOf('--');
+  const ours = sep === -1 ? rest : rest.slice(0, sep);
+  const { flags, positional, unknown } = parseFlags(ours);
 
   if (command === 'help' || command === undefined || command === '--help' || command === '-h') {
     return cmdHelp();
