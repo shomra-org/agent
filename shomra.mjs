@@ -226,6 +226,9 @@ const VALUE_FLAGS = new Set([
   'scenarios', 'objectives', 'turns', 'target', 'run', 'port', 'config', 'env',
   'command', 'base', 'repo', 'pr', 'token', 'sha', 'session', 'since', 'depth',
   'scope', 'writer', 'type', 'slug', 'framework', 'chunk-size', 'manifest',
+  // `--fail-on <critical|high|medium>` lets CI gate below the default
+  // (blocked-only) exit code — e.g. fail the build on a HIGH finding.
+  'fail-on',
 ]);
 const KNOWN_FLAGS = new Set([...BOOLEAN_FLAGS, ...VALUE_FLAGS]);
 
@@ -1373,6 +1376,7 @@ async function cmdGateAll(flags, positional, { apiKey, url }) {
   if (flags.sarif) {
     console.log(JSON.stringify(toSarif(results), null, 2));
     if (blocked > 0 || strictOutage) process.exitCode = 1;
+    else if (failOnHit(flags, blocked, flagged)) process.exitCode = 1;
     else if (flagged > 0 && flags.strict) process.exitCode = 2;
     return;
   }
@@ -1395,6 +1399,7 @@ async function cmdGateAll(flags, positional, { apiKey, url }) {
 
   // Set exitCode (not process.exit) so pending sockets drain cleanly on Windows.
   if (blocked > 0 || strictOutage) process.exitCode = 1;
+  else if (failOnHit(flags, blocked, flagged)) process.exitCode = 1;
   else if (flagged > 0 && flags.strict) process.exitCode = 2;
 }
 
@@ -1498,7 +1503,19 @@ async function cmdCheck(flags, positional) {
   }
 
   if (blocked > 0 || strictOutage) process.exitCode = 1;
+  else if (failOnHit(flags, blocked, flagged)) process.exitCode = 1;
   else if (flagged > 0 && flags.strict) process.exitCode = 2;
+}
+
+// `--fail-on <critical|high|medium>` — gate CI below the default (blocked-only).
+// blocked ⇒ a CRITICAL/BLOCK finding, flagged ⇒ a HIGH/FLAG one; the mapping is
+// the same severity→decision the guard uses. Default 'critical' preserves the
+// existing behavior (HIGH exits 0 unless --strict). An unrecognised value is
+// treated as 'critical' rather than silently gating on nothing.
+function failOnHit(flags, blocked, flagged) {
+  const threshold = { critical: 3, high: 2, medium: 1 }[String(flags['fail-on'] || 'critical').toLowerCase()] ?? 3;
+  const worst = blocked > 0 ? 3 : flagged > 0 ? 2 : 0;
+  return worst > 0 && worst >= threshold;
 }
 
 // ── shomra baseline: accept everything here, so only NEW findings fail ───────
