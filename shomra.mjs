@@ -18,6 +18,7 @@ import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { discoverAll } from './discovery.mjs';
+import { discoverAgentArtifacts, rollupArtifacts } from './agent-artifacts.mjs';
 import { localScan, localGate, grade, downrankCodeContext, SECRET_PATTERNS, INVISIBLE_CHARS_RE } from './guard-signals.mjs';
 import { scanSourceFile, isScannableSource, isModelConfig } from './code-sast.mjs';
 import { scanModelRefs, isModelRefScannable } from './model-refs.mjs';
@@ -334,6 +335,25 @@ function discover(flags) {
   return discoverAll(roots, { autoExpand: !flags.path });
 }
 
+/**
+ * The INSTALLED AGENT ARTIFACTS half of a report — skills, slash commands,
+ * subagent definitions and hooks.
+ *
+ * Separate from `discover()` because these are not assets. An asset says this
+ * machine HAS Cursor; an artifact is an instruction document the agent obeys, and
+ * the platform governs it in a different store with a content history and a drift
+ * baseline. See agent-artifacts.mjs.
+ *
+ * ⚠ `--path` narrows the PROJECT scope only. User-scope artifacts under `$HOME`
+ * are always swept, because they are the ones a repository scan structurally
+ * cannot reach — narrowing them away would make the flag quietly hide the exact
+ * surface this exists to find.
+ */
+function discoverArtifacts(flags) {
+  const cwd = flags.path ? path.resolve(String(flags.path)) : process.cwd();
+  return discoverAgentArtifacts(cwd);
+}
+
 function printAssets(assets) {
   const byType = {};
   for (const a of assets) byType[a.type] = (byType[a.type] ?? 0) + 1;
@@ -350,18 +370,59 @@ function printAssets(assets) {
   }
 }
 
+/**
+ * The artifact half of a local scan.
+ *
+ * Prints the CAPS alongside the count, always. A bounded walk that reports "4
+ * skills" and nothing else is claiming a total it did not measure, and the
+ * operator reading it has no way to know the sweep stopped early.
+ */
+function printArtifacts(artifacts, capped = [], available = []) {
+  if (!artifacts.length && !capped.length && !available.length) return;
+  const by = rollupArtifacts(artifacts);
+  console.log(bold('\n  Installed agent artifacts'));
+  console.log(
+    '  ' +
+      (Object.keys(by).length
+        ? Object.entries(by)
+            .map(([k, n]) => `${cyan(n)} ${dim(k + (n === 1 ? '' : 's'))}`)
+            .join(dim('  ·  '))
+        : dim('none found')),
+  );
+  for (const a of artifacts) {
+    const scope = a.scope === 'user' ? yellow('user') : dim('project');
+    console.log(`  ${gray('•')} ${bold(a.name)} ${dim(a.kind)} ${scope} ${a.vendor ? gray('(' + a.vendor + ')') : ''}`);
+    console.log(`      ${dim(a.path)}`);
+    if (a.files?.length) console.log(`      ${dim(a.files.length + ' bundled file(s)')}`);
+  }
+  if (available.length) {
+    const total = available.reduce((n, a) => n + a.count, 0);
+    // Said in words, because the number alone invites the wrong reading. These are
+    // NOT installed and the agent does not load them; they are a catalogue on disk.
+    console.log(
+      dim(`\n  ${total} more available in ${available.length} checked-out catalogue(s), none enabled:`),
+    );
+    for (const a of available) console.log(`      ${dim(a.marketplace)} ${gray(a.count)}`);
+  }
+  if (capped.length) {
+    console.log(dim(`\n  Sweep capped (${capped.length}) — this list is a floor, not a total.`));
+  }
+}
+
 async function cmdScan(flags) {
   const cfg = loadConfig();
   const assets = discover(flags);
+  const { artifacts, capped, available } = discoverArtifacts(flags);
   if (flags.json && !flags.report) {
-    console.log(JSON.stringify({ machine: machineInfo(cfg), assets }, null, 2));
+    console.log(JSON.stringify({ machine: machineInfo(cfg), assets, artifacts, capped, available }, null, 2));
     return;
   }
   console.log(bold(cyan('\n  Shomra')) + dim(` agent v${VERSION} — local scan`));
   printAssets(assets);
+  printArtifacts(artifacts, capped, available);
 
   if (flags.report) {
-    await sendReport(cfg, assets, flags);
+    await sendReport(cfg, assets, flags, { artifacts, capped, available });
   } else {
     console.log(
       dim('\n  Run ') + bold('shomra report') + dim(' to analyze these on the platform and see findings.\n'),
@@ -369,15 +430,33 @@ async function cmdScan(flags) {
   }
 }
 
-async function sendReport(cfg, assets, flags) {
+async function sendReport(cfg, assets, flags, extra = {}) {
   const { apiKey, url } = resolveSettings(cfg);
   if (!apiKey) {
     exitNotConfigured();
   }
+  const artifacts = extra.artifacts ?? [];
+  const capped = extra.capped ?? [];
+  const available = extra.available ?? [];
   process.stdout.write(dim('\n  Reporting to platform… '));
   try {
-    const res = await api(url, apiKey, '/agent/report', { machine: machineInfo(cfg), assets });
-    console.log(green('done') + dim(` (${res.assets} assets analyzed)`));
+    const res = await api(url, apiKey, '/agent/report', {
+      machine: machineInfo(cfg),
+      assets,
+      artifacts,
+      // The caps this sweep hit, carried so the platform can present its artifact
+      // count as the FLOOR it is. Dropping this on the wire is how a bounded walk
+      // starts reading as an exhaustive one.
+      capped,
+      // Catalogues, as counts. See agent-artifacts.mjs.
+      available,
+    });
+    console.log(
+      green('done') +
+        dim(` (${res.assets} assets analyzed`) +
+        (res.artifacts ? dim(`, ${res.artifacts.registered} artifacts registered`) : '') +
+        dim(')'),
+    );
     if (flags.json) {
       console.log(JSON.stringify(res, null, 2));
       return;
@@ -405,7 +484,18 @@ async function sendReport(cfg, assets, flags) {
   } catch (e) {
     console.log(red('failed'));
     console.error(`  ${red('✗')} ${e.message}\n`);
-    process.exit(1);
+    // ⚠ `exitCode`, NOT `process.exit(1)`. A hard exit here tears the process
+    // down while undici's socket for the failed POST is still closing, and on
+    // Windows libuv aborts the process outright:
+    //
+    //   Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c
+    //
+    // The crash lands AFTER the error message, so it reads as a second, unrelated
+    // fault and sends whoever hit it looking for a bug in the wrong place — which
+    // is exactly what it did. Setting the code lets Node drain its handles and
+    // exit on its own with the same status. The `Connection: close` header in
+    // `api()` was an earlier attempt at this same problem from the other end.
+    process.exitCode = 1;
   }
 }
 

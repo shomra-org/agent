@@ -21,6 +21,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { scanAiUsage, rollupAiUsage, isAiUsageScannable, AI_USAGE_CATEGORY_LABEL } from './ai-usage.mjs';
+import { clampAsset } from './wire-limits.mjs';
 import { readVendorPosture, canonicalGrant } from './agent-posture.mjs';
 
 const HOME = os.homedir();
@@ -953,11 +954,20 @@ export function discoverAll(roots = [process.cwd()], opts = {}) {
     ...discoverCodingAgents(scanRoots),
     ...discoverModelKeys(),
   ];
+  // ⚠ CLAMPED BEFORE DEDUP, and before anything leaves this function. A report is
+  // validated all-or-nothing, so ONE over-long field — an MCP server launched by
+  // an inline `node -e '<1675 chars>'` is the case that found this — rejects the
+  // whole payload and costs the machine its entire inventory. Clamping first also
+  // means the dedup key below is the key the backend will see, so a value that
+  // was abbreviated on the wire cannot dedup differently here than it does there.
+  // See wire-limits.mjs for why truncation carries a fingerprint.
+  const clamped = all.map(clampAsset);
+
   // Final dedup by (type, identifier) — a runtime can be found by both dir and
   // process; an env key can also appear in a .env file.
   const seen = new Set();
   const out = [];
-  for (const a of all) {
+  for (const a of clamped) {
     const key = `${a.type}::${a.identifier || a.name}`;
     if (seen.has(key)) continue;
     seen.add(key);
