@@ -19,6 +19,7 @@ import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { discoverAll } from './discovery.mjs';
 import { localScan, localGate, grade, downrankCodeContext, SECRET_PATTERNS, INVISIBLE_CHARS_RE } from './guard-signals.mjs';
+import { makeLedgerStore } from './guard-ledger.mjs';
 import { scanSourceFile, isScannableSource, isModelConfig } from './code-sast.mjs';
 import { scanModelRefs, isModelRefScannable } from './model-refs.mjs';
 import { scanAiUsage, isAiUsageScannable, KNOWN_AI_PACKAGES, AI_USAGE_CATEGORY_LABEL } from './ai-usage.mjs';
@@ -139,6 +140,14 @@ function breakerReset() {
     /* ignore */
   }
 }
+
+// ── the fail-open ledger ─────────────────────────────────────────────
+// The breaker above is what MAKES failing open cheap; this is what makes it
+// VISIBLE. A breaker-open window produces no rows on the backend, which is
+// byte-for-byte what a quiet, clean window produces — so without this, "the
+// guard was unreachable" and "the guard found nothing" are the same evidence.
+// See guard-ledger.mjs, and src/gate/enforcement-availability.ts in the backend.
+const guardLedger = makeLedgerStore(CONFIG_DIR, { version: VERSION });
 // Machine identity attached to gate / guard / proxy calls so the backend can
 // attribute the activity to this enrolled machine. Unlike machineInfo() it does
 // NOT generate/persist a machineId — an unenrolled machine simply reports none,
@@ -3452,6 +3461,21 @@ function envFlag(name) {
   return ['1', 'true', 'yes', 'on'].includes(String(process.env[name] ?? '').toLowerCase());
 }
 
+/**
+ * Why a guard call did not reach a verdict, in the vocabulary the backend's
+ * availability view groups on. ⚠ Coarse ON PURPOSE: this string is stored and
+ * shown to an operator, and an error message can carry a proxy URL, an internal
+ * hostname, or a token in a query string. `e.message` never goes in it.
+ */
+function guardFailureReason(e) {
+  const name = String(e?.name ?? '');
+  const msg = String(e?.message ?? '');
+  if (name === 'AbortError' || /abort|timeout/i.test(msg)) return 'timeout';
+  const http = msg.match(/^HTTP (\d{3})$/);
+  if (http) return `http-${http[1]}`;
+  return 'network';
+}
+
 /** The gate/tool-call request body, optionally carrying the Tier-0 verdict. */
 function buildGuardBody(norm, agent, clientDecision, clientReason) {
   return {
@@ -3463,6 +3487,13 @@ function buildGuardBody(norm, agent, clientDecision, clientReason) {
     env: detectEnv(),
     agent,
     ...(clientDecision ? { client_decision: clientDecision, client_reason: clientReason } : {}),
+    // ⚠ UNCONDITIONAL, INCLUDING WHEN IT IS EMPTY. The envelope's PRESENCE is
+    // what tells the backend this client is capable of reporting an outage at
+    // all; its contents are the outages themselves. Omitting it when there is
+    // nothing to report — which reads as an obvious optimisation — makes a
+    // healthy machine indistinguishable from one that could never have spoken,
+    // and drops the whole estate to NOT_ATTEMPTABLE. See guard-ledger.mjs rule 1.
+    guard_ledger: guardLedger.envelope(),
   };
 }
 
@@ -3576,7 +3607,17 @@ async function cmdToolGuard(flags) {
 
   // Breaker: skip the round-trip while the backend is known-down (fail-open —
   // Tier 0 already caught the dangerous cases). Strict opts out to stay closed.
-  if (!strict && breakerOpen()) process.exit(0);
+  //
+  // ⚠ THIS IS THE FAIL-OPEN WINDOW, and it is the one that costs the most
+  // coverage: it is silent, instant, and lasts a whole cooldown. The call is
+  // about to run having been screened by Tier 0 alone (no org policy, no
+  // identity, no flow, no supply chain, no intent) — or by nothing at all if
+  // the local engine is switched off. Record which, so the backend can tell an
+  // outage from a quiet afternoon.
+  if (!strict && breakerOpen()) {
+    guardLedger.count(localOff ? 'unscreened' : 'local', 'breaker-open');
+    process.exit(0);
+  }
 
   const body = buildGuardBody(
     norm,
@@ -3605,6 +3646,12 @@ async function cmdToolGuard(flags) {
       // on its own, so it gets a visible line rather than a 30s breaker cooldown
       // that would hide it (and skip even this warning on the calls after it).
       if (r.status === 401 || r.status === 403) {
+        // ⚠ An unenforced call, and the stderr line below already says so — but
+        // a warning nobody is reading is not evidence. It accrues to the ledger
+        // like any other window; it simply cannot be FLUSHED until the key is
+        // fixed, which is the correct behaviour: the gap persists exactly as
+        // long as the misconfiguration does.
+        guardLedger.count(localOff ? 'unscreened' : 'local', `auth-${r.status}`);
         process.stderr.write(
           `[shomra] guard NOT enforced: the backend rejected this API key (HTTP ${r.status}). ` +
             `Local Tier-0 screening still ran; org policy, agent identity and flow control did not. ` +
@@ -3617,8 +3664,19 @@ async function cmdToolGuard(flags) {
     }
     res = await r.json();
     breakerReset(); // healthy response — clear any tripped breaker
+    // ⚠ ACK BEFORE CLOSE, and both only after a 2xx. `ack` drops what THIS
+    // request carried (matched by opened_at, so a gap a concurrent hook appended
+    // meanwhile survives); `close` then seals any window this success just
+    // ended. Reversed, the window closed here would be added to `pending` and
+    // then immediately acked away without ever having been sent.
+    guardLedger.ack(body.guard_ledger?.gaps);
+    guardLedger.close();
   } catch (e) {
     breakerTrip(); // remember this failure so the next calls skip the wait
+    // The first failure of a window, and every subsequent one that still pays
+    // the timeout. `countCall` opens the window on the first and leaves it
+    // alone after — one outage is one row, not one row per call.
+    guardLedger.count(localOff ? 'unscreened' : 'local', guardFailureReason(e));
     if (strict) emitGuardDeny(agent, `Shomra guard could not be reached (${e.message}); blocked by fail-closed policy.`);
     process.exit(0); // fail-open (Tier 0 already screened the dangerous patterns)
   }
@@ -3718,6 +3776,13 @@ async function cmdResultGuard(flags) {
     // parse cleanly and `res.decision` would be undefined → silent fail-open.
     if (!r.ok) {
       if (r.status === 401 || r.status === 403) {
+        // ⚠ DELIBERATELY NOT COUNTED IN THE FAIL-OPEN LEDGER, though it is just
+        // as unenforced. That ledger's denominator is GateEvent — the tool-CALL
+        // channel — and this guard posts to /gate/tool-result, which writes no
+        // GateEvent. Folding it in would put a numerator from one population
+        // over a denominator from another and publish the quotient, which is the
+        // exact error the availability module refuses elsewhere. The result
+        // channel needs its own ledger, not a share of this one.
         process.stderr.write(
           `[shomra] result-guard NOT enforced: the backend rejected this API key (HTTP ${r.status}). ` +
             `Local Tier-0 screening still ran; server-side flow taint did not. ` +
@@ -3851,6 +3916,10 @@ async function cmdPromptGuard(flags) {
     process.exit(0);
   }
   if (!strict && breakerOpen()) {
+    // The prompt channel posts to /gate/tool-call and therefore writes a
+    // GateEvent, so an unscreened submission belongs in the same ledger and the
+    // same denominator as an unscreened tool call.
+    guardLedger.count(localOff ? 'unscreened' : 'local', 'breaker-open');
     if (injection.length) emitPromptContext(agent, promptInjectionNote(injection));
     process.exit(0);
   }
@@ -3858,18 +3927,27 @@ async function cmdPromptGuard(flags) {
   // ── Tier 2: org policy on the prompt channel (DLP-shaped rules the local floor
   // deliberately doesn't carry — customer identifiers, regulated data classes).
   let res;
+  // Built once and held, so the ack below drops exactly the gaps THIS request
+  // carried rather than whatever the file happens to hold afterwards.
+  const promptBody = buildPromptGuardBody(norm, agent);
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), guardTimeoutMs());
     const r = await fetch(`${url}/gate/tool-call`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Shomra-Key': apiKey, Connection: 'close' },
-      body: JSON.stringify(buildPromptGuardBody(norm, agent)),
+      body: JSON.stringify(promptBody),
       signal: ctrl.signal,
     });
     clearTimeout(timer);
     if (!r.ok) {
       if (r.status === 401 || r.status === 403) {
+        // ⚠ An unenforced call, and the stderr line below already says so — but
+        // a warning nobody is reading is not evidence. It accrues to the ledger
+        // like any other window; it simply cannot be FLUSHED until the key is
+        // fixed, which is the correct behaviour: the gap persists exactly as
+        // long as the misconfiguration does.
+        guardLedger.count(localOff ? 'unscreened' : 'local', `auth-${r.status}`);
         process.stderr.write(`[shomra] prompt-guard NOT enforced: the backend rejected this API key (HTTP ${r.status}). Local screening still ran.\n`);
         if (strict) emitPromptDeny(agent, `Shomra prompt-guard could not authenticate (HTTP ${r.status}); blocked by fail-closed policy.`);
         process.exit(0);
@@ -3878,8 +3956,11 @@ async function cmdPromptGuard(flags) {
     }
     res = await r.json();
     breakerReset();
+    guardLedger.ack(promptBody.guard_ledger?.gaps);
+    guardLedger.close();
   } catch (e) {
     breakerTrip();
+    guardLedger.count(localOff ? 'unscreened' : 'local', guardFailureReason(e));
     if (injection.length) emitPromptContext(agent, promptInjectionNote(injection));
     if (strict) emitPromptDeny(agent, `Shomra prompt-guard could not be reached (${e.message}); blocked by fail-closed policy.`);
     process.exit(0);
@@ -3906,6 +3987,10 @@ function promptInjectionNote(injection) {
  *  speaks — so it lands in Gate Activity with no schema change. */
 function buildPromptGuardBody(norm, agent, clientDecision, clientReason) {
   return {
+    // Same channel as the tool firewall (/gate/tool-call), so the same envelope
+    // rides along — a machine whose operator only ever submits prompts still
+    // needs its capability witness stamped, or its silence is unreadable.
+    guard_ledger: guardLedger.envelope(),
     tool_name: 'UserPromptSubmit',
     tool_input: { prompt: norm.prompt },
     cwd: norm.cwd,
