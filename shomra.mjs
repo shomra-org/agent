@@ -3298,6 +3298,60 @@ const AGENT_INSTALLERS = {
 // understand — including Cursor/Cline/Aider-style tool names like
 // run_terminal_cmd/create_file.
 function normalizeGuardInput(agent, payload) {
+  const norm = normalizeGuardShape(agent, payload);
+  // ⚠ Added HERE, once, rather than inside each of the branches below: a
+  // runtime whose branch forgot it would silently lose the sub-agent boundary,
+  // and the backend cannot tell that from a session that genuinely has no
+  // parent.
+  const parent = parentSessionFrom(agent, payload);
+  return parent ? { ...norm, parent_session_id: parent } : norm;
+}
+
+/**
+ * THE SUB-AGENT BOUNDARY — the session that spawned this one.
+ *
+ * Without it the backend's taint engine stops at the spawn, and the cheapest
+ * evasion of the whole flow control is three ordinary steps: read the secret in
+ * the parent, spawn a sub-agent, egress from the child. The child holds no
+ * taint, has no source event, and looks like a clean fresh run.
+ *
+ * ⚠ EVERY SOURCE HERE IS A CLAIM, NOT A PROOF, and the backend treats it as
+ * one: naming a parent can only ever ADD taint to the session doing the naming.
+ * It cannot clear another session's taint and it cannot lower a verdict, so a
+ * wrong value costs a false block on the caller itself — never a missed one
+ * somewhere else.
+ *
+ * ⚠ SENDING NOTHING IS THE HONEST DEFAULT. Most runtimes do not expose a
+ * parent id today, and deriving one from timing or pid proximity would fabricate
+ * a lineage. The backend instead COUNTS the sub-agent spawns it watches happen
+ * and reports the unjoined ones as a blind spot, which is a true statement where
+ * a guess would be a false one.
+ */
+function parentSessionFrom(agent, payload) {
+  const p = payload || {};
+  const candidates = [
+    // What each runtime calls it, where it says so at all.
+    p.parent_session_id,
+    p.parentSessionId,
+    agent === 'cursor' ? p.parent_conversation_id : undefined,
+    agent === 'windsurf' ? p.parent_trajectory_id : undefined,
+    agent === 'cline' ? p.parent_task_id : undefined,
+    // The escape hatch that makes this usable TODAY: an orchestrator that spawns
+    // sub-agents exports the parent's session id into the child's environment,
+    // and the boundary is observed even on a runtime with no field for it.
+    process.env.SHOMRA_PARENT_SESSION_ID,
+  ];
+  const self = String(p.session_id ?? p.conversation_id ?? p.task_id ?? p.trajectory_id ?? '').trim();
+  for (const c of candidates) {
+    const v = typeof c === 'string' ? c.trim() : '';
+    // A self-referential parent is not a boundary. Dropped here rather than
+    // relying on the backend to notice.
+    if (v && v.length <= 200 && v !== self) return v;
+  }
+  return undefined;
+}
+
+function normalizeGuardShape(agent, payload) {
   switch (agent) {
     case 'cursor': {
       if (typeof payload.command === 'string') {
@@ -3562,6 +3616,7 @@ function buildGuardBody(norm, agent, clientDecision, clientReason) {
     tool_input: norm.tool_input,
     cwd: norm.cwd,
     session_id: norm.session_id,
+    ...(norm.parent_session_id ? { parent_session_id: norm.parent_session_id } : {}),
     machine: gateMachine(),
     env: detectEnv(),
     agent,
@@ -3801,6 +3856,7 @@ async function cmdResultGuard(flags) {
     tool_response: response,
     cwd: norm.cwd,
     session_id: norm.session_id,
+    ...(norm.parent_session_id ? { parent_session_id: norm.parent_session_id } : {}),
     machine: gateMachine(),
     env: detectEnv(),
     agent,
@@ -3878,6 +3934,7 @@ function normalizePromptInput(agent, payload) {
       prompt: typeof p.prompt === 'string' ? p.prompt : '',
       cwd: p.cwd || (Array.isArray(p.workspace_roots) ? p.workspace_roots[0] : undefined),
       session_id: p.conversation_id,
+      parent_session_id: parentSessionFrom(agent, p),
     };
   }
   // Claude Code sends `user_prompt`; older builds sent `prompt`. Read both — a
@@ -3886,6 +3943,10 @@ function normalizePromptInput(agent, payload) {
     prompt: typeof p.user_prompt === 'string' ? p.user_prompt : typeof p.prompt === 'string' ? p.prompt : '',
     cwd: p.cwd,
     session_id: p.session_id,
+    // ⚠ Carried on the prompt channel too. A sub-agent's FIRST observed event is
+    // often its prompt, and an edge recorded only on the tool-call channel would
+    // miss a child whose very first act was a guarded read.
+    parent_session_id: parentSessionFrom(agent, p),
   };
 }
 
@@ -4013,6 +4074,7 @@ function buildPromptGuardBody(norm, agent, clientDecision, clientReason) {
     tool_input: { prompt: norm.prompt },
     cwd: norm.cwd,
     session_id: norm.session_id,
+    ...(norm.parent_session_id ? { parent_session_id: norm.parent_session_id } : {}),
     machine: gateMachine(),
     env: detectEnv(),
     agent,
