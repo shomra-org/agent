@@ -450,6 +450,19 @@ async function sendReport(cfg, assets, flags, extra = {}) {
       capped,
       // Catalogues, as counts. See agent-artifacts.mjs.
       available,
+    }, {
+      // ⚠ A LONGER BUDGET THAN EVERY OTHER CALL, and it is not a workaround.
+      // This is the only request that carries a machine's WHOLE estate — every
+      // asset and every artifact, each of which the backend analyses and writes.
+      // A well-stocked laptop sends a couple of hundred rows, and the default 30s
+      // is sized for a single `check`, not for that.
+      //
+      // The failure it prevents is the expensive one: the client gives up while
+      // the server is still writing, so the developer sees a timeout, concludes
+      // reporting is broken and stops running it — and the machine goes quiet in
+      // the estate, which is indistinguishable from an uninstalled agent.
+      // SHOMRA_API_TIMEOUT_MS still overrides.
+      timeoutMs: clampInt(process.env.SHOMRA_API_TIMEOUT_MS, 180000, 1000, 600000),
     });
     console.log(
       green('done') +
