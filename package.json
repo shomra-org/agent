@@ -16,6 +16,7 @@
     "shomra.mjs",
     "discovery.mjs",
     "guard-signals.mjs",
+    "guard-ledger.mjs",
     "code-sast.mjs",
     "model-refs.mjs",
     "ai-usage.mjs",
