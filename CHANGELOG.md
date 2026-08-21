@@ -6,6 +6,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added (threat-model refresh — OWASP AI/agentic threat modeling)
+- **`shomra design --save --subject <KIND>:<id>`** — persist the threat model
+  instead of printing it and moving on. Until now the analysis went to a
+  terminal: the command could say what to worry about on the day of the RFC and
+  had no opinion six months later, when a tool was added to the manifest and the
+  model quietly stopped describing the system. Saving pins the analysis to the
+  nine-axis **capability manifest** the backend computes, which is what makes
+  the CI check below possible. ⚠ The manifest is taken server-side, never sent
+  from the CLI — a client that posted its own could pin a model to a system it
+  invented, and the caller most likely to do that is the one automating its way
+  past the gate. Authoring is not approval: a saved version is `IN_REVIEW` and
+  does not clear CI until someone **other than its author** approves it.
+- **`shomra pr --threat-model <KIND>:<id>[,…]`** — OWASP's flagship control:
+  the build fails when the capability manifest moved and the threat model did
+  not. The existing gate answers "is this artifact dangerous"; it cannot answer
+  this one, because the changes in question leave no dangerous artifact behind —
+  a tool added to a manifest, a model swapped behind a routing rule, an approval
+  step moved. The check-run names **which of the nine axes moved**, because
+  "your threat model is stale" without that is a notification, not a finding.
+  - ⚠ **Runs even when no AI artifact changed.** That is the case it exists for:
+    a routing rule edited in application code moves the manifest while touching
+    not one MCP config, and returning early there would skip the control
+    precisely where it was needed and go green with a reassuring sentence.
+  - ⚠ **An unreachable backend does not pass the gate** — it reports UNKNOWN and
+    leaves the check neutral. Silently succeeding would make "break the network"
+    the cheapest way past a control whose whole purpose is to be unskippable.
+  - `STALE` / `NO_MODEL` fail; `UNREVIEWED` / `UNKNOWN` are neutral (a human step
+    in flight, or our own inability to look — failing either punishes the wrong
+    party). Silent without the flag, so no existing workflow changes behaviour.
+- **`shomra pr --init` also scaffolds `.github/pull_request_template.md`** — the
+  nine refresh-trigger questions asked on every PR (tools added? scope widened?
+  new data access? model or provider changed? approval step moved?). The two
+  halves are useless apart: the template surfaces the change to a human, the
+  workflow checks whether the threat model followed. ⚠ An existing template is
+  never overwritten without `--force`.
+
 ### Added (shift-left, batch 3)
 - **`shomra plan` + `shomra_review_plan` + `plan-guard`** — threat-model what an
   agent is ABOUT to build. `design` reads a document a human remembered to write;

@@ -173,14 +173,18 @@ async function api(url, key, route, body, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? clampInt(process.env.SHOMRA_API_TIMEOUT_MS, 30000, 1000, 600000);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  // POST stays the default so every existing caller is untouched; the threat-model
+  // coverage read is a GET, and sending it as a POST with a null body would be a
+  // write-shaped request for a read the backend guards with `posture.read`.
+  const method = opts.method ?? 'POST';
   let res;
   try {
     res = await fetch(`${url}${route}`, {
-      method: 'POST',
+      method,
       // Connection: close avoids undici keep-alive sockets lingering after the
       // command finishes (which can crash process.exit on Windows).
       headers: { 'Content-Type': 'application/json', 'X-Shomra-Key': key, Connection: 'close' },
-      body: JSON.stringify(body),
+      body: method === 'GET' ? undefined : JSON.stringify(body),
       signal: ctrl.signal,
     });
   } catch (e) {
@@ -220,6 +224,8 @@ const BOOLEAN_FLAGS = new Set([
   'no-suppress', 'no-baseline', 'no-policy', 'no-index', 'adaptive',
   'fail-on-regression', 'fail-on-blocked', 'write', 'yes', 'stdin', 'quiet', 'help',
   'check', 'checklist', 'pre-receive', 'uninstall',
+  // `design --save` persists the model as a version pinned to the live manifest.
+  'save',
 ]);
 // Flags that take a value (`--key value` or `--key=value`).
 const VALUE_FLAGS = new Set([
@@ -230,6 +236,9 @@ const VALUE_FLAGS = new Set([
   // `--fail-on <critical|high|medium>` lets CI gate below the default
   // (blocked-only) exit code — e.g. fail the build on a HIGH finding.
   'fail-on',
+  // `--threat-model AGENT:abc,PROJECT:def` — the subjects whose threat-model
+  // coverage `pr` should gate on, and the subject `design --save` pins to.
+  'threat-model', 'subject',
 ]);
 const KNOWN_FLAGS = new Set([...BOOLEAN_FLAGS, ...VALUE_FLAGS]);
 
@@ -1709,6 +1718,53 @@ jobs:
           SHOMRA_URL: \${{ secrets.SHOMRA_URL }}           # optional — your backend
 `;
 
+/**
+ * OWASP control: "PR template questions — explicit checks for tool additions,
+ * scope widening, new data access."
+ *
+ * ⚠ THE QUESTIONS ARE ABOUT THE NINE REFRESH AXES, NOT ABOUT SECURITY IN
+ * GENERAL. A generic "did you think about security?" checkbox is the thing
+ * everyone ticks; these name the specific, ordinary-looking changes that move an
+ * AI system past its threat model — which is the whole point of the guidance.
+ *
+ * ⚠ IT ASKS, IT DOES NOT ASSERT. Every line is a question with a default answer
+ * of "no", because a template that pre-ticks its own boxes teaches people to
+ * scroll past it. The one that says yes is the one that needs a threat-model
+ * update, and that is what `shomra pr --threat-model` then checks.
+ */
+const PR_TEMPLATE = `## What changed
+
+<!-- A sentence or two. What does this PR do? -->
+
+## AI capability review
+
+An AI component can change behaviour without any architectural change, so these
+are the changes that walk past an ordinary code review. Tick anything this PR
+does — a tick is not a problem, it is a prompt to refresh the threat model.
+
+- [ ] **Capabilities** — added or widened a tool, plugin, MCP server, command, or write operation
+- [ ] **Authority** — added or widened credentials, permissions, delegated access, or tenant scope
+- [ ] **Instructions** — changed a system prompt, policy, guardrail, or approval condition
+- [ ] **Models** — changed a model version, provider, or routing rule
+- [ ] **Memory / context** — added a retrieval source, vector store, or access to historical data
+- [ ] **Oversight** — added, removed, or moved an approval step
+- [ ] **Orchestration** — added multi-agent delegation or dynamic permission assignment
+- [ ] **External effects** — added infrastructure modification, value transfer, user contact, or code execution
+- [ ] **Detection** — changed logging, anomaly detection, rollback, or emergency stop
+
+If you ticked anything above:
+
+- [ ] The threat model has been updated for it (\`shomra design <doc> --save --subject <KIND>:<id>\`)
+- [ ] It has been reviewed by someone **other than its author**
+
+<!--
+  \`shomra design\` will threat-model a description before the code exists:
+      gh issue view 42 --json body -q .body | shomra design -
+  Saving pins the model to the capability manifest, so CI can tell you when the
+  system moves past it.
+-->
+`;
+
 function readGithubEvent() {
   try { return JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')); } catch { return {}; }
 }
@@ -1743,7 +1799,25 @@ async function cmdPr(flags, positional) {
     fs.mkdirSync(path.dirname(wf), { recursive: true });
     fs.writeFileSync(wf, PR_WORKFLOW);
     console.log(`\n  ${green('✓ Wrote')} ${bold('.github/workflows/shomra.yml')} ${dim('— commit it; PRs will get an inline Shomra review.')}`);
-    console.log(dim('  Optional: add ') + bold('SHOMRA_API_KEY') + dim(' as a repo secret to also apply org policy.') + '\n');
+
+    // The PR template ships in the same scaffold because the two halves of the
+    // control are useless apart: the template surfaces the change to a human,
+    // the workflow checks whether the threat model followed. Writing only one
+    // leaves either a question nobody verifies or a gate nobody was warned about.
+    //
+    // ⚠ NEVER OVERWRITTEN WITHOUT --force. A PR template is a file teams edit;
+    // silently replacing a customised one with ours would be a worse first
+    // impression than not shipping it at all.
+    const tpl = path.resolve('.github/pull_request_template.md');
+    if (fs.existsSync(tpl) && !flags.force) {
+      console.log(`  ${yellow('⚠')} ${dim(path.relative(process.cwd(), tpl) + ' already exists — left alone. Use --force to replace it.')}`);
+    } else {
+      fs.writeFileSync(tpl, PR_TEMPLATE);
+      console.log(`  ${green('✓ Wrote')} ${bold('.github/pull_request_template.md')} ${dim('— the nine AI-capability questions, asked on every PR.')}`);
+    }
+
+    console.log(dim('  Optional: add ') + bold('SHOMRA_API_KEY') + dim(' as a repo secret to also apply org policy.'));
+    console.log(dim('  Optional: add ') + bold('--threat-model AGENT:<id>') + dim(' to the `shomra pr` step to fail the build when the manifest moves past its threat model.') + '\n');
     return;
   }
 
@@ -1779,10 +1853,78 @@ async function cmdPr(flags, positional) {
     } else console.log(sarif);
   };
 
+  // ── OWASP control: the build fails when the capability manifest moved and
+  //    the threat model did not ─────────────────────────────────────────────
+  //
+  // The gate above answers "is this artifact dangerous". It cannot answer the
+  // question OWASP's AI threat-modeling guidance actually asks, because the
+  // change it is about leaves no dangerous artifact behind: a tool added to a
+  // manifest, a model swapped behind a routing rule, an approval step moved.
+  // Each is an ordinary-looking diff that makes yesterday's threat model
+  // describe a system that no longer exists.
+  //
+  // ⚠ SILENT WHEN NOT ASKED FOR. Without `--threat-model` this is skipped
+  // entirely — turning it on for every repo would fail builds in orgs that have
+  // never authored a model, and a gate people meet as an unexplained red check
+  // gets deleted from the workflow rather than satisfied.
+  //
+  // ⚠ AN UNREACHABLE BACKEND DOES NOT PASS THE GATE. It reports UNKNOWN and
+  // leaves the check neutral: silently succeeding would make "break the network"
+  // the cheapest way past a control whose entire purpose is to be unskippable.
+  const tmSubjects = String(flags['threat-model'] ?? '').trim();
+  let coverage = null;
+  if (tmSubjects) {
+    if (!apiKey || !url) {
+      coverage = { conclusion: 'UNKNOWN', summary: 'Threat-model coverage could not be checked — this run is not enrolled (no SHOMRA_API_KEY / SHOMRA_URL).', subjects: [] };
+    } else {
+      try {
+        coverage = await api(url, apiKey, `/threat-models/ci/verdict?subjects=${encodeURIComponent(tmSubjects)}`, null, { method: 'GET' });
+      } catch (e) {
+        coverage = { conclusion: 'UNKNOWN', summary: `Threat-model coverage could not be checked: ${e.message}`, subjects: [] };
+      }
+    }
+  }
+
+
+  // ⚠ THE THREAT-MODEL GATE RUNS EVEN WHEN NO ARTIFACT CHANGED, and this is the
+  // case it exists for. The changes OWASP is describing leave no dangerous
+  // artifact behind — a routing rule edited in application code, a model pinned
+  // in a deploy config, an approval step moved in a service — so a PR can move
+  // the capability manifest well past its threat model while touching not one
+  // MCP config. Returning early here on "no AI artifacts changed" would skip the
+  // control precisely in the situation it was built for, and the check would go
+  // green with a reassuring sentence.
   if (!artifacts.length) {
     emitSarif([]);
-    if (!flags.json && flags.sarif !== true) console.log(green('\n  ✓ No AI artifacts changed in this PR.\n'));
-    if (token && !dryRun) await githubApi(token, 'POST', `/repos/${repo}/check-runs`, { name: 'Shomra AI Security', head_sha: headSha, status: 'completed', conclusion: 'success', output: { title: 'No AI artifacts changed', summary: 'No MCP configs, skills, rules, hooks or agent cards changed in this PR.' } }).catch((e) => console.error(dim('  check-run: ' + e.message)));
+    const tmFailedEarly = !!coverage && new Set(['STALE', 'NO_MODEL']).has(coverage.conclusion);
+    const tmNeutralEarly = !!coverage && (coverage.conclusion === 'UNREVIEWED' || coverage.conclusion === 'UNKNOWN');
+    const earlyConclusion = tmFailedEarly ? 'failure' : tmNeutralEarly ? 'neutral' : 'success';
+
+    if (!flags.json && flags.sarif !== true) {
+      console.log(green('\n  ✓ No AI artifacts changed in this PR.'));
+      if (coverage) {
+        const mark = tmFailedEarly ? red('✗') : tmNeutralEarly ? yellow('⚠') : green('✓');
+        console.log(`  ${mark} Threat model: ${coverage.summary}`);
+        for (const sub of coverage.subjects || []) {
+          if (sub.conclusion === 'PASS') continue;
+          console.log(dim(`      ${sub.subjectKind}:${sub.subjectId} — ${sub.headline}`));
+        }
+      }
+      console.log('');
+    }
+    if (token && !dryRun) {
+      await githubApi(token, 'POST', `/repos/${repo}/check-runs`, {
+        name: 'Shomra AI Security',
+        head_sha: headSha,
+        status: 'completed',
+        conclusion: earlyConclusion,
+        output: {
+          title: tmFailedEarly ? coverage.summary.slice(0, 120) : 'No AI artifacts changed',
+          summary: ['No MCP configs, skills, rules, hooks or agent cards changed in this PR.', ...(coverage ? threatModelSummary(coverage) : [])].join('\n'),
+        },
+      }).catch((e) => console.error(dim('  check-run: ' + e.message)));
+    }
+    if (tmFailedEarly) process.exitCode = 1;
     return;
   }
 
@@ -1804,7 +1946,18 @@ async function cmdPr(flags, positional) {
     }
   }
   const shown = annotations.slice(0, 50);
-  const conclusion = blocked ? 'failure' : flagged ? (flags.strict ? 'failure' : 'neutral') : 'success';
+
+  // STALE and NO_MODEL fail the check: a capability manifest that moved past its
+  // threat model is the finding, and rendering it as a warning makes it a thing
+  // that scrolls by. UNREVIEWED and UNKNOWN are neutral — the first is a human
+  // step still in flight, the second is our own inability to look, and failing a
+  // build for either would punish the wrong party.
+  const TM_FAILS = new Set(['STALE', 'NO_MODEL']);
+  const tmFailed = !!coverage && TM_FAILS.has(coverage.conclusion);
+  const tmNeutral = !!coverage && (coverage.conclusion === 'UNREVIEWED' || coverage.conclusion === 'UNKNOWN');
+
+  const conclusion =
+    blocked || tmFailed ? 'failure' : flagged ? (flags.strict ? 'failure' : 'neutral') : tmNeutral ? 'neutral' : 'success';
   const summary = [
     blocked ? `**${blocked} blocked**` : flagged ? `**${flagged} flagged**` : '**All clear**',
     `· ${results.length} artifact(s) changed · ${annotations.length} finding(s)${suppressed ? ` · ${suppressed} suppressed` : ''}`,
@@ -1813,10 +1966,19 @@ async function cmdPr(flags, positional) {
     '| --- | --- | --- | --- |',
     ...results.map((r) => `| \`${r.path}\` | ${r.kind} | ${r.decision} | ${(r.findings || []).length} |`),
     annotations.length > 50 ? `\n_Showing first 50 of ${annotations.length} annotations._` : '',
+    ...(coverage ? threatModelSummary(coverage) : []),
   ].join('\n');
   const checkRun = {
     name: 'Shomra AI Security', head_sha: headSha, status: 'completed', conclusion,
-    output: { title: `${blocked ? blocked + ' blocked' : flagged ? flagged + ' flagged' : 'Clean'} — ${results.length} changed artifact(s)`, summary, annotations: shown },
+    output: {
+      title: blocked
+        ? `${blocked} blocked — ${results.length} changed artifact(s)`
+        : tmFailed
+          ? `Threat model out of date — ${coverage.conclusion === 'NO_MODEL' ? 'no model authored' : 'the system moved past it'}`
+          : `${flagged ? flagged + ' flagged' : 'Clean'} — ${results.length} changed artifact(s)`,
+      summary,
+      annotations: shown,
+    },
   };
 
   if (dryRun || flags.json) {
@@ -1834,8 +1996,38 @@ async function cmdPr(flags, positional) {
     }
   }
 
-  if (blocked) process.exitCode = 1;
+  if (coverage && !flags.json && flags.sarif !== true) {
+    const mark = tmFailed ? red('✗') : tmNeutral ? yellow('⚠') : green('✓');
+    console.log(`  ${mark} Threat model: ${coverage.summary}`);
+    for (const sub of coverage.subjects || []) {
+      if (sub.conclusion === 'PASS') continue;
+      console.log(dim(`      ${sub.subjectKind}:${sub.subjectId} — ${sub.headline}`));
+      for (const d of sub.drift?.deltas || []) {
+        if (d.drift === 'CHANGED') console.log(dim(`        • ${d.label} moved — ${d.meaning}`));
+      }
+    }
+  }
+
+  if (blocked || tmFailed) process.exitCode = 1;
   else if (flagged && flags.strict) process.exitCode = 2;
+}
+
+/** The threat-model section of the check-run summary. Markdown, GitHub-flavoured. */
+function threatModelSummary(coverage) {
+  const out = ['', '### Threat-model coverage', '', coverage.summary, ''];
+  if (!coverage.subjects?.length) return out;
+  out.push('| Subject | Verdict | Why |', '| --- | --- | --- |');
+  for (const s of coverage.subjects) {
+    out.push(`| \`${s.subjectKind}:${s.subjectId}\` | ${s.conclusion} | ${(s.headline || '').replace(/\|/g, '\\|')} |`);
+  }
+  // Name the axes that moved. "Your threat model is stale" that does not say
+  // WHICH of the nine dimensions moved is a notification, not a finding — the
+  // reader still has to go and diff the world to act on it.
+  const moved = coverage.subjects.flatMap((s) =>
+    (s.drift?.deltas || []).filter((d) => d.drift === 'CHANGED').map((d) => `${s.subjectId}: **${d.label}** — ${d.meaning}`),
+  );
+  if (moved.length) out.push('', '**Axes that moved since the threat model was written**', '', ...moved.map((m) => `- ${m}`));
+  return out;
 }
 
 // ── shomra fix: remediate an AI artifact in place ────────────────
@@ -5121,6 +5313,7 @@ async function cmdDesign(flags, positional) {
   const open = results.filter((r) => r.verdict === 'OPEN_PATH');
   const critical = results.filter((r) => r.worst === 'CRITICAL');
 
+
   if (flags.json) {
     console.log(JSON.stringify({ documents: results.length, openPaths: open.length, critical: critical.length, results }, null, 2));
   } else if (flags.checklist) {
@@ -5133,6 +5326,58 @@ async function cmdDesign(flags, positional) {
       console.log(
         `  ${open.length ? red(`✗ ${open.length} of ${results.length} documents describe a closed attack path`) : yellow(`• no closed path described in ${results.length} documents`)}\n`,
       );
+    }
+  }
+
+  // ── --save: stop being a thing that scrolls past ──────────────────────────
+  //
+  // Until now this command's whole output went to a terminal. It could say what
+  // to worry about on the day of the RFC and had no opinion six months later,
+  // when a tool was added to the manifest and the model quietly stopped
+  // describing the system. Saving pins the analysis to the nine-axis capability
+  // manifest AS THE BACKEND SEES IT RIGHT NOW, which is what makes `shomra pr`
+  // able to fail a build whose capabilities moved without the model moving.
+  //
+  // ⚠ THE MANIFEST IS TAKEN SERVER-SIDE, NOT SENT FROM HERE. A CLI that posted
+  // its own manifest could pin a model to a system it invented — and the caller
+  // most likely to do that is the one automating its way past the gate.
+  if (flags.save) {
+    const subject = String(flags.subject || flags['threat-model'] || '').trim();
+    if (!/^(AGENT|PROJECT|DESIGN):.+/i.test(subject)) {
+      console.error(red('✗') + ' ' + bold('--save') + ' needs ' + bold('--subject <AGENT|PROJECT|DESIGN>:<id>') + dim('  e.g. --subject AGENT:cl2x… or --subject DESIGN:refunds-agent'));
+      process.exit(EXIT_USAGE);
+    }
+    const [kindRaw, ...rest] = subject.split(':');
+    const subjectKind = kindRaw.toUpperCase();
+    const subjectId = rest.join(':');
+    const { apiKey, url } = resolveSettings(loadConfig());
+    if (!url || !apiKey) exitNotConfigured();
+    // One version per document: two unrelated RFCs must not pool into one model,
+    // exactly as they are not pooled into one analysis above.
+    for (const result of results) {
+      try {
+        const saved = await api(url, apiKey, '/threat-models', {
+          subjectKind,
+          subjectId: results.length > 1 ? `${subjectId}:${result.name}` : subjectId,
+          title: result.name,
+          analysis: result,
+          source: 'cli',
+        });
+        const v = saved?.version;
+        // ⚠ stdout belongs to the caller under --json / --checklist: it is a
+        // document being piped somewhere. The save confirmation goes to stderr
+        // there, so `design --json --save | jq` still parses.
+        const say = flags.json || flags.checklist ? (m) => console.error(m) : (m) => console.log(m);
+        say(`\n  ${green('✓ Saved')} threat model ${bold('v' + (v?.seq ?? '?'))} for ${bold(subjectKind + ':' + subjectId)} ${dim('— ' + (v?.reviewState ?? 'IN_REVIEW'))}`);
+        // ⚠ Say the quiet part: authoring is not approval. A version left
+        // IN_REVIEW does not clear the CI gate, and a user who thinks it does
+        // will read the next red build as a bug in the tool.
+        say(dim('    It does NOT clear the CI gate until someone OTHER than its author approves it.'));
+        if (saved?.coverage?.headline) say(dim('    ' + saved.coverage.headline));
+      } catch (e) {
+        console.error(red('✗') + ` Could not save the threat model: ${e.message}`);
+        process.exit(1);
+      }
     }
   }
 
