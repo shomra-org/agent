@@ -219,7 +219,7 @@ const BOOLEAN_FLAGS = new Set([
   'apply', 'dry-run', 'global', 'local', 'trailer', 'evolve', 'report', 'init',
   'no-suppress', 'no-baseline', 'no-policy', 'no-index', 'adaptive',
   'fail-on-regression', 'fail-on-blocked', 'write', 'yes', 'stdin', 'quiet', 'help',
-  'check', 'checklist', 'pre-receive', 'uninstall',
+  'check', 'checklist', 'pre-receive', 'uninstall', 'save',
 ]);
 // Flags that take a value (`--key value` or `--key=value`).
 const VALUE_FLAGS = new Set([
@@ -230,6 +230,8 @@ const VALUE_FLAGS = new Set([
   // `--fail-on <critical|high|medium>` lets CI gate below the default
   // (blocked-only) exit code — e.g. fail the build on a HIGH finding.
   'fail-on',
+  // `shomra design --save --subject KIND:id` — pin the analysis to a subject.
+  'subject', 'title', 'note', 'actor',
 ]);
 const KNOWN_FLAGS = new Set([...BOOLEAN_FLAGS, ...VALUE_FLAGS]);
 
@@ -5067,7 +5069,7 @@ async function addPackage(flags, positional) {
 
 // ── shomra design: threat-model a system before it exists ───────────────────
 //
-//   shomra design <file|dir|-> [--checklist] [--json] [--strict]
+//   shomra design <file|dir|-> [--save --subject KIND:id] [--checklist] [--json] [--strict]
 //
 // The leftmost surface Shomra has. Everything else needs an artifact; this reads
 // a DESCRIPTION — an RFC, a design doc, a Jira/Linear ticket, a PR body — and
@@ -5136,11 +5138,65 @@ async function cmdDesign(flags, positional) {
     }
   }
 
+  // --save pins the analysis to the live capability manifest server-side, so the
+  // dashboard and the CI gate can tell later that the system has moved past it.
+  // Without it the analysis dies with the terminal it printed to.
+  if (flags.save) await saveDesign(results, flags);
+
   // CRITICAL = untrusted input reaching execution or a destructive action. That
   // is a hard fail even without --strict: it is the one shape where the attacker
   // picks the action, and no amount of care in the implementation recovers it.
   if (critical.length) process.exitCode = 1;
   else if (open.length && flags.strict) process.exitCode = 2;
+}
+
+// ── shomra design --save --subject KIND:id ──────────────────────────────────
+//
+// ⚠ ONE SUBJECT, ONE DOCUMENT. A directory of RFCs produces one analysis each,
+// and pinning several of them to the same subject would leave the subject
+// described by whichever happened to be written last. The command refuses
+// rather than picking.
+async function saveDesign(results, flags) {
+  const { apiKey, url } = resolveSettings(loadConfig());
+  const subject = String(flags.subject ?? '').trim();
+  const m = /^(AGENT|PROJECT|DESIGN):(.+)$/i.exec(subject);
+  if (!m) {
+    console.error(red('✗') + ' --save needs ' + bold('--subject KIND:id') + dim('  (AGENT | PROJECT | DESIGN)'));
+    console.error(dim('  e.g. ') + 'shomra design docs/rfc.md --save --subject DESIGN:inbox-agent');
+    process.exit(EXIT_USAGE);
+  }
+  if (results.length !== 1) {
+    console.error(red('✗') + ` --save takes one document; ${results.length} were modelled.`);
+    console.error(dim('  Save each against its own subject.'));
+    process.exit(EXIT_USAGE);
+  }
+  if (!apiKey || !url) exitNotConfigured();
+
+  const [, kind, id] = m;
+  const r = results[0];
+  process.stdout.write(dim('  Saving to the platform… '));
+  try {
+    const res = await api(url, apiKey, '/threat-models/agent-author', {
+      subjectKind: kind.toUpperCase(),
+      subjectId: id,
+      title: flags.title ? String(flags.title) : r.name,
+      analysis: r,
+      note: flags.note ? String(flags.note) : `Modelled from ${r.name}.`,
+      actor: flags.actor ? String(flags.actor) : undefined,
+    });
+    const v = res?.version;
+    const c = res?.coverage;
+    console.log(green('saved') + dim(` — v${v?.seq ?? '?'}, ${v?.reviewState ?? 'IN_REVIEW'}`));
+    // ⚠ Saving is not approving. A version nobody else has signed off does not
+    // clear the gate, and saying so here is the difference between a stored
+    // document and a control.
+    console.log(dim('  It is not approved yet — a threat model must be reviewed by someone other than its author.'));
+    if (c?.headline) console.log(dim('  ') + c.headline);
+  } catch (e) {
+    console.log(red('failed'));
+    console.error(dim('  ') + (e?.message || String(e)));
+    process.exitCode = 1;
+  }
 }
 
 const DESIGN_DOC_RE = /\.(md|markdown|txt|rst|adoc)$/i;
@@ -6606,7 +6662,7 @@ ${bold('COMMANDS')}
   ${cyan('doctor')}        ${bold('Am I safe?')} Posture of this machine's AI setup ${dim('[--json]')}
 
   ${dim('Prevention — get in front of the model, not just behind it')}
-  ${cyan('design')}        ${bold('Threat-model a system before it exists')} ${dim('<file|dir|-> [--checklist] [--strict] [--json]')}
+  ${cyan('design')}        ${bold('Threat-model a system before it exists')} ${dim('<file|dir|-> [--save --subject KIND:id] [--checklist] [--strict] [--json]')}
                 ${dim('Reads an RFC / design doc / ticket and says whether it closes a path from')}
                 ${dim('untrusted input to a consequence, plus what must be true before it ships.')}
                 ${dim('Pipe a ticket straight in: ')}${bold('gh issue view 42 --json body -q .body | shomra design -')}
