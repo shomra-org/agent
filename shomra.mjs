@@ -175,12 +175,13 @@ async function api(url, key, route, body, opts = {}) {
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   let res;
   try {
+    const method = opts.method ?? 'POST';
     res = await fetch(`${url}${route}`, {
-      method: 'POST',
+      method,
       // Connection: close avoids undici keep-alive sockets lingering after the
       // command finishes (which can crash process.exit on Windows).
       headers: { 'Content-Type': 'application/json', 'X-Shomra-Key': key, Connection: 'close' },
-      body: JSON.stringify(body),
+      ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
       signal: ctrl.signal,
     });
   } catch (e) {
@@ -219,7 +220,7 @@ const BOOLEAN_FLAGS = new Set([
   'apply', 'dry-run', 'global', 'local', 'trailer', 'evolve', 'report', 'init',
   'no-suppress', 'no-baseline', 'no-policy', 'no-index', 'adaptive',
   'fail-on-regression', 'fail-on-blocked', 'write', 'yes', 'stdin', 'quiet', 'help',
-  'check', 'checklist', 'pre-receive', 'uninstall', 'save',
+  'check', 'checklist', 'pre-receive', 'uninstall', 'save', 'list',
 ]);
 // Flags that take a value (`--key value` or `--key=value`).
 const VALUE_FLAGS = new Set([
@@ -232,8 +233,23 @@ const VALUE_FLAGS = new Set([
   'fail-on',
   // `shomra design --save --subject KIND:id` — pin the analysis to a subject.
   'subject', 'title', 'note', 'actor',
+  // `shomra run <playbook> --input key=value` — repeatable, see REPEATABLE_FLAGS.
+  'input',
 ]);
 const KNOWN_FLAGS = new Set([...BOOLEAN_FLAGS, ...VALUE_FLAGS]);
+// ⚠ Flags that ACCUMULATE instead of overwriting. Everything else keeps the
+// last value; a playbook takes several inputs, and silently dropping all but
+// the last one would run it on defaults nobody asked for.
+const REPEATABLE_FLAGS = new Set(['input']);
+
+function setFlag(flags, name, value) {
+  if (!REPEATABLE_FLAGS.has(name)) {
+    flags[name] = value;
+    return;
+  }
+  const prev = flags[name];
+  flags[name] = prev === undefined ? value : [].concat(prev, value);
+}
 
 function parseFlags(argv) {
   const flags = {};
@@ -249,7 +265,7 @@ function parseFlags(argv) {
       if (eq !== -1) {
         const name = body.slice(0, eq);
         if (!KNOWN_FLAGS.has(name)) unknown.push(name);
-        flags[name] = body.slice(eq + 1);
+        setFlag(flags, name, body.slice(eq + 1));
         continue;
       }
       if (!KNOWN_FLAGS.has(body)) {
@@ -263,7 +279,7 @@ function parseFlags(argv) {
       }
       const next = argv[i + 1];
       if (next !== undefined && !next.startsWith('--')) {
-        flags[body] = next;
+        setFlag(flags, body, next);
         i++;
       } else flags[body] = true;
     } else positional.push(a);
@@ -2729,6 +2745,114 @@ async function cmdMemoryScan(flags, positional) {
 // and flags regressions vs the previous run. In CI, gate a merge/deploy on
 // `--min <resilience>` and/or `--fail-on-regression`. Exit: 0 = pass,
 // 2 = below the resilience floor or a regression appeared.
+
+// ── playbooks: the whole assurance loop as ONE command ────────────────────
+//
+// `pre-release` and `agent-release-check` were written to be run by a pipeline
+// and had no client — the backend has carried an API-key controller for exactly
+// this since the engine shipped. Exit code is the product: a failed `gate` step
+// comes back FAILED, and that is the assertion holding, not a broken run.
+
+const STEP_MARK = { SUCCESS: () => green('✓'), FAILED: () => red('✗'), SKIPPED: () => dim('–'), RUNNING: () => cyan('•'), PENDING: () => dim('·') };
+
+async function cmdRun(flags, positional) {
+  const id = positional[0];
+
+  /**
+   * ⚠ USAGE BEFORE ENROLMENT. A malformed `--input` is a typo the caller can
+   * fix without a key, and answering it with "not configured" sends them to
+   * the wrong problem.
+   *
+   * --input k=v, repeatable. Numbers and booleans keep their type, because a
+   * threshold arriving as "80" is not the same argument.
+   */
+  const inputs = {};
+  for (const raw of [].concat(flags.input ?? [])) {
+    const eq = String(raw).indexOf('=');
+    if (eq < 0) {
+      console.error(`  ${red('✗')} --input expects key=value (got ${JSON.stringify(raw)})\n`);
+      process.exit(EXIT_USAGE);
+    }
+    const k = String(raw).slice(0, eq).trim();
+    const v = String(raw).slice(eq + 1);
+    inputs[k] = v === 'true' ? true : v === 'false' ? false : /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : v;
+  }
+
+  const cfg = loadConfig();
+  const { apiKey, url } = resolveSettings(cfg);
+  if (!apiKey) exitNotConfigured();
+
+  if (!id || flags.list) {
+    let catalog;
+    try {
+      catalog = await api(url, apiKey, '/playbooks/agent/catalog', null, { method: 'GET' });
+    } catch (e) {
+      console.error(`  ${red('✗')} ${e.message}\n`);
+      process.exit(1);
+    }
+    if (flags.json) {
+      console.log(JSON.stringify(catalog, null, 2));
+      return;
+    }
+    console.log(`\n  ${bold('Playbooks')} ${dim('— run one end-to-end, exit non-zero when a gate holds')}\n`);
+    for (const p of catalog) {
+      console.log(`  ${cyan(p.id)} ${dim(`v${p.version} · ${p.steps.length} steps`)}`);
+      console.log(`    ${p.name}`);
+      const required = Object.entries(p.inputs || {}).filter(([, d]) => d.required).map(([k]) => k);
+      if (required.length) console.log(`    ${dim('needs')} ${required.map((k) => bold(k)).join(', ')}`);
+      console.log('');
+    }
+    console.log(dim(`  Run one:  ${bold('shomra run <id> --input key=value')}\n`));
+    if (!id) process.exitCode = EXIT_USAGE;
+    return;
+  }
+
+  if (!flags.json) process.stdout.write(dim(`\n  Running ${bold(id)}… `));
+  let run;
+  try {
+    run = await api(url, apiKey, `/playbooks/agent/${encodeURIComponent(id)}/run`, {
+      inputs,
+      ...(flags.project ? { projectId: String(flags.project) } : {}),
+      actor: `${os.hostname()}/${os.userInfo().username}`,
+    });
+  } catch (e) {
+    if (!flags.json) console.log(red('failed'));
+    console.error(`  ${red('✗')} ${e.message}\n`);
+    process.exit(1);
+  }
+  if (!flags.json) console.log(green('done'));
+
+  if (flags.json) {
+    console.log(JSON.stringify(run, null, 2));
+  } else {
+    console.log(`\n  ${bold(run.playbookName)} ${dim(`· ${run.playbookId}`)}\n`);
+    for (const s of run.steps || []) {
+      const mark = (STEP_MARK[s.status] || STEP_MARK.PENDING)();
+      // ⚠ SKIPPED is stated as its own thing. A step whose condition was false
+      // did not run, and printing it as a pass claims work nothing did.
+      const note =
+        s.status === 'SKIPPED'
+          ? dim('skipped — its condition was false')
+          : s.error
+            ? (s.uses === 'gate' ? yellow(s.error) : red(s.error))
+            : '';
+      console.log(`  ${mark} ${s.name}${note ? ' ' + dim('·') + ' ' + note : ''}`);
+    }
+    const failedStep = (run.steps || []).find((s) => s.status === 'FAILED');
+    const gateHeld = run.status === 'FAILED' && failedStep?.uses === 'gate';
+    console.log('');
+    if (run.status === 'FAILED' && gateHeld) {
+      console.log(`  ${yellow('⚠')} ${bold('The gate held.')} ${dim('That is the assertion firing — exiting non-zero.')}\n`);
+    } else if (run.status === 'FAILED') {
+      console.log(`  ${red('✗')} ${bold('A step failed.')} ${dim(run.error || '')}\n`);
+    } else {
+      console.log(`  ${green('✓')} ${bold('Completed.')} ${dim('Every step that was meant to run did.')}\n`);
+    }
+  }
+
+  // The exit code IS the feature: a pipeline gates on this.
+  if (run.status === 'FAILED') process.exitCode = 1;
+}
 
 async function cmdRedteam(flags) {
   const cfg = loadConfig();
@@ -6652,6 +6776,9 @@ ${bold('COMMANDS')}
   ${cyan('scan')}          Discover AI tooling on this machine    ${dim('[--report] [--json] [--path <dir>]')}
   ${cyan('report')}        Discover + send inventory to your Shomra org ${dim('(alias: scan --report) [--json]')}
   ${cyan('status')}        Show config, enrollment + firewall health
+  ${cyan('run')}           ${bold('Run a whole assurance playbook')} ${dim('<id> [--input k=v]… [--project <id>] [--json]  ·  --list for the catalog')}
+                ${dim('scan → red-team → harden → compliance → gate, as one command. Exits')}
+                ${dim('non-zero when a gate holds, so a pipeline can block the release.')}
 
   ${dim('Setup — run once per machine / repo')}
   ${cyan('init')}          Configure + enroll this machine       ${dim('--key shm_live_… [--url <backend>]')}
@@ -6900,6 +7027,7 @@ const COMMANDS = {
   scan: (f) => cmdScan(f),
   report: (f) => cmdScan({ ...f, report: true }),
   gate: (f, p) => cmdGate(f, p),
+  run: (f, p) => cmdRun(f, p),
   check: (f, p) => cmdCheck(f, p),
   pr: (f, p) => cmdPr(f, p),
   baseline: (f, p) => cmdBaseline(f, p),
