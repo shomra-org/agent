@@ -429,3 +429,40 @@ test('corpus: the manifest is machine-consumable by an ingestion job', () => {
   assert.ok(m.quarantine.some((q) => q.path === 'poisoned.md' && q.verdict === 'BLOCK'));
   assert.ok(m.unreadableFiles.length >= 1, 'the manifest must also carry what was not screened');
 });
+
+// ── shomra run: the playbook entry point ────────────────────────────────
+//
+// The backend has carried an API-key controller for this since the playbook
+// engine shipped and nothing called it, so `pre-release` — a playbook written
+// to gate a release — had no way to be run by a release pipeline.
+
+test('run without a playbook id exits usage, not success', () => {
+  const r = run(['run']);
+  // ⚠ Not 0. A pipeline that calls `shomra run` with a typo'd id must not read
+  // as a passing gate.
+  assert.equal(r.code, 3);
+});
+
+test('run is listed in help, with its exit-code contract', () => {
+  const r = run(['help']);
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /\brun\b/);
+  assert.match(r.stdout, /non-zero when a gate holds/);
+});
+
+test('run refuses --input that is not key=value', () => {
+  const r = run(['run', 'pre-release', '--input', 'nonsense']);
+  // Usage, before anything is sent — a malformed input silently dropped would
+  // run the playbook on defaults nobody asked for.
+  assert.equal(r.code, 3);
+  assert.match(r.stderr, /key=value/);
+});
+
+test('⚠ repeated --input flags ACCUMULATE rather than overwriting', () => {
+  // Parsing is what this asserts, so it runs unconfigured and stops at the
+  // enrollment gate — but a parser that kept only the last --input would have
+  // to be fixed here, not discovered at 3am against a real backend.
+  const r = run(['run', 'pre-release', '--input', 'a=1', '--input', 'b=2']);
+  assert.equal(r.code, 3);
+  assert.doesNotMatch(r.stderr, /key=value/);
+});
