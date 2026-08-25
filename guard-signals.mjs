@@ -99,6 +99,33 @@ export const DANGEROUS_SHELL = [
   { name: 'python -c one-liner', re: /python[0-9.]*\s+-c\b/i, severity: 'MEDIUM' },
   { name: 'node -e one-liner', re: /\bnode\s+-e\b/i, severity: 'MEDIUM' },
   { name: 'Netcat / socket exfil', re: /\bnc\s+-[a-z]*\b|\bncat\b/i, severity: 'MEDIUM' },
+  // ⚠ ANTI-FORENSICS + DESTRUCTIVE INFRA — ported byte-identical from the backend
+  // (bundle/signals.ts). These eight had NO mirror counterpart, so the offline
+  // floor was silent on log-wiping, history-clearing, `terraform destroy
+  // -auto-approve`, bucket deletion and force-push over main. That is the
+  // "mirror LOOSER than server" direction: a hole in exactly the conditions
+  // Tier-0 exists for — backend unreachable, unenrolled, network blocked — which
+  // is also when an attacker most wants the audit trail gone. The parity bench
+  // now asserts SET COMPLETENESS, not just agreement on its samples.
+  { name: 'Clears recorded shell history (anti-forensics)', re: /\bhistory\s+-c\b|\brm\b[^\n]{0,30}\.(bash|zsh|sh)_history\b|>\s*\S{0,30}\.(bash|zsh|sh)_history\b/i, severity: 'MEDIUM' },
+  { name: 'Suppresses shell-history recording (anti-forensics)', re: /\bln\s+-s\S*\s+\/dev\/null\s+\S{0,40}\.(bash_|zsh_|sh_)?history\b|\bHISTFILE=\/dev\/null\b|\bunset\s+HISTFILE\b|\bexport\s+HIST(SIZE|FILESIZE)=0\b|\bset\s+\+o\s+history\b/i, severity: 'MEDIUM' },
+  { name: 'Truncates a security / audit log (anti-forensics)', re: />\s*(\/var\/log\/(audit|secure|auth\.log|wtmp|btmp|lastlog|syslog|messages)|\/var\/(run|log)\/(wtmp|btmp|utmp))\b/i, severity: 'HIGH' },
+  { name: 'Vacuums the systemd journal to erase records (anti-forensics)', re: /\bjournalctl\b[^\n]{0,40}--vacuum-(time|size)=/i, severity: 'MEDIUM' },
+  { name: 'Wipes audit / security / login logs (anti-forensics)', re: /\b(rm|shred|unlink|truncate)\b[^\n]{0,60}(\/var\/log\/(audit|secure|auth\.log|wtmp|btmp|lastlog|syslog|messages|faillog|tallylog)|\/var\/(run|log)\/(wtmp|btmp|utmp))\b/i, severity: 'HIGH' },
+  { name: 'Destroys managed infrastructure without confirmation (terraform destroy -auto-approve)', re: /\bterraform\b[^\n]{0,120}\bdestroy\b[^\n]{0,120}(-auto-approve|--auto-approve)/i, severity: 'HIGH' },
+  { name: 'Force-deletes a cloud storage bucket (aws s3 rb --force)', re: /\b(aws\s+s3\s+rb|gsutil\s+(rm\s+-r|rb)|az\s+storage\s+(account|container)\s+delete)\b[^\n]{0,80}(--force|--yes|-f\b|\bs3:\/\/|\bgs:\/\/)/i, severity: 'HIGH' },
+  { name: 'Force-pushes over a protected branch (rewrites shared history)', re: /\bgit\s+push\b[^\n]{0,80}(--force\b(?!-with-lease)|(?:^|\s)-f\b)[^\n]{0,60}\b(main|master|release|prod(uction)?)\b/i, severity: 'MEDIUM' },
+  // Destruction + credential + control-plane detectors, also byte-identical.
+  // ⚠ The root-wipe tier is CRITICAL and must be its own rule: the consolidated
+  // `rm -rf` rule below grades HIGH, and HIGH only flags where CRITICAL blocks —
+  // so `rm -rf /` was screened one severity short of a block offline.
+  { name: 'Recursive force delete of the filesystem root (rm -rf /, --no-preserve-root)', re: /\brm\b(?=[^\n;|&]*(?:-[a-zA-Z]*r|--recursive))(?=[^\n;|&]*(?:-[a-zA-Z]*f|--force))(?=[^\n;|&]*(?:--no-preserve-root|\s\/(?:\s|\*|$)))/i, severity: 'CRITICAL' },
+  { name: 'Fork bomb (process-exhaustion DoS)', re: /(:|\b[a-z_][a-z0-9_]*)\s*\(\s*\)\s*\{\s*\1\s*[^\n}]*\|\s*\1[^\n}]*&\s*\}\s*;\s*\1/i, severity: 'HIGH' },
+  { name: 'Writes over a raw disk device (data destruction)', re: /\b(dd\b[^\n]{0,80}\bof=\/dev\/[sh]d|mkfs(\.\w+)?\s+[^\n]{0,40}\/dev\/|>\s*\/dev\/[sh]d[a-z])/i, severity: 'CRITICAL' },
+  { name: 'Reads the system password-hash / sudo policy file', re: /\b(cat|less|more|head|tail|strings|xxd|od|grep|awk|sed|cp|scp|tar)\b[^\n]{0,80}\/etc\/(shadow|gshadow|sudoers(\.d)?)\b/i, severity: 'HIGH' },
+  { name: 'Deletes a Kubernetes namespace / workload', re: /\bkubectl\b[^\n]{0,80}\bdelete\b[^\n]{0,80}\b(namespace|ns|deployment|statefulset|pvc|persistentvolumeclaim)\b/i, severity: 'MEDIUM' },
+  { name: 'Drops a database / schema', re: /\bdrop\s+(database|schema|table)\b/i, severity: 'MEDIUM' },
+  { name: 'Disables the audit / logging subsystem', re: /\b(systemctl|service)\s+(stop|disable|mask)\s+\S{0,20}(auditd|rsyslog|syslog|systemd-journald|journald)\b|\bauditctl\s+(-e\s*0|-D)\b|\bsetenforce\s+0\b|\bsystemctl\s+(stop|disable|mask)\s+firewalld\b/i, severity: 'HIGH' },
 ];
 
 // ── injection ──
