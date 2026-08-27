@@ -259,6 +259,34 @@ export const SECRET_PATTERNS = [
   },
   { name: 'Generic bearer', re: /bearer\s+[A-Za-z0-9._-]{20,}/i },
   { name: 'Private key block', re: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/ },
+  // ⚠ The SAME failure as the seven above, one provider generation later. Every
+  // rule here is anchored on a vendor prefix or a structural shape, never on
+  // entropy: a `.env` is mostly high-entropy strings, and a heuristic that
+  // flagged build hashes would get this command switched off.
+  { name: 'Groq API key', re: /\bgsk_[A-Za-z0-9]{40,}/ },
+  { name: 'Replicate API token', re: /\br8_[A-Za-z0-9]{30,}/ },
+  { name: 'Perplexity API key', re: /\bpplx-[A-Za-z0-9]{32,}/ },
+  { name: 'Fireworks API key', re: /\bfw_[A-Za-z0-9]{20,}/ },
+  { name: 'xAI API key', re: /\bxai-[A-Za-z0-9]{40,}/ },
+  { name: 'LangSmith API key', re: /\blsv2_(?:pt|sk)_[A-Za-z0-9]{24,}_[A-Za-z0-9]{8,}/ },
+  { name: 'Pinecone API key', re: /\bpcsk_[A-Za-z0-9_]{30,}/ },
+  { name: 'OpenRouter API key', re: /\bsk-or-v1-[A-Za-z0-9]{32,}/ },
+  { name: 'DigitalOcean token', re: /\bdop_v1_[a-f0-9]{60,}/ },
+  { name: 'Shopify access token', re: /\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{30,}/ },
+  { name: 'GitHub fine-grained PAT', re: /\bgithub_pat_[A-Za-z0-9_]{60,}/ },
+  { name: 'GitHub OAuth / refresh / server token', re: /\bgh[osur]_[A-Za-z0-9]{20,}/ },
+  { name: 'SendGrid API key', re: /\bSG\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{40,}/ },
+  { name: 'Slack incoming webhook', re: /\bhooks\.slack\.com\/services\/T[A-Z0-9]{6,}\/B[A-Z0-9]{6,}\/[A-Za-z0-9]{20,}/ },
+  { name: 'Discord webhook', re: /\bdiscord(?:app)?\.com\/api\/webhooks\/\d{17,}\/[A-Za-z0-9_-]{40,}/ },
+  { name: 'Telegram bot token', re: /\b\d{8,12}:AA[A-Za-z0-9_-]{30,}/ },
+  { name: 'Sentry DSN with secret', re: /\bhttps:\/\/[a-f0-9]{32}(?::[a-f0-9]{32})?@[\w.-]*(?:sentry\.io|ingest\.[\w.-]+)\/\d+/ },
+  { name: 'Azure storage account key', re: /\bAccountKey\s*=\s*[A-Za-z0-9+/]{60,}={0,2}/ },
+  { name: 'JSON web token', re: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{20,}/ },
+  { name: 'Registry auth blob (docker config)', re: /"auth"\s*:\s*"[A-Za-z0-9+/]{24,}={0,2}"/ },
+  {
+    name: 'Provider API key (named env var)',
+    re: /\b(?:AZURE_OPENAI_API_KEY|MISTRAL_API_KEY|COHERE_API_KEY|CO_API_KEY|TOGETHER_API_KEY|DEEPSEEK_API_KEY|DD_API_KEY|DATADOG_API_KEY|TWILIO_AUTH_TOKEN|VERCEL_TOKEN|CLOUDFLARE_API_TOKEN|WEAVIATE_API_KEY|VOYAGE_API_KEY|NVIDIA_API_KEY|CEREBRAS_API_KEY|SAMBANOVA_API_KEY)\s*[=:]\s*["']?[A-Za-z0-9_-]{24,}\b/,
+  },
 ];
 
 export const RISKY_CONFIG_MARKERS = [
@@ -382,6 +410,14 @@ export const SUSPICIOUS_EGRESS_HOSTS = [
   'sprunge.us', 'termbin.com', 'rentry.co', 'controlc.com', 'privatebin.net', 'ghostbin.com',
   'justpaste.it', 'transfer.sh', '0x0.st', 'file.io', 'gofile.io', 'anonfiles.com',
   'bashupload.com', 'tmpfiles.org', 'catbox.moe', 'litterbox.catbox.moe', 'temp.sh', 'oshi.at', 'x0.at',
+  // ⚠ Current generation, byte-identical to the backend. A sink list that stops
+  // being maintained is one an attacker reads before choosing a host.
+  'webhook.cool', 'hookb.in', 'postb.in', 'webhookrelay.com', 'webhookinbox.com', 'webhook.win',
+  'smee.io', 'mockbin.org', 'requestrepo.com', 'webhook-test.com', 'dnslog.cn', 'ceye.io',
+  'tunnelto.dev', 'loca.lt', 'bore.pub', 'pinggy.io', 'telebit.cloud', 'expose.sh', 'lhr.life',
+  'serveousercontent.com', 'paste.rs', 'bpa.st', 'vpaste.net', 'clbin.com', 'pastes.io',
+  'nopaste.net', 'zerobin.net', 'pastecode.io', 'filebin.net', 'wormhole.app', 'uguu.se',
+  'ufile.io', 'fileditch.com', 'keep.sh', 'envs.sh', 'send.vis.ee', 'pixeldrain.com', 'filetransfer.io',
 ];
 
 const SEV_RANK = { INFO: 1, LOW: 2, MEDIUM: 3, HIGH: 4, CRITICAL: 5 };

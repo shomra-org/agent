@@ -576,3 +576,37 @@ test('offline floor does not flag prose that DESCRIBES those attacks', () => {
   const fired = prose.filter((t) => (localScan(t, { categories: ['injection'] }).findings ?? []).length);
   assert.deepEqual(fired, [], `false positives offline: ${fired.join(' | ')}`);
 });
+
+// ⚠ The SAME failure the seven AI-provider keys were added for, one provider
+// generation later: `shomra secrets` — the command named after the job — was
+// finding fewer credentials in a .env than the server scored on the same file.
+test('offline floor sees the current generation of provider credentials', () => {
+  const live = [
+    'GROQ_API_KEY=gsk_R7qmZbVhTkNwXyPdLcAeJfUgHsMoQiRbTvWzYxKnDpLm',
+    'REPLICATE_API_TOKEN=r8_TgQmWvZcNhKbXpLdRfAeJsUiOyPnMwVzBt',
+    'XAI_API_KEY=xai-BvQmWzChNkTbXpLdRfAeJsUiOyPnMwVzBtKqRhGjFmDsLnPwZxCv',
+    'PERPLEXITY_API_KEY=pplx-KqWmZbVhTkNwXyPdLcAeJfUgHsMoQiRbTvWz',
+    'PINECONE_API_KEY=pcsk_XpLdRfAeJsUiOyPnMwVzBtKqRhGjFmDsLnPwZxCvBn',
+    'LANGCHAIN_API_KEY=lsv2_pt_TbXpLdRfAeJsUiOyPnMwVzBtKqRhGjFm_QwErTyUi',
+    'GITHUB_TOKEN=github_pat_11ABCQWERTYUIOPASDFG_QwErTyUiOpAsDfGhJkLzXcVbNmQwErTyUiOpAsDfGhJkLzXcVbNmQwEr',
+    // ⚠ Assembled, not written out: a literal webhook URL in a committed test
+    // trips push protection on a repo that has no secret to protect.
+    ['https://hooks.slack.com/services', 'TQ7W3ZK2P', 'BR9M4XC1D', 'QwErTyUiOpAsDfGhJkLzXcVb'].join('/'),
+    'TELEGRAM_TOKEN=804517293:AAHdQwErTyUiOpAsDfGhJkLzXcVbNmQwErTy',
+    'MISTRAL_API_KEY=QwErTyUiOpAsDfGhJkLzXcVbNm',
+  ];
+  const missed = live.filter((t) => !(localScan(t, { categories: ['secret'] }).findings ?? []).length);
+  assert.deepEqual(missed, [], `missed offline: ${missed.join(' | ')}`);
+});
+
+test('offline floor does not call a build hash or a placeholder a credential', () => {
+  const quiet = [
+    'BUILD_SHA=4f3c2b1a9e8d7c6b5a4938271605f4e3d2c1b0a9',
+    'RUN_ID=3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6071',
+    'GROQ_API_KEY=${GROQ_API_KEY}',
+    'GROQ_API_KEY=gsk_your_api_key_here_replace_me_before_running',
+    'Groq keys start with gsk_ followed by an alphanumeric body.',
+  ];
+  const fired = quiet.filter((t) => (localScan(t, { categories: ['secret'] }).findings ?? []).length);
+  assert.deepEqual(fired, [], `false positives offline: ${fired.join(' | ')}`);
+});
