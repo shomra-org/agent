@@ -200,7 +200,7 @@ const CONTROLS = {
   ],
   'readsSensitive→network': [
     'Splitting the trust boundary: the component that reads the sensitive data and the component that makes the outbound call do not share one context or one credential.',
-    'Outbound payloads are field-allowlisted — what may leave is enumerated, rather than what may not.',
+    'Outbound payloads are field-allowlisted - what may leave is enumerated, rather than what may not.',
     'The sensitive read is scoped to the minimum rows/fields the task needs, per-request, not a standing broad grant.',
   ],
   'readsSensitive→exec': [

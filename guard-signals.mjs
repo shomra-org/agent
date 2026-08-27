@@ -61,6 +61,11 @@ export function matchesShellSignal(sig, text) {
   return false;
 }
 
+// ⚠ Byte-identical to the backend's SENSITIVE_PATH. `scp`/`rsync` to a remote
+// host is what a deploy looks like; only the SOURCE separates a release upload
+// from credential theft.
+const SENSITIVE_PATH = String.raw`~/\.(?:ssh|aws|kube|gnupg|docker|config/gcloud)|/root/|/etc/(?:shadow|passwd|ssh)|id_[rd]sa|\.pem(?![.\w])|\.env(?![.\w])|credentials|\.npmrc|\.git-credentials|\bsecrets?\b|authorized_keys|\$HOME\b|/home(?:/[\w.-]+)?/?(?=[\s'"]|$)`;
+
 // ── dangerous shell ──
 export const DANGEROUS_SHELL = [
   { name: 'Pipe-to-shell installer (curl … | sh)', re: /\b(curl|wget)\b[^\n|]{0,200}\|\s*(sudo\s+)?(ba|z|k)?sh\b/i, severity: 'CRITICAL' },
@@ -126,6 +131,28 @@ export const DANGEROUS_SHELL = [
   { name: 'Deletes a Kubernetes namespace / workload', re: /\bkubectl\b[^\n]{0,80}\bdelete\b[^\n]{0,80}\b(namespace|ns|deployment|statefulset|pvc|persistentvolumeclaim)\b/i, severity: 'MEDIUM' },
   { name: 'Drops a database / schema', re: /\bdrop\s+(database|schema|table)\b/i, severity: 'MEDIUM' },
   { name: 'Disables the audit / logging subsystem', re: /\b(systemctl|service)\s+(stop|disable|mask)\s+\S{0,20}(auditd|rsyslog|syslog|systemd-journald|journald)\b|\bauditctl\s+(-e\s*0|-D)\b|\bsetenforce\s+0\b|\bsystemctl\s+(stop|disable|mask)\s+firewalld\b/i, severity: 'HIGH' },
+  // Escalation, escape, persistence and anti-forensics — what an agent does
+  // AFTER it has a shell. Mirrored byte-for-byte from the backend's list.
+  { name: 'Locally decoded or decrypted blob piped to a shell', re: /\b(?:gpg|openssl\s+enc|xxd\s+-r|uudecode|zcat|gunzip|bunzip2|unxz)\b[^\n|]{0,160}\|\s*(?:sudo\s+)?(?:ba|z|k)?sh\b/i, severity: 'CRITICAL' },
+  { name: 'Container escape to the host (privileged / host mount / host namespace)', re: /\b(?:docker|podman|nerdctl)\s+(?:run|create|exec)\b[^\n]{0,200}?(?:--privileged\b|--pid[= ]host\b|--ipc[= ]host\b|--userns[= ]host\b|--security-opt[= ]\S{0,40}(?:seccomp[=:]unconfined|apparmor[=:]unconfined)|--cap-add[= ](?:ALL|SYS_ADMIN|SYS_PTRACE|SYS_MODULE)\b|-v\s+\/(?:\s|:)|--volume[= ]\/:|(?:-v|--volume)[= ]\s*\/var\/run\/docker\.sock)/i, severity: 'CRITICAL' },
+  { name: 'Enters the host namespace from a container (nsenter / chroot onto a host mount)', re: /\bnsenter\b[^\n]{0,80}(?:-t\s*1\b|--target\s*1\b)|\bchroot\s+\/(?:host|mnt|proc\/1\/root)\b/i, severity: 'CRITICAL' },
+  { name: 'Grants cluster-admin in Kubernetes', re: /\bkubectl\b[^\n]{0,120}\b(?:create|apply)\b[^\n]{0,120}\b(?:cluster)?rolebinding\b[^\n]{0,160}(?:--clusterrole[= ]\s*cluster-admin|cluster-admin)\b/i, severity: 'HIGH' },
+  { name: 'Attaches an administrator policy to a cloud identity', re: /\baws\s+iam\s+(?:attach-(?:user|role|group)-policy|put-(?:user|role|group)-policy)\b[^\n]{0,160}(?:AdministratorAccess|PowerUserAccess|"?Action"?\s*:\s*"?\*)|\bgcloud\b[^\n]{0,120}add-iam-policy-binding\b[^\n]{0,160}roles\/(?:owner|editor|iam\.securityAdmin)\b|\baz\s+role\s+assignment\s+create\b[^\n]{0,160}--role\s+"?(?:Owner|Contributor|User Access Administrator)"?/i, severity: 'HIGH' },
+  { name: 'Mints long-lived cloud credentials', re: /\baws\s+iam\s+create-access-key\b|\bgcloud\s+iam\s+service-accounts\s+keys\s+create\b|\baz\s+ad\s+sp\s+credential\s+reset\b/i, severity: 'MEDIUM' },
+  { name: 'Grants itself passwordless sudo (writes the sudo policy)', re: /(?:>>?|tee\b[^\n]{0,40})\s*\/etc\/sudoers(?:\.d\/\S*)?\b|\bvisudo\b[^\n]{0,40}(?:-f|<<)|\becho\b[^\n]{0,120}NOPASSWD[^\n]{0,80}(?:>>?|tee)\s*\/etc\/sudoers/i, severity: 'HIGH' },
+  { name: 'Installs a setuid / capability backdoor', re: /\bchmod\b[^\n]{0,60}(?:\bu\+s\b|\+s\b|\b[24][0-7]{3}\b)[^\n]{0,60}(?:\/bin\/|\/usr\/bin\/|\/tmp\/|\bbash\b|\bsh\b|\bdash\b)|\bsetcap\b[^\n]{0,60}cap_(?:setuid|setgid|sys_admin|dac_override|dac_read_search)\b/i, severity: 'HIGH' },
+  { name: 'Grants an account administrator group membership', re: /\b(?:usermod|gpasswd)\b[^\n]{0,60}-a?[GM]\s*\S{0,20}\b(?:sudo|wheel|admin|root|docker|adm)\b|\b(?:useradd|adduser)\b[^\n]{0,80}-G\s*\S{0,30}\b(?:sudo|wheel|admin|root|docker)\b|\bnet\s+localgroup\b[^\n]{0,60}\badministrators?\b[^\n]{0,40}\/add\b|\bdscl\b[^\n]{0,80}-append\b[^\n]{0,60}\badmin\b/i, severity: 'MEDIUM' },
+  { name: 'Preloads a shared library into every process (LD_PRELOAD)', re: /\b(?:LD_PRELOAD|LD_AUDIT|DYLD_INSERT_LIBRARIES)\s*=\s*\S|>>?\s*\/etc\/ld\.so\.preload\b/i, severity: 'HIGH' },
+  { name: 'Installs a scheduled or boot-time persistence unit', re: /\bsystemd-run\b[^\n]{0,80}--on-(?:boot|calendar|active|unit)|>>?\s*\/etc\/(?:systemd\/system|cron\.(?:d|daily|hourly)|init\.d)\/\S|\bschtasks\b[^\n]{0,80}\/create\b|\blaunchctl\s+(?:load|bootstrap)\b|\b(?:echo|printf)\b[^\n]{0,120}\|\s*at\s+(?:now|\+|\d)/i, severity: 'MEDIUM' },
+  { name: 'Opens a reverse tunnel to a remote host', re: /\bssh\b[^\n]{0,80}\s-\w*R\s*\d{1,5}:[^\n\s]{1,60}|\b(?:ngrok|cloudflared|localtunnel|frpc)\b[^\n]{0,60}\b(?:tcp|http|tunnel)\b/i, severity: 'HIGH' },
+  { name: 'Encodes command output into DNS lookups (exfiltration channel)', re: /(?:^|[\n;&|(]\s*)(?:dig|nslookup|drill|host)\s+[^\n]{0,120}(?:\$\(|`|\$\{)[^\n]{0,80}\.[a-z]{2,}/i, severity: 'HIGH' },
+  { name: 'Copies credentials or home directories off the machine over ssh', re: new RegExp(String.raw`\b(?:scp|rsync)\b(?=[^\n]{0,200}\s\S{0,40}@[\w.-]+:)(?=[^\n]{0,200}(?:${SENSITIVE_PATH}))` + String.raw`|\btar\b(?=[^\n]{0,160}\|\s*ssh\b)(?=[^\n]{0,160}(?:${SENSITIVE_PATH}))`, 'i'), severity: 'HIGH' },
+  { name: 'Flushes the host firewall', re: /\b(?:iptables|ip6tables|nft)\b[^\n]{0,60}(?:-F\b|--flush\b|flush ruleset)|\bufw\s+disable\b|\bnetsh\s+advfirewall\s+set\s+\S+\s+state\s+off\b/i, severity: 'MEDIUM' },
+  { name: 'Kills the audit / EDR agent (anti-forensics)', re: /\b(?:pkill|killall|kill)\b[^\n]{0,40}\b(?:auditd|osqueryd?|falcon-sensor|falconctl|wazuh|ossec|filebeat|splunkd|sysmon|crowdstrike|carbonblack|cbagent)\b|\bSet-MpPreference\b[^\n]{0,60}-Disable\w*\s+\$?true/i, severity: 'HIGH' },
+  { name: 'Downloads and executes through a signed system binary (LOLBin)', re: /\bcertutil\b[^\n]{0,80}-urlcache\b|\bbitsadmin\b[^\n]{0,80}\/transfer\b|\bmshta\b\s+https?:\/\/|\bregsvr32\b[^\n]{0,60}\/i:\s*https?:\/\/|\brundll32\b[^\n]{0,60}\b(?:url\.dll|javascript:)|\bwmic\b[^\n]{0,60}\bprocess\s+call\s+create\b|\bmsiexec\b[^\n]{0,40}\/i\s+https?:\/\//i, severity: 'CRITICAL' },
+  { name: 'PowerShell runs a base64-encoded command', re: /\bpowershell(?:\.exe)?\b[^\n]{0,80}\s-(?:e|ec|enc|encoded|encodedcommand)\b/i, severity: 'CRITICAL' },
+  { name: 'Interpreter opens a raw socket (reverse shell)', re: /\b(?:perl|ruby|php|python[0-9.]*|node)\b[^\n]{0,40}-(?:e|r|c)\b[^\n]{0,200}\b(?:fsockopen|socket\s*\(|Socket::|SOCK_STREAM|net\.connect|createConnection)\b/i, severity: 'CRITICAL' },
+  { name: 'Netcat listener or command-execution flag', re: /\bn?c(?:at)?\b[^\n]{0,40}\s-\w*[ec]\s+\S{0,30}(?:sh|bash|cmd|powershell)\b|\bn?c(?:at)?\b[^\n]{0,20}\s-\w*l\w*\s*(?:-\w+\s*)*\d{2,5}\b/i, severity: 'HIGH' },
 ];
 
 // ── injection ──
@@ -150,7 +177,41 @@ export const INJECTION_REGEXES = [
   { label: 'Instructs the agent to conceal an action from the user', re: /\b(?:do\s*n['o]?t|never|without)\s+(?:tell|telling|inform|informing|notify|notifying|alert|alerting|mention|mentioning|disclos\w+|reveal\w*)\s+(?:it\s+|this\s+|them\s+)?(?:to\s+)?(?:the\s+)?(?:user|users|human|operator|owner)\b(?!['']s)(?!\s+(?:to\b|how\s+to\b|when\s+to\b|that\s+they\b|about\b))/i },
   { label: 'Bulk destructive command', re: /\b(delete|remove|wipe|erase|destroy|drop|purge|nuke|truncate)\b[\s\w,'"()-]{0,20}?\b(all|every|each|entire|whole)\b[\s\w,'"()-]{0,15}?\b(folder|folders|file|files|directory|directories|table|tables|database|databases|record|records|repo|repos|repositor\w*|account|accounts|user|users|row|rows|document|documents|data)\b/i },
   { label: 'Destructive SQL statement', re: /\b(drop|truncate)\s+(table|database|schema)\b/i },
+  // Control-suppression family — mirrored from the backend. These are the
+  // sentences an injection uses to disarm every OTHER control before it acts,
+  // so an offline floor that misses them screens the payload and lets the
+  // disarming through.
+  { label: 'Instruction to skip a human review or safety control', moodGuarded: true, re: /\b(?:skip|bypass|forgo|forego|omit|waive|disable|suppress|turn\s+off)\s+(?:the\s+|any\s+|all\s+|this\s+)?(?:human\s+|manual\s+|mandatory\s+)?(?:review|approval|confirmation|verification|sign[- ]?off|oversight|content\s+filter|security\s+check|safety\s+check|guardrails?|policy\s+check)\b/i },
+  { label: 'Instruction not to verify with a human or another agent', moodGuarded: true, re: /\b(?:do\s*n['o]?t|never|no\s+need\s+to|there'?s\s+no\s+need\s+to)\s+(?:verify|double[- ]?check|cross[- ]?check|confirm|validate|escalate|check)\b[^.\n]{0,48}\b(?:with\s+)?(?:anyone|any\s?one|another\s+agent|other\s+agents?|a\s+human|the\s+human|the\s+user|the\s+team|the\s+operator|others?)\b/i },
+  { label: 'Blanket-approval coercion (approve everything without review)', moodGuarded: true, re: /\b(?:approve|confirm|accept|authorize)\s+(?:them\s+)?(?:all|every|everything)\b[^.\n]{0,72}\b(?:no\s+need|without\s+(?:review|checking)|perfectly\s+safe|routine|standard|nothing\s+to\s+worry)\b|\b(?:perfectly\s+safe|nothing\s+to\s+worry\s+about|entirely\s+routine|completely\s+standard)\b[^.\n]{0,72}[.!]\s*(?:approve|confirm|accept)\s+(?:them\s+)?(?:all|every)\b|\b(?:do\s*n['o]?t|no\s+need\s+to)\s+bother\s+(?:reviewing|checking|verifying|inspecting)\b|\bjust\s+(?:hit|click|press|tap)\s+(?:confirm|approve|accept|yes|ok)\b/i },
+  { label: 'Instruction to enable unattended / auto-approving execution', moodGuarded: true, re: /\b(?:enable|turn\s+on|switch\s+(?:on|to)|activate|set)\s+(?:the\s+)?(?:auto[- ]?approv\w+|auto[- ]?confirm\w*|auto[- ]?accept\w*|yolo(?:\s+mode)?|unattended\s+mode|full[- ]?auto(?:\s+mode)?|dangerously[- ]?skip[- ]?permissions|bypass[- ]?permissions)\b/i },
+  { label: 'Self-assignment of an administrative agent role', moodGuarded: true, re: /\b(?:you\s+(?:must\s+|should\s+|will\s+)?(?:now\s+)?(?:act|operate|function|behave)\s+as|assume\s+the\s+role\s+of|you\s+are\s+now)\s+(?:an?\s+|the\s+)?(?:admin(?:istrator)?|root|superuser|super[- ]?admin|orchestrator|supervisor|privileged|system)\b[^.\n]{0,40}\b(?:agent|user|account|role|privileges?|access|permissions?)\b/i },
+  { label: 'Instruction to forward credentials to another party', moodGuarded: true, re: /\b(?:forward|send|share|transmit|relay|pass|post|upload)\s+(?:me\s+|us\s+)?(?:your|the|all|any)\s+(?:api[\s_-]?keys?|credentials?|secrets?|access[\s_-]?tokens?|session[\s_-]?tokens?|auth(?:entication)?\s+tokens?|passwords?|private[\s_-]?keys?)\b[^.\n]{0,64}\b(?:to|at|into|via)\b/i },
 ];
+
+// ⚠ Mirrors the backend's mood guard EXACTLY. A mirror stricter than the server
+// is the worse direction: it fires offline where no server verdict arrives to
+// correct it, and "malicious tools may attempt to skip approval steps" is a
+// sentence every security-conscious rules file contains.
+const DESCRIPTIVE_MARKERS_RE =
+  /\b(detect|scan|flag|block|catch|prevent|guard|protect|harden|audit|benchmark|catalog|scenario|corpus|coverage|example|vector|signal|rule|technique|posture|detection|test\s*case|red[- ]?team|-style|grounded in|fixed|now green|was|were|had|used to|previously|postmortem|regression|changelog|root[- ]?cause|repro|note|see|describes?|documents?|refers?)\w*/i;
+const PROSE_IMPERATIVE_RE =
+  /\b(always|never|must|do not|don'?t|ensure you|make sure( you)?|be sure to|you should always|you must|remember to|whenever|when(ever)? (asked|the user)|instead of .*,? (use|do|say)|reply with|respond with|tell (the )?user)\b/i;
+const URL_TOKEN_RE = /\b(?:https?|ftp|file|data):\/*[^\s<>"')\]]+/gi;
+const HYPOTHETICAL_ACTOR_RE =
+  /\b(?:attacker|adversar\w+|malicious|threat\s+actor|injected|untrusted|compromised|poisoned|hostile)\b[^.\n]{0,80}?\b(?:may|might|could|can|will|would|attempts?|tries|tried|seeks?)\b/i;
+const DECLARATIVE_SUBJECT_RE =
+  /\b(?:the|this|that|it|which|they|we|our|their|a|an)\b(?:\s+[\w-]+){0,3}\s+(?:will|would|can|could|does|do|may|might|shall|automatically)\s+$/i;
+
+function describesRatherThanInstructs(text, at) {
+  const start = text.lastIndexOf('\n', at) + 1;
+  const nl = text.indexOf('\n', at);
+  const line = text.slice(start, nl === -1 ? undefined : nl);
+  const prose = line.replace(URL_TOKEN_RE, ' ');
+  if (DESCRIPTIVE_MARKERS_RE.test(prose) && !PROSE_IMPERATIVE_RE.test(line)) return true;
+  if (HYPOTHETICAL_ACTOR_RE.test(line)) return true;
+  return DECLARATIVE_SUBJECT_RE.test(text.slice(Math.max(0, at - 48), at));
+}
 // Negation flips an override phrase into a hardening rule; a bulk-destructive hit
 // on a build/test artifact is a clean step, not an attack. Applied in localScan.
 const PRECEDING_NEGATION = /\b(never|not|do not|don'?t|cannot|can'?t|must not|mustn'?t|should not|shouldn'?t|avoid|refuse to|forbidden to|prohibited from|without)\s*$/i;
@@ -327,19 +388,109 @@ const SEV_RANK = { INFO: 1, LOW: 2, MEDIUM: 3, HIGH: 4, CRITICAL: 5 };
 
 // Decode suspicious base64 blobs so payloads hidden in an "echo <blob>|base64 -d|sh"
 // trick are inspected too. Decoding is purely to READ the bytes; nothing runs.
-const BASE64_BLOB_RE = /\b[A-Za-z0-9+/]{32,}={0,2}/g;
+const BASE64_BLOB_RE = /\b[A-Za-z0-9+/_-]{20,}={0,2}/g;
 const DECODED_PAYLOAD_RE = /(\/bin\/(ba|z|k)?sh|\b(ba|z|k)?sh\s+-c|\bcurl\b|\bwget\b|\beval\b|\bexec\b|https?:\/\/|invoke-expression|\biex\b|powershell|\bnc\b|\bncat\b|\bchmod\b|\bbase64\b)/i;
+// ⚠ Stricter than DECODED_PAYLOAD_RE: a bare `https://` is what an ordinary
+// percent-encoded LINK decodes to. Only base64 may claim a payload on a URL.
+const DECODED_COMMAND_RE = /(\/bin\/(ba|z|k)?sh|\b(ba|z|k)?sh\s+-c|\bcurl\b|\bwget\b|\beval\b|\bexec\b|invoke-expression|\biex\b|powershell|\bnc\b|\bncat\b|\bchmod\b|\bbase64\b|\bsystem\s*\(|\bos\.system|\bsubprocess\b)/i;
+const HEX_ESCAPE_RUN_RE = /(?:\\x[0-9A-Fa-f]{2}){3,}/g;
+const URL_ESCAPE_RUN_RE = /(?:%[0-9A-Fa-f]{2}){3,}/g;
+const UNICODE_ESCAPE_RUN_RE = /(?:\\u\{?00[0-9A-Fa-f]{2}\}?){3,}/g;
+const DECIMAL_CHAR_RUN_RE = /(?:\b(?:3[2-9]|[4-9]\d|1[01]\d|12[0-6])\s*,\s*){6,}(?:3[2-9]|[4-9]\d|1[01]\d|12[0-6])\b/g;
+const printableRatio = (s) => (s ? s.replace(/[^\x09\x0a\x0d\x20-\x7e]/g, '').length / s.length : 0);
+
 function deobfuscate(text) {
   const decoded = [];
+  let payload = false;
   for (const m of text.matchAll(BASE64_BLOB_RE)) {
     let out = '';
-    try { out = Buffer.from(m[0], 'base64').toString('utf8'); } catch { continue; }
-    if (!out) continue;
-    const printable = out.replace(/[^\x09\x0a\x0d\x20-\x7e]/g, '');
-    if (printable.length < out.length * 0.85) continue;
-    if (DECODED_PAYLOAD_RE.test(out)) decoded.push(out);
+    try { out = Buffer.from(m[0].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'); } catch { continue; }
+    if (!out || printableRatio(out) < 0.85) continue;
+    if (DECODED_PAYLOAD_RE.test(out)) { decoded.push(out); payload = true; }
   }
-  return { text: decoded.length ? `${text}\n${decoded.join('\n')}` : text, decodedPayload: decoded.length > 0 };
+  const literal = (run, decode) => {
+    for (const m of text.matchAll(run)) {
+      let out = '';
+      try { out = decode(m[0]); } catch { continue; }
+      if (!out || printableRatio(out) < 0.85) continue;
+      decoded.push(out);
+      if (DECODED_COMMAND_RE.test(out)) payload = true;
+    }
+  };
+  const fromHex = (h) => String.fromCharCode(parseInt(h, 16));
+  literal(HEX_ESCAPE_RUN_RE, (v) => v.replace(/\\x([0-9A-Fa-f]{2})/g, (_, h) => fromHex(h)));
+  literal(URL_ESCAPE_RUN_RE, (v) => decodeURIComponent(v));
+  literal(UNICODE_ESCAPE_RUN_RE, (v) => v.replace(/\\u\{?00([0-9A-Fa-f]{2})\}?/g, (_, h) => fromHex(h)));
+  literal(DECIMAL_CHAR_RUN_RE, (v) => v.split(',').map((n) => String.fromCharCode(parseInt(n.trim(), 10))).join(''));
+  return { text: decoded.length ? `${text}\n${decoded.join('\n')}` : text, decodedPayload: payload };
+}
+
+// Mirrors the backend's targetsExternalNetwork: a fetch with no URL at all is
+// treated as external (the target is unresolved, not proven local).
+const STAGED_LOOPBACK_RE = /^(localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|0\.0\.0\.0|\[::1\]|::1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/i;
+const STAGED_METADATA_HOSTS = new Set(['169.254.169.254', 'metadata.google.internal']);
+function targetsExternalNetwork(line) {
+  const urls = line.match(/https?:\/\/[^\s'"`;|)&]+/gi);
+  if (!urls?.length) return true;
+  return urls.some((raw) => {
+    let host;
+    try { host = new URL(raw).hostname.toLowerCase(); } catch { return true; }
+    if (STAGED_METADATA_HOSTS.has(host)) return true;
+    return !STAGED_LOOPBACK_RE.test(host);
+  });
+}
+
+const FETCH_TO_FILE = [
+  /\b(?:curl|wget)\b[^\n;|&]{0,200}?(?:-o|-O|--output(?:-document)?)[= ]\s*["']?([^\s"'>;|&]+)/gi,
+  /\b(?:curl|wget)\b[^\n;|&]{0,200}?>\s*["']?([^\s"'>;|&]+)/gi,
+  /\b(?:invoke-webrequest|iwr|curl)\b[^\n;|&]{0,200}?-outfile\s+["']?([^\s"';|&]+)/gi,
+];
+const BARE_WGET_RE = /\bwget\b(?![^\n;|&]{0,200}(?:-O|--output-document))[^\n;|&]{0,200}?(https?:\/\/[^\s"';|&]+)/gi;
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function execPattern(target) {
+  const full = escapeRe(target);
+  const base = escapeRe(target.replace(/^.*\//, ''));
+  const p = `(?:${full}|(?:\\./|/tmp/|~/|\\$\\w+/)?${base})`;
+  return new RegExp(
+    `\\bchmod\\b[^\\n;|&]{0,40}\\+x[^\\n;|&]{0,40}${p}` +
+      `|\\bchmod\\b[^\\n;|&]{0,40}\\b[0-7]*[1357]\\b[^\\n;|&]{0,40}${p}` +
+      `|(?:^|[\\n;&|]\\s*|\\bsudo\\s+)(?:ba|z|k|da)?sh\\s+[^\\n]{0,40}${p}` +
+      `|(?:^|[\\n;&|]\\s*|\\bsudo\\s+)(?:python[0-9.]*|node|perl|ruby|php|pwsh|powershell)\\s+[^\\n]{0,40}${p}` +
+      `|(?:^|[\\n;&|]\\s*)(?:\\.|source)\\s+${p}` +
+      `|(?:^|[\\n;&|]\\s*|&&\\s*)(?:sudo\\s+)?\\./${base}\\b`,
+    'i',
+  );
+}
+
+// ⚠ `curl … | sh` is the shape everyone screens for; the same install split
+// across two statements was invisible. Extraction and package managers are NOT
+// execution, so `curl -o x.tgz && tar xf x.tgz` stays silent.
+export function scanStagedFetchExec(text) {
+  if (!text) return [];
+  const targets = new Map();
+  const record = (name, at, stmt) => {
+    if (!name || targets.has(name)) return;
+    if (/^\/dev\/(null|stdout|stderr)$/i.test(name)) return;
+    if (!targetsExternalNetwork(stmt)) return;
+    targets.set(name, at);
+  };
+  for (const re of FETCH_TO_FILE) {
+    re.lastIndex = 0;
+    for (const m of text.matchAll(re)) record(m[1], m.index ?? 0, m[0]);
+  }
+  BARE_WGET_RE.lastIndex = 0;
+  for (const m of text.matchAll(BARE_WGET_RE)) {
+    let base = '';
+    try { base = new URL(m[1]).pathname.split('/').filter(Boolean).pop() ?? ''; } catch { continue; }
+    record(base, m.index ?? 0, m[0]);
+  }
+  for (const [target, at] of targets) {
+    if (execPattern(target).test(text.slice(at))) {
+      return [{ name: 'Downloads a file and then executes it (staged fetch-to-execute)', re: new RegExp(escapeRe(target), 'i'), severity: 'CRITICAL' }];
+    }
+  }
+  return [];
 }
 
 /**
@@ -524,8 +675,9 @@ export function localScan(text, opts = {}) {
 
   if (cats.includes('shell')) {
     const aug = deobfuscate(t);
-    if (aug.decodedPayload) findings.push({ label: 'Base64-encoded shell / RCE payload', severity: 'CRITICAL', category: 'shell' });
+    if (aug.decodedPayload) findings.push({ label: 'Encoded shell / RCE payload (base64, hex, percent or char-code)', severity: 'CRITICAL', category: 'shell' });
     for (const sig of DANGEROUS_SHELL) if (matchesShellSignal(sig, aug.text)) findings.push({ label: sig.name, severity: sig.severity, category: 'shell', ...locate(t, sig.re, mask) });
+    for (const sig of scanStagedFetchExec(aug.text)) findings.push({ label: sig.name, severity: sig.severity, category: 'shell', ...locate(t, sig.re, mask) });
   }
   if (cats.includes('injection')) {
     const low = t.toLowerCase();
@@ -538,12 +690,13 @@ export function localScan(text, opts = {}) {
       findings.push({ label: `Injected instruction: "${p}"`, severity: 'HIGH', category: 'injection', ...locate(t, p, mask) });
       break;
     }
-    for (const { label, re } of INJECTION_REGEXES) {
+    for (const { label, re, moodGuarded } of INJECTION_REGEXES) {
       const m = t.match(re);
       if (!m) continue;
       const at = m.index ?? 0;
       if (PRECEDING_NEGATION.test(t.slice(Math.max(0, at - 20), at))) continue;
       if (label === 'Bulk destructive command' && BUILD_ARTIFACT.test(m[0])) continue; // build/test cleanup
+      if (moodGuarded && describesRatherThanInstructs(t, at)) continue;
       findings.push({ label, severity: 'HIGH', category: 'injection', ...locate(t, re, mask) });
     }
     if (INVISIBLE_CHARS_RE.test(t)) findings.push({ label: 'Invisible / zero-width characters', severity: 'MEDIUM', category: 'injection', ...locate(t, INVISIBLE_CHARS_RE, mask) });
