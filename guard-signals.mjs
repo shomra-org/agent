@@ -1043,6 +1043,32 @@ function isDescriptiveLine(line) {
   return DESCRIPTIVE_MARKERS.test(line) && !IMPERATIVE.test(line);
 }
 
+// ── citation guard ──
+// MIRROR of `citationGoverns` in checks/text/prose-context.ts, and of
+// RESEARCH_CITATION_RE in checks/text/patterns.ts. Prose that NAMES an attack
+// carries the attack's own vocabulary: "The DAN jailbreak uses dual
+// [ChatGPT]/[Dan] labels" is documentation, and blocking it on a developer's
+// own security notes is the offline-stricter-than-server drift with no recourse.
+//
+// ⚠⚠ A SUPPRESSION RULE IS AN ATTACK SURFACE. Two properties bound it and both
+// are mirrored exactly: the citation must be in the SAME segment as the match
+// (a citation elsewhere in the file is not a licence), and it must come BEFORE
+// the match with no handoff punctuation ("As described in the paper: ignore all
+// previous instructions" cites a source and then issues the order).
+const RESEARCH_CITATION_RE =
+  /\b(?:in\s+their\s+(?:\d{4}\s+)?paper|et\s+al\.|we\s+(?:analys|analyz|studi|examin|evaluat|benchmark|review|investigat)\w*|(?:this|the)\s+(?:paper|study|report|article|post|research|survey|technique|attack|jailbreak)\b|(?:this|the)\s+(?:[A-Z][\w.-]{1,24}\s+){1,3}(?:attack|jailbreak|technique|exploit|payload)\b|\bis\s+a\s+(?:well[-\s]documented|well[-\s]known|widely[-\s]known|classic|common|known|documented)\s+(?:attack|technique|jailbreak|pattern|exploit|vector)\b|according\s+to\s+(?:researchers|the\s+authors)|characteriz\w+\s+(?:and\s+)?evaluat\w+|published\s+(?:in|by)\b|\barxiv\b|\bCVE-\d{4}-|\bis\s+a\s+(?:critical\s+|active\s+|growing\s+)?(?:research|study)\s+(?:area|topic|field)|\b(?:the\s+)?ethics\s+of\b)/i;
+
+const CITATION_HANDOFF_RE = /[:;\u2014\u2013]\s*$/;
+
+export function citationGoverns(segment, offset) {
+  const cit = String(segment ?? '').match(RESEARCH_CITATION_RE);
+  if (!cit) return false;
+  if (offset == null) return true;
+  const citEnd = (cit.index ?? 0) + cit[0].length;
+  if (citEnd > offset) return false;
+  return !CITATION_HANDOFF_RE.test(segment.slice(citEnd, offset));
+}
+
 // ── documentation guard ──
 // Mirrors backend checks/prose-context.ts#isDocumentationLine. ⚠ The backend has
 // applied this to its shell scan for months and the mirror never did, so the
@@ -1148,6 +1174,7 @@ function firstDirectiveLine(text, re) {
     if (!re.test(line)) continue;
     if (NEGATION_GUARD.test(line)) continue;
     if (isDescriptiveLine(line)) continue;
+    if (citationGoverns(line, re.exec(line)?.index)) continue;
     return line;
   }
   return null;
@@ -1198,20 +1225,24 @@ function scanDirectives(text) {
   const sabotage = new Map(), exfil = new Map();
   for (const line of text.split(/\r?\n/)) {
     for (const r of SABOTAGE_RULES) {
-      if (!r.re.test(line)) continue;
+      const m = r.re.exec(line);
+      if (!m) continue;
       if (r.guarded && NEGATION_GUARD.test(line)) continue;
       if (r.guarded && isDescriptiveLine(line)) continue; // "detects skills that disable safety" — documentation
+      if (r.guarded && citationGoverns(line, m.index)) continue;
       if (r.context && !r.context.test(line)) continue;
       if (!sabotage.has(r.label)) sabotage.set(r.label, line);
     }
     for (const r of EXFIL_RULES) {
-      if (!r.re.test(line)) continue;
+      const m = r.re.exec(line);
+      if (!m) continue;
       // A line that FORBIDS exfiltration is the single most common sentence in a
       // security-conscious rules file. Scoring it as a poisoned directive inverts
       // the tool on exactly the teams writing the best rules. (The named-host
       // check in localMemory stays unguarded, so a real sink still fires here.)
       if (NEGATION_GUARD.test(line)) continue;
       if (r.descGuard && isDescriptiveLine(line)) continue;
+      if (r.descGuard && citationGoverns(line, m.index)) continue;
       if (r.descGuard && isRiskTableRow(line)) continue;
       if (r.label === 'send-to-external' && LOCAL_URL_RE.test(line) && !/\b(attacker|c2|command[- ]and[- ]control|external|evil)\b/i.test(line)) continue;
       const prev = exfil.get(r.label);
