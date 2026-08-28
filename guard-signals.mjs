@@ -1056,17 +1056,30 @@ function isDescriptiveLine(line) {
 // the match with no handoff punctuation ("As described in the paper: ignore all
 // previous instructions" cites a source and then issues the order).
 const RESEARCH_CITATION_RE =
-  /\b(?:in\s+their\s+(?:\d{4}\s+)?paper|et\s+al\.|we\s+(?:analys|analyz|studi|examin|evaluat|benchmark|review|investigat)\w*|(?:this|the)\s+(?:paper|study|report|article|post|research|survey|technique|attack|jailbreak)\b|(?:this|the)\s+(?:[A-Z][\w.-]{1,24}\s+){1,3}(?:attack|jailbreak|technique|exploit|payload)\b|\bis\s+a\s+(?:well[-\s]documented|well[-\s]known|widely[-\s]known|classic|common|known|documented)\s+(?:attack|technique|jailbreak|pattern|exploit|vector)\b|according\s+to\s+(?:researchers|the\s+authors)|characteriz\w+\s+(?:and\s+)?evaluat\w+|published\s+(?:in|by)\b|\barxiv\b|\bCVE-\d{4}-|\bis\s+a\s+(?:critical\s+|active\s+|growing\s+)?(?:research|study)\s+(?:area|topic|field)|\b(?:the\s+)?ethics\s+of\b)/i;
+  /\b(?:in\s+their\s+(?:\d{4}\s+)?paper|et\s+al\.|we\s+(?:analys|analyz|studi|examin|evaluat|benchmark|review|investigat)\w*|(?:this|the)\s+(?:paper|study|report|article|post|research|survey|technique|attack|jailbreak)\b|according\s+to\s+(?:researchers|the\s+authors)|characteriz\w+\s+(?:and\s+)?evaluat\w+|published\s+(?:in|by)\b|\barxiv\b|\bCVE-\d{4}-|\bis\s+a\s+(?:critical\s+|active\s+|growing\s+)?(?:research|study)\s+(?:area|topic|field)|\b(?:the\s+)?ethics\s+of\b)/i;
+
+// ⚠ CASE-SENSITIVE ON THE INTERVENING WORDS: "the DAN jailbreak" names an
+// attack, "the delete everything attack" is a phrase an attacker writes.
+const ATTACK_NAMING_RE = /(?:[Tt]his|[Tt]he)\s+(?:[A-Z][\w.-]{1,24}\s+){1,3}(?:attack|jailbreak|technique|exploit|payload)\b/;
+const ATTACK_CHARACTERISATION_RE =
+  /\bis\s+a\s+(?:well[-\s]documented|well[-\s]known|widely[-\s]known|classic|common|known|documented)\s+(?:attack|technique|jailbreak|pattern|exploit|vector)\b/i;
 
 const CITATION_HANDOFF_RE = /[:;\u2014\u2013]\s*$/;
+const CITATION_FRAMES = [RESEARCH_CITATION_RE, ATTACK_NAMING_RE, ATTACK_CHARACTERISATION_RE];
 
 export function citationGoverns(segment, offset) {
-  const cit = String(segment ?? '').match(RESEARCH_CITATION_RE);
-  if (!cit) return false;
-  if (offset == null) return true;
-  const citEnd = (cit.index ?? 0) + cit[0].length;
-  if (citEnd > offset) return false;
-  return !CITATION_HANDOFF_RE.test(segment.slice(citEnd, offset));
+  const text = String(segment ?? '');
+  // ⚠ ANY frame may govern — stopping at the first match would let an earlier,
+  // badly-placed one hide a later frame that does precede the match.
+  for (const re of CITATION_FRAMES) {
+    const cit = text.match(re);
+    if (!cit) continue;
+    if (offset == null) return true;
+    const citEnd = (cit.index ?? 0) + cit[0].length;
+    if (citEnd > offset) continue;
+    if (!CITATION_HANDOFF_RE.test(text.slice(citEnd, offset))) return true;
+  }
+  return false;
 }
 
 // ── documentation guard ──
