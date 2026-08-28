@@ -8,7 +8,7 @@
 # zero-dependency Node CLI, and it cannot see the runner's own Node. This runs on
 # the runner directly.
 name: Shomra
-description: Gate the AI artifacts, models and secrets in a repo — MCP configs, skills, slash commands, hooks and rules files.
+description: Gate the AI artifacts, models and secrets in a repo - MCP configs, skills, slash commands, hooks and rules files.
 author: Shomra
 branding:
   icon: shield
@@ -28,7 +28,7 @@ inputs:
     default: latest
   api-key:
     description: >-
-      Shomra API key (use a CI key, shm_ci_…). Optional — every gate runs
+      Shomra API key (use a CI key, shm_ci_…). Optional - every gate runs
       local-first, so the action works with no key at all; a key adds org policy,
       triage state and the dashboard record.
     required: false
@@ -48,7 +48,7 @@ inputs:
 
 outputs:
   exit-code:
-    description: The CLI exit code — 0 clean, 1 hard fail (BLOCK/secret/vulnerable model), 2 soft fail (FLAG under strict).
+    description: The CLI exit code - 0 clean, 1 hard fail (BLOCK/secret/vulnerable model), 2 soft fail (FLAG under strict).
     value: ${{ steps.run.outputs.exit-code }}
 
 runs:

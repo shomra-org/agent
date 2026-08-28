@@ -1,16 +1,4 @@
-/**
- * AI-USAGE inventory extractor (CLI port of the backend's checks/ai-usage.ts,
- * kept in sync so both surfaces detect the same thing). Finds where a repo USES
- * an LLM/AI provider in its own source — SDK imports + provider-specific call
- * sites — so `shomra` can inventory "this code talks to OpenAI / a local model"
- * as plain shadow-AI usage, independent of whether that usage is vulnerable.
- *
- * Dependency-free, line-oriented, low-false-positive: a provider is only claimed
- * when a line either IMPORTS its SDK module or matches a provider-specific CALL
- * signature — never from a bare mention of the word "openai" in prose.
- */
 
-/** Human label per category — shared by the report + backend. */
 export const AI_USAGE_CATEGORY_LABEL = {
   'llm-api': 'hosted LLM API',
   'llm-framework': 'LLM framework',
@@ -18,7 +6,6 @@ export const AI_USAGE_CATEGORY_LABEL = {
   'inference-gateway': 'inference gateway',
 };
 
-// The provider catalog — every entry is an LLM/AI *usage* surface.
 const PROVIDERS = [
   { id: 'openai', label: 'OpenAI', category: 'llm-api', npm: ['openai'], npmPrefix: ['@azure/openai'], py: ['openai'],
     call: [/\b(?:Async)?(?:Azure)?OpenAI\s*\(/, /\bchat\.completions\.create\s*\(/, /\bresponses\.create\s*\(/, /\bembeddings\.create\s*\(/, /\bChatCompletion\.create\s*\(/, /\bopenai\.(?:ChatCompletion|Completion|Embedding)\b/] },
@@ -60,17 +47,6 @@ const PROVIDERS = [
   { id: 'llama-cpp', label: 'llama.cpp', category: 'local-runtime', npm: ['node-llama-cpp'], py: ['llama_cpp'], call: [/\bLlama\s*\(\s*model_path\s*=/] },
 ];
 
-/**
- * Every AI package name this catalog knows, flattened for name comparison at
- * ACQUISITION time (`shomra add package`). A typosquat is only detectable
- * against a list of the real names, and this catalog is already that list —
- * maintaining a second copy is how the two drift and the check quietly stops
- * matching the packages people actually install.
- *
- * `ecosystem` matters: `openai` exists on both npm and PyPI, but `crewai` is
- * PyPI-only, so `npm i crewai` is a different and more suspicious event than
- * `pip install crewai`.
- */
 export const KNOWN_AI_PACKAGES = (() => {
   const out = [];
   const seen = new Set();
@@ -117,7 +93,6 @@ function importMatches(spec, p) {
   return false;
 }
 
-/** Extract AI-usage sightings from one source file's text. */
 export function scanAiUsage(text, file = '') {
   if (!text || !isAiUsageScannable(file)) return [];
   const out = [];
@@ -155,10 +130,8 @@ export function scanAiUsage(text, file = '') {
   return out;
 }
 
-/** Cap on individual sites carried per provider row. */
 const MAX_SITES_PER_PROVIDER = 60;
 
-/** One inventory row per provider, aggregated across all files. */
 export function rollupAiUsage(usages) {
   const byProvider = new Map();
   for (const u of usages) {

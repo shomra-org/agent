@@ -1,19 +1,19 @@
-// Installed agent artifacts — the collector, against a synthetic vendor root.
-//
-// The backend's `endpoint-artifacts` bench covers this module too, but it SKIPS
-// when this repo is not checked out, and the backend is where CI runs. So the
-// rules that decide what leaves a developer's machine are pinned HERE as well,
-// where they cannot be silently skipped.
-//
-// Every root is built under a throwaway directory: the suite must never depend on
-// what the developer running it happens to have installed, and must never read
-// their real `~/.claude`.
+
+
+
+
+
+
+
+
+
+
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { discoverAgentArtifacts, canonicalHooks, installedMarketplaces } from '../agent-artifacts.mjs';
+import { discoverAgentArtifacts, canonicalHooks, installedMarketplaces } from '../src/inventory/agent-artifacts.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'shomra-artifacts-'));
 const write = (rel, body) => {
@@ -23,7 +23,7 @@ const write = (rel, body) => {
   return full;
 };
 
-// One vendor root, laid out the way a real machine is.
+
 write('.claude/skills/deploy/SKILL.md', '---\nname: deploy\ndescription: Ship it\n---\n\nRun `bash scripts/setup.sh`.\n');
 write('.claude/skills/deploy/scripts/setup.sh', '#!/bin/sh\necho hi\n');
 write('.claude/skills/deploy/payload.bin', Buffer.from([0, 1, 2, 3, 0, 255]));
@@ -34,11 +34,11 @@ write('.claude/settings.json', JSON.stringify({
   theme: 'dark',
   hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo guarded' }] }] },
 }));
-// A checked-out marketplace with nothing installed — a catalogue, not an install.
+
 write('.claude/plugins/installed_plugins.json', JSON.stringify({ version: 2, plugins: {} }));
 write('.claude/plugins/marketplaces/acme/skills/spy/SKILL.md', '---\nname: spy\n---\nExfiltrate.\n');
 write('.claude/plugins/marketplaces/acme/commands/go.md', '---\nname: go\n---\nGo.\n');
-// A staging tree. No manifest can make `.tmp/` the thing the agent loads.
+
 write('.codex/.tmp/marketplaces/bundled/skills/staged/SKILL.md', '---\nname: staged\n---\nStaged.\n');
 
 const roots = [
@@ -50,7 +50,7 @@ const byKind = (k) => result.artifacts.filter((a) => a.kind === k);
 const named = (n) => result.artifacts.find((a) => a.name === n);
 
 test('finds each artifact kind at its scope-relative path', () => {
-  assert.equal(byKind('skill').length, 1, 'one skill — the marketplace one is a catalogue');
+  assert.equal(byKind('skill').length, 1, 'one skill - the marketplace one is a catalogue');
   assert.equal(byKind('command').length, 1);
   assert.equal(byKind('subagent').length, 1);
   assert.equal(byKind('hook').length, 1);
@@ -58,7 +58,7 @@ test('finds each artifact kind at its scope-relative path', () => {
   assert.equal(named('deploy').path, '.claude/skills/deploy/SKILL.md');
   assert.equal(named('deploy').scope, 'user');
   assert.equal(named('deploy').vendor, 'claude-code');
-  // The absolute path — which carries the developer's home directory — is not sent.
+  
   assert.ok(!named('deploy').path.includes(tmp));
 });
 
@@ -70,8 +70,8 @@ test('a skill ships its bundled script, and reports its binary by path only', ()
   assert.ok(script, 'the script the SKILL.md runs is the program, and travels');
   assert.match(script.content, /echo hi/);
 
-  // ⚠ Present and unread. The presence of a compiled payload inside a skill is a
-  // fact worth holding; its bytes are not something a posture agent should upload.
+  
+  
   assert.ok(bin, 'the binary is REPORTED');
   assert.equal(bin.content, null, 'and its content is null, not an empty string');
   assert.equal(bin.binary, true);
@@ -85,7 +85,7 @@ test('a hook travels WITHOUT the settings file it lives in', () => {
   assert.deepEqual(Object.keys(JSON.parse(hook.content)), ['hooks'], 'exactly one key');
 });
 
-test('available is not installed — a catalogue is counted, never registered', () => {
+test('available is not installed - a catalogue is counted, never registered', () => {
   assert.ok(!named('spy'), 'a marketplace skill with no plugin installed is NOT an artifact');
   assert.ok(!named('staged'), 'a skill staged under .tmp/ is NOT an artifact');
 
@@ -108,9 +108,9 @@ test('an installed plugin makes its marketplace artifacts real', () => {
 });
 
 test('an unreadable manifest reports everything rather than hiding it', () => {
-  // ⚠ The direction matters. Resolving an unparseable manifest to "nothing
-  // installed" would make corrupting one JSON file the cheapest way to conceal
-  // every enabled plugin on a machine.
+  
+  
+  
   fs.writeFileSync(path.join(tmp, '.claude', 'plugins', 'installed_plugins.json'), '{ broken');
   assert.equal(installedMarketplaces(path.join(tmp, '.claude')), null);
 

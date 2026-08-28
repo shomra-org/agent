@@ -18,7 +18,7 @@ the container, at provision time.
 ## Why provisioning
 
 Every other install path covers the developers who already knew they needed it.
-Provisioning is the one moment where coverage is total and nobody had to opt in —
+Provisioning is the one moment where coverage is total and nobody had to opt in -
 Codespaces, Gitpod, and a local rebuild all pass through it.
 
 ## Options
@@ -26,7 +26,7 @@ Codespaces, Gitpod, and a local rebuild all pass through it.
 | Option | Default | What it does |
 |---|---|---|
 | `version` | `latest` | Which `@shomra/agent` to install |
-| `protect` | `true` | Runs `shomra protect` after create — wires the tool-call, tool-result and prompt guards into the agents present in the container |
+| `protect` | `true` | Runs `shomra protect` after create - wires the tool-call, tool-result and prompt guards into the agents present in the container |
 | `rules` | `false` | Runs `shomra rules --write` after create |
 
 `rules` is **off by default on purpose**: it writes into the developer's

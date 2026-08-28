@@ -1,9 +1,9 @@
 # ############################################################################
-# TODO(BLOCKER — DO NOT PUBLISH): `@shomra` below is a PLACEHOLDER handle.
+# TODO(BLOCKER - DO NOT PUBLISH): `@shomra` below is a PLACEHOLDER handle.
 # Replace it with the real GitHub org/team (e.g. `* @shomra/maintainers`)
 # BEFORE making this repository public. As-is it points at whoever owns the
-# `shomra` handle on GitHub — which may not be us.
+# `shomra` handle on GitHub - which may not be us.
 # ############################################################################
-# Code owners for @shomra/agent — required reviewers for changes.
+# Code owners for @shomra/agent - required reviewers for changes.
 
 * @shomra

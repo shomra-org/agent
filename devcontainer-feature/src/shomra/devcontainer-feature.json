@@ -1,7 +1,7 @@
 {
   "id": "shomra",
   "version": "0.1.0",
-  "name": "Shomra — AI agent security",
+  "name": "Shomra - AI agent security",
   "documentationURL": "https://github.com/shomra-org/agent/tree/main/devcontainer-feature",
   "description": "Installs the Shomra CLI and wires the runtime firewall into the coding agents in this container, so the guard exists before the first keystroke rather than after the first incident.",
   "options": {

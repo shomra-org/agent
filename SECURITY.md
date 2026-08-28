@@ -10,9 +10,9 @@ first so we can fix it before it is public.
 
 Instead, use one of:
 
-- **GitHub private advisory** — the "Report a vulnerability" button under this
+- **GitHub private advisory** - the "Report a vulnerability" button under this
   repository's **Security** tab (preferred).
-- **Email** — hello@shomra.ai
+- **Email** - hello@shomra.ai
 
 Please include:
 
@@ -21,7 +21,7 @@ Please include:
 - a minimal repro (a sample artifact / command / input),
 - what you expected vs. what happened, and the impact you see.
 
-If you can, avoid including real secrets in your report — a redacted or synthetic
+If you can, avoid including real secrets in your report - a redacted or synthetic
 repro is enough.
 
 ## What to expect
@@ -34,7 +34,7 @@ repro is enough.
 
 ## Scope
 
-In scope: the CLI and its bundled analyzers/rules in this repository —
+In scope: the CLI and its bundled analyzers/rules in this repository -
 for example, a malicious input that causes the scanner to execute code, leak
 data, crash in a way that breaks a CI gate, or silently pass content it should
 have flagged (a detection bypass).
