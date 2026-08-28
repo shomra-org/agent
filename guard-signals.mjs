@@ -1072,6 +1072,33 @@ export function isDocumentationLine(line) {
 }
 
 /** The first line a signal matches that is NOT documentation, else null. */
+/**
+ * ⚠ A PROHIBITION IS NOT A STAGED PAYLOAD. MIRROR of `prohibitsAt` in
+ * src/modules/analysis/checks/text/prose-context.ts. `isDocumentationLine`
+ * cannot supply this: its hard-evidence override deliberately refuses to wave
+ * off a line carrying a real `curl … | sh`, so a security-conscious CLAUDE.md
+ * saying *"Never run `curl … | sh`"* BLOCKED — offline, with no server verdict
+ * to appeal to, on the most common file a careful repo ships.
+ *
+ * ⚠ The gap may not cross a clause (`never skip this: curl … | sh` is an
+ * instruction wearing a prohibition's first word), a coordinate conjunction
+ * ends it ("do not X and do not Y" is two directives), and a double negative
+ * ("do not hesitate to run …") means the opposite.
+ */
+const PROHIBITION_MARKER_RE =
+  /\b(?:never|do not|don'?t|cannot|can'?t|must not|mustn'?t|should not|shouldn'?t|avoid|avoids|avoiding|refuse to|refrain from|forbidden|prohibited|disallow\w*|instead of|rather than|beware of)\b[^.:;\n]{0,60}$/i;
+const DOUBLE_NEGATIVE_RE = /\b(?:hesitate|worry|be afraid|forget|fail|neglect|shy away)\b/i;
+const COORDINATE_TAIL_RE = /(?:\b(?:and|or|but|then|also)\b|[,;])\s*$/i;
+
+export function prohibitsAt(line, offset) {
+  if (!line) return false;
+  const at = offset == null || offset < 0 ? line.length : Math.min(offset, line.length);
+  const before = line.slice(Math.max(0, at - 90), at);
+  if (!PROHIBITION_MARKER_RE.test(before)) return false;
+  if (COORDINATE_TAIL_RE.test(before)) return false;
+  return !DOUBLE_NEGATIVE_RE.test(before);
+}
+
 function offendingLine(sig, text) {
   const g = new RegExp(sig.re.source, sig.re.flags.includes('g') ? sig.re.flags : sig.re.flags + 'g');
   for (const m of text.matchAll(g)) {
@@ -1079,6 +1106,7 @@ function offendingLine(sig, text) {
     const line = lineTextAt(text, m.index);
     if (sig.refine && !sig.refine(line)) continue;
     if (isDocumentationLine(line)) continue;
+    if (prohibitsAt(line, line.indexOf(m[0]))) continue;
     return line;
   }
   return null;
@@ -1476,6 +1504,72 @@ export function localPropagation(content, { path = '', kind } = {}) {
   return out.sort((a, b) => RANK[b.severity] - RANK[a.severity]);
 }
 
+/* ── Agent autonomy ───────────────────────────────────────────────────────
+ * MIRROR of src/modules/analysis/checks/text/agent-autonomy.ts.
+ * ⚠ An instruction file loads into EVERY session, needs no delivery and
+ * outlives the turn, so a directive here is not one turn's risk - it is the
+ * estate's default. Kept in lockstep by local-mirror-bench in the backend repo.
+ */
+const AUTONOMY_RULES = [
+  { family: 'confirmation', label: 'Acts without asking', re: /\b(?:without (?:asking|confirming|prompting|waiting for|seeking)(?:\s+(?:the\s+)?(?:user|me|anyone|permission|approval|confirmation))?|do(?:es)? not (?:ask|prompt|wait|check|confirm)[^.\n]{0,30}\b(?:for|before|first|permission|approval|confirmation)|no need to (?:ask|confirm|check with))\b/i },
+  { family: 'confirmation', label: 'Approval pre-granted', re: /\b(?:auto(?:matically)?[- ]?approve|always approve|approve (?:all|every|any)[^.\n]{0,24}\b(?:tool|call|action|command|change)s?|treat (?:all|every|any)[^.\n]{0,24}\bas (?:pre-?)?approved|consider (?:this|it|yourself) (?:pre-?)?authoriz)/i },
+  { family: 'confirmation', label: 'Confirmation step skipped', re: /\b(?:skip|bypass|suppress|omit)(?:\s+\w+){0,2}\s+(?:the\s+)?(?:confirmation|approval|permission|consent)\b/i },
+  { family: 'concealment', label: 'Own actions hidden from the user', re: /\b(?:do(?:es)? not|don'?t|never)\s+(?:mention|tell|inform|notify|report to|disclose to|reveal to|show)\s+(?:the\s+)?(?:user|human|operator|them|anyone)\b|\bwithout (?:telling|informing|notifying|alerting)\s+(?:the\s+)?(?:user|human|operator|anyone)\b/i },
+  { family: 'concealment', label: 'Work not reported back', re: /\b(?:do(?:es)? not|don'?t|never)\s+(?:summari[sz]e|report|log|record|list|describe|explain)[^.\n]{0,40}\b(?:what you (?:did|changed|ran|edited|deleted|installed)|the (?:changes|commands|actions|edits) you|your (?:changes|actions|edits|commands))\b/i },
+  { family: 'concealment', label: 'Instructions kept secret', re: /\b(?:do(?:es)? not|don'?t|never)\s+(?:mention|reveal|disclose|quote|repeat|share|output)[^.\n]{0,30}\b(?:these|this|your|the)\s+(?:instructions?|rules?|prompt|guidelines?|file)\b|\bkeep (?:this|these|it) (?:secret|hidden|confidential|between us|to yourself)\b/i },
+  { family: 'guardrail', label: 'Safety control overridden', re: /\b(?:ignore|disable|bypass|override|turn off|switch off|work around|circumvent|disregard)(?:\s+\w+){0,3}\s+(?:the\s+|any\s+|all\s+)?(?:safety|guardrails?|guard|security (?:check|control|policy)|restrictions?|limitations?|policies|policy|safeguards?|protections?)\b/i },
+  { family: 'verification', label: 'Verification waived', re: /\b(?:do(?:es)? not|don'?t|never|no need to|skip)\s+(?:bother\s+)?(?:run(?:ning)?|execut\w+)?\s*(?:the\s+)?(?:tests?|test suite|linter|lint|type ?check|build|review|checks)\s*(?:before|first|prior to)\b|\b(?:skip|bypass)\s+(?:the\s+)?(?:review|code review|tests?|test suite|ci)\b/i },
+];
+
+/** ⚠ A quoted directive is being DISCUSSED, not issued. */
+function insideQuotedSpan(line, at) {
+  let dq = 0;
+  let tick = 0;
+  for (let i = 0; i < at && i < line.length; i++) {
+    const c = line[i];
+    if (c === '"' || c === '“' || c === '”') dq++;
+    else if (c === '`') tick++;
+  }
+  return dq % 2 === 1 || tick % 2 === 1;
+}
+
+export function localAutonomy(text) {
+  const body = String(text ?? '');
+  if (!body.trim()) return [];
+  const out = [];
+  const seen = new Set();
+  const lines = body.split(/\r?\n/).slice(0, 4000);
+  for (let i = 0; i < lines.length && out.length < 12; i++) {
+    const line = lines[i];
+    if (!line || line.length > 2000) continue;
+    for (const rule of AUTONOMY_RULES) {
+      if (seen.has(rule.label)) continue;
+      const m = rule.re.exec(line);
+      if (!m) continue;
+      if (isDocumentationLine(line)) continue;
+      if (prohibitsAt(line, m.index)) continue;
+      if (insideQuotedSpan(line, m.index)) continue;
+      seen.add(rule.label);
+      out.push({ family: rule.family, label: rule.label, line: i + 1 });
+    }
+  }
+  return out;
+}
+
+/**
+ * ⚠ THE CONJUNCTION IS WHAT MAKES IT AN ATTACK RATHER THAN A PREFERENCE. Acting
+ * unattended is how a team runs a trusted automation; acting unattended AND not
+ * saying what was done removes the gate and the record together.
+ */
+export function autonomySeverity(signals) {
+  if (!signals.length) return null;
+  const f = new Set(signals.map((s) => s.family));
+  if (f.has('confirmation') && f.has('concealment')) return 'CRITICAL';
+  if (f.has('guardrail')) return 'HIGH';
+  if (f.size >= 2) return 'HIGH';
+  return 'MEDIUM';
+}
+
 export function localGate(content, { kind, path } = {}) {
   const findings = [];
   const push = (severity, title, remediationText, line) => findings.push({ severity, title, remediationText, ...(line ? { line } : {}) });
@@ -1495,6 +1589,18 @@ export function localGate(content, { kind, path } = {}) {
       // the URL checks grade it; don't double-flag it as personal data.
       if ((kind === 'agent-card' || kind === 'mcp') && f.category === 'pii' && f.label.includes('IPv4')) continue;
       push(f.severity, f.label, undefined, f.line);
+    }
+  }
+
+  // ⚠ An instruction file loads into EVERY session, so a directive removing
+  // the human is the estate's default, not one turn's risk.
+  {
+    const auto = localAutonomy(content || '');
+    const sev = autonomySeverity(auto);
+    if (sev) {
+      push(sev, `Instructs the agent to act unsupervised (${[...new Set(auto.map((a) => a.family))].join(', ')})`,
+        'Keep the autonomy narrow - name the commands that may run unattended rather than removing confirmation globally, and never pair it with withholding what was done.',
+        auto[0].line);
     }
   }
 
