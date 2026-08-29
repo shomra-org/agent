@@ -16,8 +16,16 @@ export function loadConfig() {
 }
 
 export function saveConfig(cfg) {
-  fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
+  fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(CONFIG_DIR, 0o700);
+  } catch {}
+  const tmp = `${CONFIG_FILE}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+  try {
+    fs.chmodSync(tmp, 0o600);
+  } catch {}
+  fs.renameSync(tmp, CONFIG_FILE);
 }
 
 export function getMachineId(cfg) {
