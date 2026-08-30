@@ -9,6 +9,7 @@ import { cmdGate } from '../commands/gate.mjs';
 import { cmdInstallPrecommit } from '../commands/git-hooks.mjs';
 import { cmdInit } from '../commands/init.mjs';
 import { cmdInstallHook } from '../commands/install-hook.mjs';
+import { cmdLedger } from '../commands/ledger.mjs';
 import { cmdLlmProxy } from '../commands/llm-proxy.mjs';
 import { cmdMcp, cmdMcpGuard } from '../commands/mcp.mjs';
 import { cmdMemoryScan } from '../commands/memory-scan.mjs';
@@ -66,6 +67,7 @@ export const COMMANDS = {
   add: (f, p) => cmdAdd(f, p),
   'install-hook': (f) => cmdInstallHook(f),
   protect: (f) => cmdProtect(f),
+  ledger: (f) => cmdLedger(f),
   doctor: (f) => cmdDoctor(f),
   new: (f, p) => cmdNew(f, p),
   mcp: (f, p) => cmdMcp(f, p),
