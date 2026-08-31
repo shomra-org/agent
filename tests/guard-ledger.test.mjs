@@ -228,3 +228,33 @@ test('a reason is bounded - an error string never lands in the ledger unclipped'
   const s = openWindow(emptyLedger(), { at: T0, reason: 'x'.repeat(5000) });
   assert.ok(s.open.reason.length <= 200);
 });
+
+/*
+ * The screen tier the CLI asks the backend for.
+ *
+ * ⚠ FULL IS THE DEFAULT AND HAS TO BE. `fast` buys latency by SPENDING
+ * COVERAGE - the backend times out every provider-backed screen inside a 100ms
+ * budget and reports a `minimal` basis - so a caller must ASK for the cheaper
+ * screen. A typo that silently sent `fast` would degrade every screen in the
+ * estate while the verdicts kept arriving and looking the same.
+ */
+test('screen_tier is omitted unless the operator asks for the fast screen', async () => {
+  const { buildGuardBody, screenTier } = await import('../src/guard/report.mjs');
+  const norm = { tool_name: 'Bash', tool_input: { command: 'ls' }, cwd: '/x', session_id: 's1' };
+
+  delete process.env.SHOMRA_GUARD_TIER;
+  assert.equal(screenTier(), undefined, 'unset means full');
+  assert.ok(!('screen_tier' in buildGuardBody(norm, 'claude')), 'and the field is omitted, not sent as null');
+
+  for (const bad of ['', 'full', 'FULL', 'quick', '1', 'true']) {
+    process.env.SHOMRA_GUARD_TIER = bad;
+    assert.equal(screenTier(), undefined, `"${bad}" is not the fast tier`);
+  }
+
+  for (const good of ['fast', 'FAST', ' Fast ']) {
+    process.env.SHOMRA_GUARD_TIER = good;
+    assert.equal(screenTier(), 'fast', `"${good}" asks for the fast screen`);
+    assert.equal(buildGuardBody(norm, 'claude').screen_tier, 'fast', 'and it reaches the body');
+  }
+  delete process.env.SHOMRA_GUARD_TIER;
+});
