@@ -11,7 +11,7 @@ export const INJECTION_PHRASES = [
 ];
 
 export const INJECTION_REGEXES = [
-  { label: 'Instruction-override phrasing', re: /\b(ignore|disregard|override|bypass|circumvent)\b[\s\w,'"()-]{0,40}?\b(instruction|instructions|directive|directives|safety|safeguards?|guardrails?|system\s+prompt|content\s+polic\w+)\b/i },
+  { label: 'Instruction-override phrasing', re: /\b(?:ignore|disregard|override|bypass|circumvent|discard|nullify|revoke|rescind|supersede[sd]?|abandon|set\s+aside|put\s+aside|cast\s+aside|pay\s+no\s+(?:attention|heed)\s+to|take\s+no\s+notice\s+of|stop\s+(?:following|obeying|adhering\s+to)|cease\s+(?:following|obeying)|no\s+longer\s+(?:follow|obey|adhere\s+to))\b[\s\w,'"()-]{0,40}?\b(instruction|instructions|directive|directives|safety|safeguards?|guardrails?|guidelines?|safety\s+(?:rules?|filters?|checks?)|system\s+prompt|content\s+polic\w+)\b/i },
   { label: 'Instructs the agent to conceal an action from the user', re: /\b(?:do\s*n['o]?t|never|without)\s+(?:tell|telling|inform|informing|notify|notifying|alert|alerting|mention|mentioning|disclos\w+|reveal\w*)\s+(?:it\s+|this\s+|them\s+)?(?:to\s+)?(?:the\s+)?(?:user|users|human|operator|owner)\b(?!['']s)(?!\s+(?:to\b|how\s+to\b|when\s+to\b|that\s+they\b|about\b))/i },
   { label: 'Bulk destructive command', re: /\b(delete|remove|wipe|erase|destroy|drop|purge|nuke|truncate)\b[\s\w,'"()-]{0,20}?\b(all|every|each|entire|whole)\b[\s\w,'"()-]{0,15}?\b(folder|folders|file|files|directory|directories|table|tables|database|databases|record|records|repo|repos|repositor\w*|account|accounts|user|users|row|rows|document|documents|data)\b/i },
   { label: 'Destructive SQL statement', re: /\b(drop|truncate)\s+(table|database|schema)\b/i },
