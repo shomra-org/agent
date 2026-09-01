@@ -1,11 +1,12 @@
 import { RISKY_CONFIG_MARKERS, riskyConfigHit } from './config-markers.mjs';
+import { credentialDestinationFindings } from './credential-destination.mjs';
 import { detectCredentialHarvest } from './credential-harvest.mjs';
 import { egressHost } from './egress.mjs';
 import { detectExecutionHijack } from './execution-hijack.mjs';
 import { BUILD_ARTIFACT, INJECTION_PHRASES, INJECTION_REGEXES, INVISIBLE_CHARS_RE, PRECEDING_NEGATION, describesRatherThanInstructs } from './injection.mjs';
 import { lineAt, locate } from './lines.mjs';
 import { codeMask, deobfuscate } from './masking.mjs';
-import { PII_PATTERNS, RESERVED_IPV4, SECRET_PATTERNS, VERSION_CONTEXT, isPlaceholderSecret, luhnValid } from './secrets.mjs';
+import { ORDERED_SECRET_PATTERNS, PII_PATTERNS, RESERVED_IPV4, SECRET_PATTERNS, VERSION_CONTEXT, isPlaceholderSecret, luhnValid } from './secrets.mjs';
 import { SEV_RANK } from './severity.mjs';
 import { DANGEROUS_SHELL, matchesShellSignal } from './shell.mjs';
 import { scanStagedFetchExec } from './staged-fetch.mjs';
@@ -48,7 +49,21 @@ export function localScan(text, opts = {}) {
     if (INVISIBLE_CHARS_RE.test(t)) findings.push({ label: 'Invisible / zero-width characters', severity: 'MEDIUM', category: 'injection', ...locate(t, INVISIBLE_CHARS_RE, mask) });
   }
   if (cats.includes('secret')) {
-    for (const { name, re } of SECRET_PATTERNS) { const m = t.match(re); if (m && !isPlaceholderSecret(m[0])) findings.push({ label: `Live credential: ${name}`, severity: 'CRITICAL', category: 'secret', ...locate(t, re, mask) }); }
+    const sightings = [];
+    const claimed = [];
+    for (const { name, re } of ORDERED_SECRET_PATTERNS) {
+      const m = t.match(re);
+      if (!m || isPlaceholderSecret(m[0])) continue;
+      const start = m.index;
+      if (typeof start === 'number') {
+        const end = start + m[0].length;
+        if (claimed.some(([a, b]) => start < b && end > a)) continue;
+        claimed.push([start, end]);
+      }
+      sightings.push({ label: name, start });
+      findings.push({ label: `Live credential: ${name}`, severity: 'CRITICAL', category: 'secret', ...locate(t, re, mask) });
+    }
+    for (const f of credentialDestinationFindings(t, sightings)) findings.push({ ...f, ...locate(t, f.destination, mask) });
   }
   if (cats.includes('pii')) {
     for (const { name, re } of PII_PATTERNS) {

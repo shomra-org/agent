@@ -48,6 +48,13 @@ export const SECRET_PATTERNS = [
   },
 ];
 
+export const GENERIC_SECRET_LABELS = new Set(['Generic bearer', 'JSON web token']);
+
+export const ORDERED_SECRET_PATTERNS = [
+  ...SECRET_PATTERNS.filter((p) => !GENERIC_SECRET_LABELS.has(p.name)),
+  ...SECRET_PATTERNS.filter((p) => GENERIC_SECRET_LABELS.has(p.name)),
+];
+
 export const PII_PATTERNS = [
   { name: 'Email address', re: /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}/ },
   { name: 'US SSN', re: /\b\d{3}-\d{2}-\d{4}\b/ },
