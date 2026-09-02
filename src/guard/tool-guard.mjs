@@ -4,6 +4,9 @@ import path from 'node:path';
 import { resolveAgentIdentityHandle } from '../commands/agent-identity.mjs';
 import { isMemoryPath, reportMemoryWrite } from '../commands/memory-scan.mjs';
 import { breakerOpen, breakerReset, breakerTrip, guardTimeoutMs } from '../core/circuit-breaker.mjs';
+import { CONFIG_DIR } from '../core/config.mjs';
+import { makeLedgerStore } from './ledger.mjs';
+import { VERSION } from '../core/version.mjs';
 import { loadConfig, resolveSettings } from '../core/config.mjs';
 import { classifyConsequence, downrankCodeContext, grade, localScan } from '../detect/guard-signals.mjs';
 import { WRITE_TOOLS, guardNeedsServer, guardTargetPath, guardText } from './classify.mjs';
@@ -44,6 +47,60 @@ function unscreenedSevere(normalized, tool, input) {
     args: guardText(tool, input),
     isShell: !WRITE_TOOLS.has(tool) && typeof input?.command === 'string',
   }) === 'severe';
+}
+
+/**
+ * ⚠⚠ THE LEDGER HAD NO PRODUCER. `guard/ledger.mjs` builds the fail-open window
+ * the backend's EnforcementGap reads - and nothing in this repo ever called
+ * `countCall`, so every client reported ZERO gaps forever. The backend then
+ * asks whether a capable reporter exists, gets silence, and the estate reads
+ * either "no outages" or NOT_ATTEMPTABLE. Both are wrong and one is flattering:
+ * a smoke detector reporting no fire with a dead battery, which is the exact
+ * shape enforcement-availability.ts was written to prevent.
+ *
+ * ⚠ COUNTS ARE LOWER BOUNDS BY DESIGN - concurrent hook processes race this
+ * file, and the backend already treats them as a floor. Do not "fix" that with
+ * a lock on the firewall's hot path.
+ */
+function ledger() {
+  return makeLedgerStore(CONFIG_DIR, { version: VERSION });
+}
+
+/** A call that ran with no server verdict: Tier-0 screened it, or nothing did. */
+function countUnscreened(reason) {
+  try {
+    ledger().count(localTierDisabled() ? 'unscreened' : 'local', reason);
+  } catch {
+    /* The ledger is a record, never a gate: a failure to write one must not
+     * take the firewall down. The count is a floor and this makes it lower. */
+  }
+}
+
+/** Close the open window and hand the backend everything not yet acknowledged. */
+function sendLedger() {
+  try {
+    const store = ledger();
+    store.close();
+    const env = store.envelope();
+    pendingLedger = env.gaps ?? [];
+    return env;
+  } catch {
+    /* No ledger is a lower bound, not a wrong number. */
+    return undefined;
+  }
+}
+
+let pendingLedger = [];
+
+function ackLedger() {
+  if (!pendingLedger.length) return;
+  try {
+    ledger().ack(pendingLedger);
+  } catch {
+    /* Unacknowledged gaps are re-sent next time; a duplicate is a floor read
+     * twice, which is safe. Losing one is not. */
+  }
+  pendingLedger = [];
 }
 
 function askUnscreened(agent, why) {
@@ -156,6 +213,7 @@ async function requestServerDecision({ url, apiKey, agentId, body, agent, strict
     }
     const decision = await response.json();
     breakerReset();
+    ackLedger();
     return decision;
   } catch (error) {
     clearTimeout(timer);
@@ -222,11 +280,19 @@ export async function cmdToolGuard(flags) {
    * capability check, no flow control, and no gate event to read afterwards. */
   const severe = unscreenedSevere(normalized, tool, input);
   const escalate = alwaysEscalate || severe || local.verdict === 'FLAG' || guardNeedsServer(tool, input, !!agentId);
-  if (!escalate) process.exit(0);
+  /* ⚠ A call the client CHOSE not to escalate is still a call no server graded,
+   * and the denominator has to carry it or the fail-open rate is measured over
+   * the escalated traffic alone - which flatters it by exactly the calls the
+   * client decided were dull. */
+  if (!escalate) {
+    countUnscreened('not escalated - screened by the local tier only');
+    process.exit(0);
+  }
 
   /* Every path out of here that did NOT get a server verdict goes through this
    * one door, so a new way of failing cannot quietly skip the rung check. */
   const onUnreachable = (why) => {
+    countUnscreened(why);
     if (severe) askUnscreened(agent, why);
     return process.exit(0);
   };
@@ -241,7 +307,13 @@ export async function cmdToolGuard(flags) {
     agent,
     strict,
     onUnreachable,
-    body: buildGuardBody(normalized, agent, flagged ? 'FLAG' : undefined, flagged ? local.top?.label : undefined),
+    body: {
+      ...buildGuardBody(normalized, agent, flagged ? 'FLAG' : undefined, flagged ? local.top?.label : undefined),
+      /* The window closes the moment a verdict arrives, and rides out on the
+       * SAME request - a separate report would be a second round trip on the
+       * firewall's hot path, and one that fails exactly when the first did. */
+      guard_ledger: sendLedger(),
+    },
   });
 
   enforceServerDecision(agent, decision);
