@@ -33,7 +33,7 @@ const COMMANDS = () => `${bold('COMMANDS')}
 
   ${dim('Setup - run once per machine / repo')}
   ${cyan('init')}          Configure + enroll this machine       ${dim('--key shm_live_… [--url <backend>]')}
-  ${cyan('protect')}       Wire the runtime firewall for every coding agent ${dim('[--local] [--force]')}
+  ${cyan('protect')}       Wire the runtime firewall for every coding agent ${dim('[--project] [--force]')}
   ${cyan('install-hook')}  Wire the runtime firewall into ONE agent ${dim('[--agent claude|cursor|windsurf|gemini|codex|copilot|cline|aider|all] [--global]')}
   ${cyan('provenance')}    Which changed files an AI agent wrote   ${dim('[--staged | --base main] [--trailer] [--fail-on-blocked] [--json]')}
   ${cyan('install-precommit')} Gate staged AI artifacts on git commit ${dim('[dir] [--force]  ·  --pre-receive for the un-skippable server-side hook')}
@@ -76,7 +76,7 @@ const COMMANDS = () => `${bold('COMMANDS')}
   ${cyan('admin')}         Deep scans, red-team, hardening, agent identity, LLM proxy
                 ${dim('scan-zip · model-scan · memory-scan · redteam · campaign · harden · agent-identity · llm-proxy')}
 
-  ${dim('(internal hook handlers, invoked by install-hook - not run by hand: tool-guard, result-guard, prompt-guard, plan-guard)')}
+  ${dim('(internal hook handlers, invoked by install-hook - not run by hand: tool-guard, result-guard, prompt-guard, plan-guard, session-guard)')}
 `;
 
 const GATE = () => `${bold('GATE')}

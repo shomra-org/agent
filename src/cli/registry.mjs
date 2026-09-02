@@ -29,6 +29,7 @@ import { cmdSecrets } from '../commands/secrets.mjs';
 import { cmdStatus } from '../commands/status.mjs';
 import { cmdWhy } from '../commands/why.mjs';
 import { cmdPromptGuard } from '../guard/prompt-guard.mjs';
+import { cmdSessionGuard } from '../guard/session-guard.mjs';
 import { cmdResultGuard } from '../guard/result-guard.mjs';
 import { cmdToolGuard } from '../guard/tool-guard.mjs';
 
@@ -60,6 +61,7 @@ export const COMMANDS = {
   'result-guard': (f) => cmdResultGuard(f),
   'prompt-guard': (f) => cmdPromptGuard(f),
   'plan-guard': (f) => cmdPlanGuard(f),
+  'session-guard': (f) => cmdSessionGuard(f),
   plan: (f, p) => cmdPlan(f, p),
   corpus: (f, p) => cmdCorpus(f, p),
   rules: (f, p) => cmdRules(f, p),

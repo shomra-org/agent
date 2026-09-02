@@ -4,8 +4,27 @@ import path from 'node:path';
 
 export const GATE_KINDS = ['mcp', 'skill', 'command', 'subagent', 'hook', 'rules', 'agent-card', 'memory', 'auto'];
 
-export function detectEnv() {
-  const e = process.env;
+/**
+ * ⚠ A CLOUD AGENT SESSION IS NOT A DEVELOPER MACHINE, and until this existed it
+ * reported as one. Claude Code on the web runs in an EPHEMERAL container: fresh
+ * $HOME, no `shomra` config, a hostname nobody will ever see again. It carries
+ * no CI variables, so it fell through to LOCAL - and an operator counting
+ * "screened laptops" was counting containers that no longer exist.
+ *
+ * ⚠ CI IS CHECKED FIRST and stays first. A cloud session driven by a GitHub
+ * Action is CI: that branch carries repo, ref and commit, which is the stronger
+ * attribution. REMOTE is what is left when nothing else names where this ran.
+ */
+const REMOTE_MARKERS = ['CLAUDE_CODE_CONTAINER_ID', 'CLAUDE_CODE_ENVIRONMENT_RUNNER_VERSION'];
+
+export function remoteRunner(e = process.env) {
+  for (const key of REMOTE_MARKERS) if (String(e?.[key] ?? '').trim()) return 'claude-code-cloud';
+  if (/^remote/i.test(String(e?.CLAUDE_CODE_ENTRYPOINT ?? '').trim())) return 'claude-code-cloud';
+  return null;
+}
+
+export function detectEnv(env) {
+  const e = env ?? process.env;
   const pick = (...keys) => {
     for (const k of keys) if (e[k]?.trim()) return e[k].trim();
     return undefined;
@@ -63,6 +82,9 @@ export function detectEnv() {
       commit: ci.commit ?? git.commit,
     };
   }
+
+  const runner = remoteRunner(e);
+  if (runner) return { environment: 'REMOTE', runner, ...gitContext() };
 
   return { environment: 'LOCAL', ...gitContext() };
 }
