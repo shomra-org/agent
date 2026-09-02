@@ -1,5 +1,6 @@
 export { autonomySeverity, localAutonomy } from './signals/autonomy.mjs';
 export { RISKY_CONFIG_MARKERS } from './signals/config-markers.mjs';
+export { classifyConsequence } from './signals/consequence.mjs';
 export { detectCredentialHarvest } from './signals/credential-harvest.mjs';
 export { claimSeverity, detectDurableClaims } from './signals/durable-claims.mjs';
 export { SUSPICIOUS_EGRESS_HOSTS, egressHost } from './signals/egress.mjs';
