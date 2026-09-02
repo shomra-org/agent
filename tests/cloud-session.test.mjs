@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { detectEnv, remoteRunner } from '../src/gate/environment.mjs';
+import { REMOTE_RUNTIMES, declaredEnvironment, detectEnv, mergeEnvironment, remoteRunner } from '../src/gate/environment.mjs';
 import { PACKAGE_SPEC, SHOMRA_ANY_HOOK_RE, hookCommand, shomraHookRe } from '../src/agents/hook-command.mjs';
 import { AGENT_INSTALLERS } from '../src/agents/installers.mjs';
 import { sessionPosture } from '../src/guard/session-guard.mjs';
@@ -30,6 +30,53 @@ test('⚠ CI still wins - it carries repo, ref and commit, which is the stronger
 test('an ordinary laptop is still LOCAL', () => {
   assert.equal(detectEnv({ HOME: '/home/dev' }).environment, 'LOCAL');
   assert.equal(remoteRunner({}), null);
+});
+
+test('SHOMRA_ENVIRONMENT declares a runtime whose markers nobody has read yet', () => {
+  const e = { SHOMRA_ENVIRONMENT: 'REMOTE' };
+  assert.equal(detectEnv(e).environment, 'REMOTE');
+  assert.equal(detectEnv(e).runner, 'declared');
+  assert.equal(declaredEnvironment(e), 'REMOTE');
+});
+
+test('⚠⚠ the override may only RAISE - it can never relabel a cloud container as a laptop', () => {
+  const sneaky = { CLAUDE_CODE_CONTAINER_ID: 'abc', SHOMRA_ENVIRONMENT: 'LOCAL' };
+  assert.equal(detectEnv(sneaky).environment, 'REMOTE');
+  assert.equal(detectEnv(sneaky).runner, 'claude-code-cloud');
+  assert.equal(mergeEnvironment('REMOTE', 'LOCAL'), 'REMOTE');
+  assert.equal(mergeEnvironment('REMOTE', 'CI'), 'REMOTE');
+  assert.equal(mergeEnvironment('CI', 'LOCAL'), 'CI');
+});
+
+test('…and it raises over CI too, for a cloud runtime driven by a pipeline', () => {
+  assert.equal(detectEnv({ GITHUB_ACTIONS: 'true', SHOMRA_ENVIRONMENT: 'REMOTE' }).environment, 'REMOTE');
+  assert.equal(detectEnv({ GITHUB_ACTIONS: 'true' }).environment, 'CI');
+});
+
+test('a junk or absent override changes nothing', () => {
+  assert.equal(declaredEnvironment({ SHOMRA_ENVIRONMENT: 'banana' }), null);
+  assert.equal(declaredEnvironment({}), null);
+  assert.equal(detectEnv({ SHOMRA_ENVIRONMENT: 'banana' }).environment, 'LOCAL');
+  assert.equal(mergeEnvironment('LOCAL', null), 'LOCAL');
+});
+
+test('the override is case- and whitespace-tolerant', () => {
+  assert.equal(detectEnv({ SHOMRA_ENVIRONMENT: '  remote ' }).environment, 'REMOTE');
+});
+
+test('⚠ every shipped runtime marker is one somebody actually verified', () => {
+  assert.ok(REMOTE_RUNTIMES.length > 0);
+  for (const rt of REMOTE_RUNTIMES) {
+    assert.equal(rt.verified, true, `${rt.runner} ships an unverified marker - use SHOMRA_ENVIRONMENT instead`);
+    assert.ok(rt.vars.length > 0 || rt.prefixed);
+    assert.ok(rt.label && rt.runner);
+  }
+});
+
+test('⚠ Codespaces and devcontainers are NOT remote - they persist and can report', () => {
+  assert.equal(remoteRunner({ CODESPACES: 'true', CODESPACE_NAME: 'x' }), null);
+  assert.equal(remoteRunner({ REMOTE_CONTAINERS: 'true' }), null);
+  assert.equal(detectEnv({ CODESPACES: 'true' }).environment, 'LOCAL');
 });
 
 test('⚠⚠ a project hook resolves through npm, not an absolute path', () => {

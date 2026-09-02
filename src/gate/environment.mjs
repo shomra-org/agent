@@ -15,12 +15,64 @@ export const GATE_KINDS = ['mcp', 'skill', 'command', 'subagent', 'hook', 'rules
  * Action is CI: that branch carries repo, ref and commit, which is the stronger
  * attribution. REMOTE is what is left when nothing else names where this ran.
  */
-const REMOTE_MARKERS = ['CLAUDE_CODE_CONTAINER_ID', 'CLAUDE_CODE_ENVIRONMENT_RUNNER_VERSION'];
+/**
+ * ⚠ ONE ENTRY PER RUNTIME, and only where the variable has been SEEN. A marker
+ * invented from a vendor's docs either never fires - useless - or fires on a
+ * name something else uses, which labels a real laptop as an ephemeral
+ * container and puts a `floor` on a machine the org actually owns. Add a row
+ * here once somebody has read the variable out of a live session of that
+ * runtime; until then that runtime uses SHOMRA_ENVIRONMENT below, which is the
+ * whole reason the override exists.
+ *
+ * `verified` records who has actually seen it, so the next person can tell a
+ * confirmed marker from an optimistic one.
+ */
+export const REMOTE_RUNTIMES = [
+  {
+    runner: 'claude-code-cloud',
+    label: 'Claude Code on the web',
+    verified: true,
+    vars: ['CLAUDE_CODE_CONTAINER_ID', 'CLAUDE_CODE_ENVIRONMENT_RUNNER_VERSION'],
+    prefixed: { CLAUDE_CODE_ENTRYPOINT: /^remote/i },
+  },
+];
 
+/**
+ * ⚠ CODESPACES AND DEVCONTAINERS ARE DELIBERATELY ABSENT. They are containers,
+ * but they PERSIST between sessions, can be enrolled, and their guard survives
+ * to report a window it spent blind - which is the whole distinction REMOTE
+ * draws. Filing them here would put "we cannot vouch for its silence" on
+ * machines that can in fact vouch for it.
+ */
 export function remoteRunner(e = process.env) {
-  for (const key of REMOTE_MARKERS) if (String(e?.[key] ?? '').trim()) return 'claude-code-cloud';
-  if (/^remote/i.test(String(e?.CLAUDE_CODE_ENTRYPOINT ?? '').trim())) return 'claude-code-cloud';
+  for (const rt of REMOTE_RUNTIMES) {
+    for (const key of rt.vars) if (String(e?.[key] ?? '').trim()) return rt.runner;
+    for (const [key, re] of Object.entries(rt.prefixed ?? {})) {
+      if (re.test(String(e?.[key] ?? '').trim())) return rt.runner;
+    }
+  }
   return null;
+}
+
+const ENV_RANK = { LOCAL: 0, CI: 1, REMOTE: 2 };
+
+export function declaredEnvironment(e = process.env) {
+  const v = String(e?.SHOMRA_ENVIRONMENT ?? '').trim().toUpperCase();
+  return v in ENV_RANK ? v : null;
+}
+
+/**
+ * ⚠⚠ THE OVERRIDE MAY ONLY EVER RAISE. `SHOMRA_ENVIRONMENT` exists so an
+ * operator can declare a runtime we do not yet detect - a cloud agent from a
+ * vendor whose markers nobody has read. Letting it go the other way would make
+ * it a switch that relabels a detected ephemeral container as a trusted laptop,
+ * clearing the `floor` its unreportable silence earns. That is the same
+ * privilege-reduction shape `mayRaiseOnly` and `foldTimeout` refuse on the
+ * server, and it would be reachable by anything that can set an env var.
+ */
+export function mergeEnvironment(detected, declared) {
+  if (!declared) return detected;
+  return ENV_RANK[declared] > ENV_RANK[detected] ? declared : detected;
 }
 
 export function detectEnv(env) {
@@ -73,6 +125,10 @@ export function detectEnv(env) {
   if (ci) {
 
     const git = gitContext();
+    const declared = declaredEnvironment(e);
+    if (mergeEnvironment('CI', declared) === 'REMOTE') {
+      return { environment: 'REMOTE', runner: remoteRunner(e) ?? 'declared', ...git };
+    }
     return {
       environment: 'CI',
       ciProvider: ci.ciProvider,
@@ -84,9 +140,10 @@ export function detectEnv(env) {
   }
 
   const runner = remoteRunner(e);
-  if (runner) return { environment: 'REMOTE', runner, ...gitContext() };
+  const environment = mergeEnvironment(runner ? 'REMOTE' : 'LOCAL', declaredEnvironment(e));
+  if (environment === 'REMOTE') return { environment, runner: runner ?? 'declared', ...gitContext() };
 
-  return { environment: 'LOCAL', ...gitContext() };
+  return { environment, ...gitContext() };
 }
 
 function gitContext() {
