@@ -13,6 +13,17 @@ function loadModelCache() { try { return JSON.parse(fs.readFileSync(MODEL_CACHE_
 
 function saveModelCache(c) { try { fs.mkdirSync(CONFIG_DIR, { recursive: true }); fs.writeFileSync(MODEL_CACHE_FILE, JSON.stringify(c)); } catch {  } }
 
+export const MODEL_CACHE_MAX_ENTRIES = 500;
+
+export const MODEL_CACHE_RETAIN_MS = 90 * 24 * 3600 * 1000;
+
+export function pruneModelCache(cache, { now = Date.now(), ttl = 0, max = MODEL_CACHE_MAX_ENTRIES } = {}) {
+  const horizon = Math.max(MODEL_CACHE_RETAIN_MS, ttl);
+  const live = Object.entries(cache ?? {}).filter(([, v]) => v && typeof v.cachedAt === 'number' && now - v.cachedAt < horizon);
+  live.sort((a, b) => b[1].cachedAt - a[1].cachedAt);
+  return Object.fromEntries(live.slice(0, max));
+}
+
 export async function modelLookup(url, id, sha, timeoutMs) {
   const key = `${id}@${sha || 'latest'}`;
   const ttl = clampInt(process.env.SHOMRA_MODEL_CACHE_TTL_MS, 7 * 24 * 3600 * 1000, 0, 365 * 24 * 3600 * 1000);
@@ -39,7 +50,7 @@ export async function modelLookup(url, id, sha, timeoutMs) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     breakerReset();
-    if (!modelCacheOff() && data && data.found) { cache[key] = { cachedAt: Date.now(), data }; saveModelCache(cache); }
+    if (!modelCacheOff() && data && data.found) { cache[key] = { cachedAt: Date.now(), data }; saveModelCache(pruneModelCache(cache, { ttl })); }
     return data;
   } catch (e) {
     breakerTrip();
