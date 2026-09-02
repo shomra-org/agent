@@ -21,7 +21,7 @@ export async function main() {
     return;
   }
 
-  const guardCmd = command === 'tool-guard' || command === 'result-guard' || command === 'prompt-guard' || command === 'plan-guard';
+  const guardCmd = command === 'tool-guard' || command === 'result-guard' || command === 'prompt-guard' || command === 'plan-guard' || command === 'session-guard';
   if (unknown.length && !guardCmd) {
     for (const u of unknown) {
       const near = didYouMean(u, [...KNOWN_FLAGS]);

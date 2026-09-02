@@ -16,7 +16,7 @@ export function cmdProtect(flags) {
     return;
   }
 
-  const global = !flags.local;
+  const global = !(flags.local || flags.project);
   console.log(bold(cyan('\n  Shomra protect')) + dim(` - wiring the runtime firewall for ${detected.length} coding agent${detected.length > 1 ? 's' : ''} (${global ? 'machine-wide' : 'this repo'})`));
   let wired = 0, already = 0;
   for (const a of detected) {
@@ -31,6 +31,16 @@ export function cmdProtect(flags) {
     }
   }
   console.log(`\n  ${wired ? green(`✓ ${wired} newly protected`) : green('✓ Already protected')}${already ? dim(` · ${already} already wired`) : ''}${dim(' - tool calls, results and prompts now screened on-machine.')}`);
+
+  if (global) {
+    console.log(dim('\n  ⚠ Machine-wide only. A CLOUD session (Claude Code on the web) runs in a fresh'));
+    console.log(dim('    container with none of this, and so does a colleague\'s checkout. Run ') + bold('shomra protect --project'));
+    console.log(dim('    and COMMIT ') + bold('.claude/settings.json') + dim(' to cover both - the hooks resolve through npm there.'));
+  } else {
+    console.log(dim('\n  ✓ Written into this repo. ') + bold('Commit .claude/settings.json') + dim(' - it is what carries the firewall'));
+    console.log(dim('    into cloud sessions and onto every checkout. These hooks resolve through npm, so'));
+    console.log(dim('    they work on a machine that has never installed Shomra.'));
+  }
 
   console.log(dim('\n  Get in front of the model too - both write into this repo, so run them where you mean to:'));
   console.log(`    ${bold('shomra rules --write')}   ${dim('teach the agent what gets blocked, so it never writes it')}`);

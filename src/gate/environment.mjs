@@ -4,8 +4,79 @@ import path from 'node:path';
 
 export const GATE_KINDS = ['mcp', 'skill', 'command', 'subagent', 'hook', 'rules', 'agent-card', 'memory', 'auto'];
 
-export function detectEnv() {
-  const e = process.env;
+/**
+ * ⚠ A CLOUD AGENT SESSION IS NOT A DEVELOPER MACHINE, and until this existed it
+ * reported as one. Claude Code on the web runs in an EPHEMERAL container: fresh
+ * $HOME, no `shomra` config, a hostname nobody will ever see again. It carries
+ * no CI variables, so it fell through to LOCAL - and an operator counting
+ * "screened laptops" was counting containers that no longer exist.
+ *
+ * ⚠ CI IS CHECKED FIRST and stays first. A cloud session driven by a GitHub
+ * Action is CI: that branch carries repo, ref and commit, which is the stronger
+ * attribution. REMOTE is what is left when nothing else names where this ran.
+ */
+/**
+ * ⚠ ONE ENTRY PER RUNTIME, and only where the variable has been SEEN. A marker
+ * invented from a vendor's docs either never fires - useless - or fires on a
+ * name something else uses, which labels a real laptop as an ephemeral
+ * container and puts a `floor` on a machine the org actually owns. Add a row
+ * here once somebody has read the variable out of a live session of that
+ * runtime; until then that runtime uses SHOMRA_ENVIRONMENT below, which is the
+ * whole reason the override exists.
+ *
+ * `verified` records who has actually seen it, so the next person can tell a
+ * confirmed marker from an optimistic one.
+ */
+export const REMOTE_RUNTIMES = [
+  {
+    runner: 'claude-code-cloud',
+    label: 'Claude Code on the web',
+    verified: true,
+    vars: ['CLAUDE_CODE_CONTAINER_ID', 'CLAUDE_CODE_ENVIRONMENT_RUNNER_VERSION'],
+    prefixed: { CLAUDE_CODE_ENTRYPOINT: /^remote/i },
+  },
+];
+
+/**
+ * ⚠ CODESPACES AND DEVCONTAINERS ARE DELIBERATELY ABSENT. They are containers,
+ * but they PERSIST between sessions, can be enrolled, and their guard survives
+ * to report a window it spent blind - which is the whole distinction REMOTE
+ * draws. Filing them here would put "we cannot vouch for its silence" on
+ * machines that can in fact vouch for it.
+ */
+export function remoteRunner(e = process.env) {
+  for (const rt of REMOTE_RUNTIMES) {
+    for (const key of rt.vars) if (String(e?.[key] ?? '').trim()) return rt.runner;
+    for (const [key, re] of Object.entries(rt.prefixed ?? {})) {
+      if (re.test(String(e?.[key] ?? '').trim())) return rt.runner;
+    }
+  }
+  return null;
+}
+
+const ENV_RANK = { LOCAL: 0, CI: 1, REMOTE: 2 };
+
+export function declaredEnvironment(e = process.env) {
+  const v = String(e?.SHOMRA_ENVIRONMENT ?? '').trim().toUpperCase();
+  return v in ENV_RANK ? v : null;
+}
+
+/**
+ * ⚠⚠ THE OVERRIDE MAY ONLY EVER RAISE. `SHOMRA_ENVIRONMENT` exists so an
+ * operator can declare a runtime we do not yet detect - a cloud agent from a
+ * vendor whose markers nobody has read. Letting it go the other way would make
+ * it a switch that relabels a detected ephemeral container as a trusted laptop,
+ * clearing the `floor` its unreportable silence earns. That is the same
+ * privilege-reduction shape `mayRaiseOnly` and `foldTimeout` refuse on the
+ * server, and it would be reachable by anything that can set an env var.
+ */
+export function mergeEnvironment(detected, declared) {
+  if (!declared) return detected;
+  return ENV_RANK[declared] > ENV_RANK[detected] ? declared : detected;
+}
+
+export function detectEnv(env) {
+  const e = env ?? process.env;
   const pick = (...keys) => {
     for (const k of keys) if (e[k]?.trim()) return e[k].trim();
     return undefined;
@@ -54,6 +125,10 @@ export function detectEnv() {
   if (ci) {
 
     const git = gitContext();
+    const declared = declaredEnvironment(e);
+    if (mergeEnvironment('CI', declared) === 'REMOTE') {
+      return { environment: 'REMOTE', runner: remoteRunner(e) ?? 'declared', ...git };
+    }
     return {
       environment: 'CI',
       ciProvider: ci.ciProvider,
@@ -64,7 +139,11 @@ export function detectEnv() {
     };
   }
 
-  return { environment: 'LOCAL', ...gitContext() };
+  const runner = remoteRunner(e);
+  const environment = mergeEnvironment(runner ? 'REMOTE' : 'LOCAL', declaredEnvironment(e));
+  if (environment === 'REMOTE') return { environment, runner: runner ?? 'declared', ...gitContext() };
+
+  return { environment, ...gitContext() };
 }
 
 function gitContext() {
