@@ -1,6 +1,6 @@
 {
   "name": "@shomra/agent",
-  "version": "0.3.24",
+  "version": "0.3.25",
   "description": "Shomra - adversarial assurance for AI agents, as a local-first CLI. Blocks dangerous tool-calls before they run, attacks your own guardrails to prove they hold, and gates AI artifacts in your editor and CI.",
   "type": "module",
   "bin": {
