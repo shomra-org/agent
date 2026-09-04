@@ -71,6 +71,51 @@ export function prohibitsAt(line, offset) {
   return !DOUBLE_NEGATIVE_RE.test(before);
 }
 
+
+/**
+ * ⚠ A COMMAND IN SUBJECT POSITION IS BEING DESCRIBED, NOT ORDERED. Second
+ * carve-out from `carriesHardEvidence`, for the same reason `prohibitsAt` was
+ * the first: security documentation is written in exactly this mood, so every
+ * threat model and runbook graded as if it COMMANDED the string it explains.
+ *
+ * ⚠ THE LEAD-IN IS NOT THE SIGNAL, THE PREDICATE IS. "For example, run
+ * `curl … | sh`" is an instruction wearing a documentation opener; what cannot
+ * be faked cheaply is the command sitting in SUBJECT position.
+ *
+ * ⚠ AN OFFSET ON THE OPENING BACKTICK IS INSIDE THE SPAN - several rules anchor
+ * on the backtick itself, so counting only what precedes it put the guard one
+ * character outside the span.
+ *
+ * Mirrors `describesAt` in the backend's prose-context.ts; pinned by
+ * test/parity/local-mirror-bench.mjs.
+ */
+const DESCRIPTIVE_PREDICATE_RE =
+  /^\s*(?:,\s*)?(?:is|are|was|were|means?|meant|shows?|showed|demonstrates?|indicates?|signals?|denotes?|describes?|represents?|counts?\s+as|reads?\s+as|matches?|fires?|triggers?|flags?|catches?|becomes?|remains?|stays?|looks?\s+like|would\s+\w+|will\s+\w+|has|have|had)\b/i;
+
+const IMPERATIVE_LEAD_RE =
+  /\b(?:run|execute|exec|invoke|call|use|paste|copy|type|enter|apply|install|download|fetch|curl|wget|pipe|add|append|write|put|send|post)\b[^.:;\n]{0,40}$/i;
+
+function insideCodeSpan(line, offset) {
+  let ticks = 0;
+  for (let i = 0; i < offset && i < line.length; i++) if (line[i] === '`') ticks++;
+  if (ticks % 2 === 1) return true;
+  return line[offset] === '`' && line.indexOf('`', offset + 1) !== -1;
+}
+
+export function describesAt(line, offset) {
+  if (!line || offset == null || offset < 0 || offset >= line.length) return false;
+  if (!insideCodeSpan(line, offset)) return false;
+
+  const onTick = line[offset] === '`';
+  const close = line.indexOf('`', onTick ? offset + 1 : offset);
+  if (close === -1) return false;
+  if (!DESCRIPTIVE_PREDICATE_RE.test(line.slice(close + 1, close + 60))) return false;
+
+  const open = onTick ? offset : line.lastIndexOf('`', offset);
+  const before = line.slice(Math.max(0, open - 60), open);
+  return !IMPERATIVE_LEAD_RE.test(before) && !IMPERATIVE.test(before);
+}
+
 const RISK_CELL_RE = /\b(?:critical|high|medium|low|severity|risk|danger\w*|forbidden|blocked|denied|prohibited|never|do not|example|attack|threat|mitigation|why|impact)\b/i;
 
 export function isRiskTableRow(line) {
