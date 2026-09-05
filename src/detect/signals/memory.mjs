@@ -1,7 +1,7 @@
 import { CLAIM_LABEL, claimSeverity, detectDurableClaims } from './durable-claims.mjs';
 import { LOCAL_URL_RE, egressHost } from './egress.mjs';
 import { lineOf, lineTextAt } from './lines.mjs';
-import { citationGoverns, isDescriptiveLine, isDocumentationLine, isRiskTableRow, prohibitsAt } from './prose-context.mjs';
+import { citationGoverns, describesAt, isDescriptiveLine, isDocumentationLine, isRiskTableRow, prohibitsAt } from './prose-context.mjs';
 import { localScan } from './scan.mjs';
 import { NETWORK_VERBS, SENSITIVE_READ } from './sensitive.mjs';
 import { DANGEROUS_SHELL } from './shell.mjs';
@@ -44,6 +44,7 @@ export function offendingLine(sig, text) {
     if (sig.refine && !sig.refine(line)) continue;
     if (isDocumentationLine(line)) continue;
     if (prohibitsAt(line, line.indexOf(m[0]))) continue;
+    if (describesAt(line, line.indexOf(m[0]))) continue;
     if (isRiskTableRow(line)) continue;
     return line;
   }

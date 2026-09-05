@@ -1,4 +1,4 @@
-import { isDocumentationLine, prohibitsAt } from './prose-context.mjs';
+import { describesAt, isDocumentationLine, prohibitsAt } from './prose-context.mjs';
 
 const HARVEST_PROMPTS = [
   { re: /\bosascript\b[\s\S]{0,200}?\bdisplay\s+dialog\b[\s\S]{0,200}?\bhidden\s+answer\b/i, label: 'osascript password dialog (hidden answer)' },
@@ -45,14 +45,14 @@ export function detectCredentialHarvest(text) {
     for (const p of HARVEST_PROMPTS) {
       const m = p.re.exec(line);
       if (!m) continue;
-      if (isDocumentationLine(line) || prohibitsAt(line, m.index)) continue;
+      if (isDocumentationLine(line) || prohibitsAt(line, m.index) || describesAt(line, m.index)) continue;
       push('interactive-prompt', p.label, 'CRITICAL', i, line);
     }
     for (const s of HARVEST_STORES) {
       const m = s.re.exec(line);
       if (!m) continue;
       if (!HARVEST_READ_VERB.test(line)) continue;
-      if (isDocumentationLine(line) || prohibitsAt(line, m.index)) continue;
+      if (isDocumentationLine(line) || prohibitsAt(line, m.index) || describesAt(line, m.index)) continue;
       push(s.family, s.label, HARVEST_EXFIL_VERB.test(line) ? 'CRITICAL' : 'HIGH', i, line);
     }
     const t = HARVEST_TOKEN_PATH.exec(line);

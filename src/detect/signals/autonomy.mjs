@@ -1,4 +1,4 @@
-import { isDocumentationLine, prohibitsAt } from './prose-context.mjs';
+import { describesAt, isDocumentationLine, prohibitsAt } from './prose-context.mjs';
 
 const AUTONOMY_RULES = [
   { family: 'confirmation', label: 'Acts without asking', re: /\b(?:without (?:asking|confirming|prompting|waiting for|seeking)(?:\s+(?:the\s+)?(?:user|me|anyone|permission|approval|confirmation))?|do(?:es)? not (?:ask|prompt|wait|check|confirm)[^.\n]{0,30}\b(?:for|before|first|permission|approval|confirmation)|no need to (?:ask|confirm|check with))\b/i },
@@ -36,7 +36,7 @@ export function localAutonomy(text) {
       const m = rule.re.exec(line);
       if (!m) continue;
       if (isDocumentationLine(line)) continue;
-      if (prohibitsAt(line, m.index)) continue;
+      if (prohibitsAt(line, m.index) || describesAt(line, m.index)) continue;
       if (insideQuotedSpan(line, m.index)) continue;
       seen.add(rule.label);
       out.push({ family: rule.family, label: rule.label, line: i + 1 });

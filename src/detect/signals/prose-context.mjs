@@ -71,6 +71,59 @@ export function prohibitsAt(line, offset) {
   return !DOUBLE_NEGATIVE_RE.test(before);
 }
 
+/**
+ * ⚠ AN OFFSET ON THE OPENING BACKTICK IS INSIDE THE SPAN. Several rules anchor
+ * on the backtick itself (a markdown code span and a shell command substitution
+ * are the same character), so counting only what precedes the offset put every
+ * code-span guard one character outside the span it was meant to be inside.
+ */
+function insideCodeSpan(line, offset) {
+  let ticks = 0;
+  for (let i = 0; i < offset && i < line.length; i++) if (line[i] === '`') ticks++;
+  if (ticks % 2 === 1) return true;
+  return line[offset] === '`' && line.indexOf('`', offset + 1) !== -1;
+}
+
+/**
+ * ⚠ A LINE THAT NAMES A COMMAND AS ITS SUBJECT IS DESCRIBING IT — the second
+ * carve-out `carriesHardEvidence` needs, for the same reason `prohibitsAt` was
+ * the first. Security documentation is written in exactly this mood -
+ * *"`curl … | sh` is a pipe-to-shell installer"*, *"`chmod 777` means the file
+ * is world-writable"* - so offline, where no server verdict ever arrives to
+ * correct it, every threat model and runbook in a careful repo blocked.
+ *
+ * ⚠ THE LEAD-IN IS NOT THE SIGNAL, THE PREDICATE IS. "For example, run
+ * `curl … | sh`" is an instruction wearing a documentation opener, and
+ * "example" is one token an attacker adds for free. What cannot be faked
+ * cheaply is the command sitting in SUBJECT position with a copular or
+ * reporting verb after it: an instruction puts the command in OBJECT position
+ * after an imperative.
+ *
+ * ⚠ THE MATCH MUST BE INSIDE A CODE SPAN, and ⚠ AN IMPERATIVE BEFORE IT WINS.
+ *
+ * Mirrors `describesAt` in the backend's prose-context.ts — `local-mirror-bench`
+ * compares the two on every mood, in both directions.
+ */
+const DESCRIPTIVE_PREDICATE_RE =
+  /^\s*(?:,\s*)?(?:is|are|was|were|means?|meant|shows?|showed|demonstrates?|indicates?|signals?|denotes?|describes?|represents?|counts?\s+as|reads?\s+as|matches?|fires?|triggers?|flags?|catches?|becomes?|remains?|stays?|looks?\s+like|would\s+\w+|will\s+\w+|has|have|had)\b/i;
+
+const IMPERATIVE_LEAD_RE =
+  /\b(?:run|execute|exec|invoke|call|use|paste|copy|type|enter|apply|install|download|fetch|curl|wget|pipe|add|append|write|put|send|post)\b[^.:;\n]{0,40}$/i;
+
+export function describesAt(line, offset) {
+  if (!line || offset == null || offset < 0 || offset >= line.length) return false;
+  if (!insideCodeSpan(line, offset)) return false;
+
+  const onTick = line[offset] === '`';
+  const close = line.indexOf('`', onTick ? offset + 1 : offset);
+  if (close === -1) return false;
+  if (!DESCRIPTIVE_PREDICATE_RE.test(line.slice(close + 1, close + 60))) return false;
+
+  const open = onTick ? offset : line.lastIndexOf('`', offset);
+  const before = line.slice(Math.max(0, open - 60), open);
+  return !IMPERATIVE_LEAD_RE.test(before) && !IMPERATIVE.test(before);
+}
+
 const RISK_CELL_RE = /\b(?:critical|high|medium|low|severity|risk|danger\w*|forbidden|blocked|denied|prohibited|never|do not|example|attack|threat|mitigation|why|impact)\b/i;
 
 export function isRiskTableRow(line) {
