@@ -3,6 +3,7 @@ import { gateMachine } from '../core/api-client.mjs';
 import { breakerOpen, breakerReset, breakerTrip, guardTimeoutMs } from '../core/circuit-breaker.mjs';
 import { loadConfig, resolveSettings } from '../core/config.mjs';
 import { downrankCodeContext, localScan } from '../detect/guard-signals.mjs';
+import { redactLocally } from '../detect/local-redact.mjs';
 import { detectEnv } from '../gate/environment.mjs';
 import { parentSessionFrom } from './normalize.mjs';
 import { envFlag, resolveAgentFlag } from './options.mjs';
@@ -169,10 +170,24 @@ function promptInjectionNote(injection) {
   );
 }
 
+
 function buildPromptGuardBody(norm, agent, clientDecision, clientReason) {
+  const redaction = localTierDisabled()
+    ? { text: norm.prompt, masked: [], changed: false }
+    : redactLocally(norm.prompt);
+
   return {
     tool_name: 'UserPromptSubmit',
-    tool_input: { prompt: norm.prompt },
+    tool_input: { prompt: redaction.text },
+    ...(redaction.changed
+      ? {
+          client_masked: {
+            count: redaction.masked.length,
+            labels: redaction.masked.map((m) => m.label).slice(0, 20),
+            where: 'client',
+          },
+        }
+      : {}),
     cwd: norm.cwd,
     session_id: norm.session_id,
     ...(norm.parent_session_id ? { parent_session_id: norm.parent_session_id } : {}),
