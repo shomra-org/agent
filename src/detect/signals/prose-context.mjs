@@ -4,8 +4,11 @@ import { IMPERATIVE } from './memory.mjs';
 const DESCRIPTIVE_MARKERS =
   /\b(detect|scan|flag|block|catch|prevent|guard|protect|harden|audit|benchmark|catalog|scenario|corpus|coverage|example|vector|signal|rule|technique|posture|detection|test\s*case|red[- ]?team|-style|grounded in|fixed|now green|was|were|had|used to|previously|postmortem|regression|changelog|root[- ]?cause|repro|note|see|describes?|documents?|refers?|treat(s|ed|ing)?|counts?|reads?)\w*/i;
 
+const URL_TOKEN_RE = /\b(?:https?|ftp|file|data):\/*[^\s<>"')\]]+/gi;
+
 export function isDescriptiveLine(line) {
-  return DESCRIPTIVE_MARKERS.test(line) && !IMPERATIVE.test(line);
+  const prose = line.replace(URL_TOKEN_RE, ' ');
+  return DESCRIPTIVE_MARKERS.test(prose) && !IMPERATIVE.test(line);
 }
 
 const RESEARCH_CITATION_RE =
@@ -36,7 +39,26 @@ export function citationGoverns(segment, offset) {
 
 const ELLIPSIS_RE = /…|\.\.\./;
 
-const REGEX_PATTERN_RE = /\\[sdwbSDWB]|\\\+|\\\*|\\\(|\\\||\(\?:|\.\*|\.\+/;
+const ENUMERATION_RE = /[([][^)\]]*,[^)\]]*,[^)\]]*[)\]]|:\s*(?:[\w.-]+(?:\s+-\w+)?,\s*){2,}/;
+
+const REGEX_PATTERN_RE = /\\[sdwbSDWB]|\\\+|\\\*|\\\(|\\\||\(\?:|\[\^?[a-z0-9]-[a-z0-9]\]|\.\*|\.\+/;
+
+const MOOD_WINDOW = 140;
+
+function windowAround(line, offset) {
+  if (offset == null || line.length <= MOOD_WINDOW * 2) return line;
+  return line.slice(Math.max(0, offset - MOOD_WINDOW), offset + MOOD_WINDOW);
+}
+
+export function insideMarkdownLinkLabel(line, index) {
+  if (index < 0 || index >= line.length) return false;
+  const open = line.lastIndexOf('[', index);
+  if (open === -1) return false;
+  const close = line.indexOf(']', index);
+  if (close === -1) return false;
+  if (line.slice(open + 1, index).includes(']')) return false;
+  return line[close + 1] === '(';
+}
 
 const CREDENTIAL_PATH_RE =
   /~\/\.(ssh|aws|kube|gnupg|docker|npmrc?)\b|\bid_(rsa|ed25519|dsa)\b|\.pem\b|\bcredentials\b\s*(file)?|\bAWS_SECRET|\bANTHROPIC_API_KEY\b|\bOPENAI_API_KEY\b/i;
@@ -48,15 +70,20 @@ function carriesHardEvidence(line) {
   return CREDENTIAL_PATH_RE.test(line) || EXECUTABLE_FETCH_RE.test(line) || !!egressHost(line);
 }
 
-export function isDocumentationLine(line) {
+export function isDocumentationLine(line, offset) {
   if (!line) return false;
   if (carriesHardEvidence(line)) return false;
-  if (ELLIPSIS_RE.test(line) || REGEX_PATTERN_RE.test(line)) return true;
-  return isDescriptiveLine(line);
+
+  const win = windowAround(line, offset);
+  if (REGEX_PATTERN_RE.test(win)) return true;
+  if (ELLIPSIS_RE.test(win)) return true;
+  if (offset != null && insideCodeSpan(line, offset) && isDescriptiveLine(win)) return true;
+  if (ENUMERATION_RE.test(win) && !IMPERATIVE.test(win)) return true;
+  return isDescriptiveLine(win);
 }
 
 const PROHIBITION_MARKER_RE =
-  /\b(?:never|do not|don'?t|cannot|can'?t|must not|mustn'?t|should not|shouldn'?t|avoid|avoids|avoiding|refuse to|refrain from|forbidden|prohibited|disallow\w*|instead of|rather than|beware of)\b[^.:;\n]{0,60}$/i;
+  /\b(?:never|do not|don'?t|cannot|can'?t|must not|mustn'?t|should not|shouldn'?t|avoid|avoids|avoiding|refuse to|refrain from|forbidden|prohibited|disallow\w*|instead of|rather than|beware of|do NOT)\b[^.:;\n]{0,60}$/i;
 
 const DOUBLE_NEGATIVE_RE = /\b(?:hesitate|worry|be afraid|forget|fail|neglect|shy away)\b/i;
 

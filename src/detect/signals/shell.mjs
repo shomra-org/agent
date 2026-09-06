@@ -1,17 +1,53 @@
 import { lineTextAt } from './lines.mjs';
 
 const EPHEMERAL_RM_TARGET_RE =
-  /^(\.\/)?(node_modules|dist|build|out|coverage|target|\.next|\.nuxt|\.turbo|\.svelte-kit|\.cache|\.parcel-cache|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|venv|\.venv|\.eggs|[\w.-]+\.egg-info)\/?\*?$/i;
+  /^(\.\/)?(node_modules|dist|build|out|coverage|\.nyc_output|target|\.next|\.nuxt|\.turbo|\.svelte-kit|\.cache|\.parcel-cache|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|venv|\.venv|\.eggs|[\w.-]+\.egg-info)\/?\*?$/i;
 
-function rmTargetsRealData(line) {
-  const m = /\brm\s+((?:-[a-zA-Z]+\s+)+)(.*)$/.exec(line);
-  if (!m) return true;
+const BENIGN_ABSOLUTE_RM_RE =
+  /^\/(var\/(lib\/apt\/lists|cache|tmp|log)|tmp|usr\/share\/(doc|man|locale|info)|root\/\.cache|home\/[\w.-]+\/\.cache|opt\/[\w.-]+\/\.cache)(\/|$|\*)/i;
+
+const CATASTROPHIC_RM_TARGET_RE = /^(\/|~|\$|\$\{|%\w+%|[A-Za-z]:[\\/]|\.\.?$|\.\.\/|\*$)/;
+
+const LOOPBACK_OR_PRIVATE_HOST_RE =
+  /^(localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|0\.0\.0\.0|\[::1\]|::1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/i;
+
+const CLOUD_METADATA_HOSTS = new Set(['169.254.169.254', 'metadata.google.internal']);
+
+export function targetsExternalNetwork(line) {
+  const urls = line.match(/https?:\/\/[^\s'"`;|)&]+/gi);
+  if (!urls?.length) return true;
+  return urls.some((raw) => {
+    let host;
+    try {
+      host = new URL(raw).hostname.toLowerCase();
+    } catch {
+      return true;
+    }
+    if (CLOUD_METADATA_HOSTS.has(host)) return true;
+    return !LOOPBACK_OR_PRIVATE_HOST_RE.test(host);
+  });
+}
+
+const RM_RF_RE = /\brm\b(?=[^\n;|&]*(?:-[a-zA-Z]*r|--recursive))(?=[^\n;|&]*(?:-[a-zA-Z]*f|--force))/i;
+
+export function rmTargetClass(line) {
+  if (/\brm\s+-{1,2}[a-zA-Z][\w-]*\s*["'`,)\]}?!]\s*$/.test(line)) return 'local';
+  const m = /\brm\s+((?:--?[a-zA-Z][\w-]*\s+)+)(.*)$/.exec(line);
+  if (!m) return 'catastrophic';
+
   const targets = m[2]
     .split(/&&|\|\||[;|>&]/)[0]
     .split(/\s+/)
-    .filter((t) => t && !t.startsWith('-'));
-  if (!targets.length) return true;
-  return !targets.every((t) => EPHEMERAL_RM_TARGET_RE.test(t.replace(/^["']|["']$/g, '')));
+    .filter((t) => t && t !== '--' && !t.startsWith('-'))
+    .map((t) => t.replace(/^["']|["']$/g, ''));
+
+  if (!targets.length) {
+    const after = m[2] ?? '';
+    return /^\s*(?:[,)\]}?!"'`.]|$)/.test(after) ? 'local' : 'catastrophic';
+  }
+
+  if (targets.some((t) => CATASTROPHIC_RM_TARGET_RE.test(t) && !BENIGN_ABSOLUTE_RM_RE.test(t))) return 'catastrophic';
+  return targets.every((t) => EPHEMERAL_RM_TARGET_RE.test(t) || BENIGN_ABSOLUTE_RM_RE.test(t)) ? 'ephemeral' : 'local';
 }
 
 export function matchesShellSignal(sig, text) {
@@ -32,10 +68,14 @@ export const DANGEROUS_SHELL = [
   { name: 'Invoke-Expression of downloaded content', re: /\b(iex|invoke-expression)\b[^\n]{0,120}(downloadstring|net\.webclient|\(\s*(iwr|irm|invoke-)|\$\()/i, severity: 'CRITICAL' },
   { name: 'Reverse shell via /dev/tcp', re: /\/dev\/(tcp|udp)\//i, severity: 'CRITICAL' },
   { name: 'Base64 blob piped to a shell', re: /base64\s+(--?d(ecode)?)?\b[^\n|]{0,200}\|\s*(ba|z)?sh\b/i, severity: 'CRITICAL' },
-  { name: 'curl/wget posts data to the network (exfiltration)', re: /\b(curl|wget|http|https|invoke-restmethod|irm)\b[^\n]{0,220}(--data(-raw|-binary|-urlencode)?|--form\b|--upload-file\b|(^|\s)-d\s|(^|\s)-F\s|(^|\s)-T\s|-Method\s+Post)/i, severity: 'HIGH' },
-  { name: 'Command output piped into a network call', re: /\b(curl|wget|invoke-restmethod|invoke-webrequest|irm|iwr)\b[^\n]{0,220}(\$\(|`[^`\n]+`|<\()/i, severity: 'HIGH' },
-  { name: 'Fetches from a raw IP address', re: /\b(curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n]{0,220}https?:\/\/\d{1,3}(\.\d{1,3}){3}/i, severity: 'HIGH' },
-  { name: 'Writes to shell profile / SSH keys / crontab', re: /(\.bashrc|\.zshrc|\.bash_profile|\.profile|authorized_keys|id_rsa\b|\bcrontab\b)/i, severity: 'HIGH' },
+  { name: 'curl/wget posts data to the network (exfiltration)', re: /\b(curl|wget|http|https|invoke-restmethod|irm)\b[^\n]{0,220}(--data(-raw|-binary|-urlencode)?|--form\b|--upload-file\b|(^|\s)-d\s|(^|\s)-F\s|(^|\s)-T\s|-Method\s+Post)/i, severity: 'HIGH', refine: targetsExternalNetwork },
+  {
+    name: 'Command output piped into a network call',
+    re: /\b(curl|wget|invoke-restmethod|invoke-webrequest|irm|iwr)\b[^\n]{0,220}(\$\(|<\(|`[^`\n]*(?:\b(?:cat|ls|whoami|id|env|printenv|uname|hostname|pwd|base64|echo|head|tail|find|grep|awk|sed|curl|wget|nc|python\d?|node|perl|ruby|php|git|aws|kubectl|openssl)\b|\/(?:etc|var|tmp|home|root|usr|proc)\/|\$\w|\s-{1,2}\w)[^`\n]*`)/i,
+    severity: 'HIGH',
+  },
+  { name: 'Fetches from a raw IP address', re: /\b(curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n]{0,220}https?:\/\/\d{1,3}(\.\d{1,3}){3}/i, severity: 'HIGH', refine: targetsExternalNetwork },
+  { name: 'Writes to shell profile / SSH keys / crontab', re: /(>>?\s*~?\/?\.?(bashrc|zshrc|bash_profile|profile)|(tee|echo|cat|printf)\b[^\n]{0,80}(\.bashrc|\.zshrc|\.bash_profile|\.profile|authorized_keys)|>>?\s*[^\n]{0,40}authorized_keys|crontab\s+(-|[^\n]{0,40}<)|id_rsa\b[^\n]{0,20}(>|cp|scp|curl|cat))/i, severity: 'HIGH' },
 
   {
     name: 'World-writable permissions on the filesystem root (chmod -R 777 /)',
@@ -47,7 +87,8 @@ export const DANGEROUS_SHELL = [
     re: /\bchmod\b(?=[^\n;|&]*(?:\b0?[0-7][0-7][2367]\b|a\+rwx|a=rwx|o\+w|ugo\+rwx))(?=[^\n;|&]*(?:~(?:\s|$|\/\.)|\$HOME\b|\/etc\b|\/root\b|\/usr\b|\/var\b|\/boot\b|\.ssh\b|id_rsa\b|authorized_keys\b|\.aws\b|\.gnupg\b|\.kube\b))/i,
     severity: 'HIGH',
   },
-  { name: 'Recursive force delete (rm -rf)', re: /\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r/i, severity: 'HIGH', refine: rmTargetsRealData },
+  { name: 'Recursive force delete of a protected path (rm -rf)', re: RM_RF_RE, severity: 'HIGH', refine: (l) => rmTargetClass(l) === 'catastrophic' },
+  { name: 'Recursive force delete (rm -rf)', re: RM_RF_RE, severity: 'MEDIUM', refine: (l) => rmTargetClass(l) === 'local' },
 
   { name: 'Inline eval / exec of a string', re: /(?<![-.\w$>:`"'])(eval|exec)\s*[("`']/i, severity: 'HIGH' },
   { name: 'Pipes an env dump to the network', re: /\b(env|printenv|set)\b[^\n|]{0,80}\|[^\n]{0,80}(curl|wget|nc\b|http)/i, severity: 'HIGH' },
@@ -85,7 +126,7 @@ export const DANGEROUS_SHELL = [
   { name: 'Preloads a shared library into every process (LD_PRELOAD)', re: /\b(?:LD_PRELOAD|LD_AUDIT|DYLD_INSERT_LIBRARIES)\s*=\s*\S|>>?\s*\/etc\/ld\.so\.preload\b/i, severity: 'HIGH' },
   { name: 'Installs a scheduled or boot-time persistence unit', re: /\bsystemd-run\b[^\n]{0,80}--on-(?:boot|calendar|active|unit)|>>?\s*\/etc\/(?:systemd\/system|cron\.(?:d|daily|hourly)|init\.d)\/\S|\bschtasks\b[^\n]{0,80}\/create\b|\blaunchctl\s+(?:load|bootstrap)\b|\b(?:echo|printf)\b[^\n]{0,120}\|\s*at\s+(?:now|\+|\d)/i, severity: 'MEDIUM' },
   { name: 'Opens a reverse tunnel to a remote host', re: /\bssh\b[^\n]{0,80}\s-\w*R\s*\d{1,5}:[^\n\s]{1,60}|\b(?:ngrok|cloudflared|localtunnel|frpc)\b[^\n]{0,60}\b(?:tcp|http|tunnel)\b/i, severity: 'HIGH' },
-  { name: 'Encodes command output into DNS lookups (exfiltration channel)', re: /(?:^|[\n;&|(]\s*)(?:dig|nslookup|drill|host)\s+[^\n]{0,120}(?:\$\(|`|\$\{)[^\n]{0,80}\.[a-z]{2,}/i, severity: 'HIGH' },
+  { name: 'Encodes command output into DNS lookups (exfiltration channel)', re: /(?:^|[\n;&|(]\s*)(?:dig|nslookup|drill|host)\s+[^\n]{0,120}(?:\$\(|`[^`\n]+`|\$\{)[^\n]{0,80}\.[a-z]{2,}/i, severity: 'HIGH' },
   { name: 'Copies credentials or home directories off the machine over ssh', re: new RegExp(String.raw`\b(?:scp|rsync)\b(?=[^\n]{0,200}\s\S{0,40}@[\w.-]+:)(?=[^\n]{0,200}(?:${SENSITIVE_PATH}))` + String.raw`|\btar\b(?=[^\n]{0,160}\|\s*ssh\b)(?=[^\n]{0,160}(?:${SENSITIVE_PATH}))`, 'i'), severity: 'HIGH' },
   { name: 'Flushes the host firewall', re: /\b(?:iptables|ip6tables|nft)\b[^\n]{0,60}(?:-F\b|--flush\b|flush ruleset)|\bufw\s+disable\b|\bnetsh\s+advfirewall\s+set\s+\S+\s+state\s+off\b/i, severity: 'MEDIUM' },
   { name: 'Kills the audit / EDR agent (anti-forensics)', re: /\b(?:pkill|killall|kill)\b[^\n]{0,40}\b(?:auditd|osqueryd?|falcon-sensor|falconctl|wazuh|ossec|filebeat|splunkd|sysmon|crowdstrike|carbonblack|cbagent)\b|\bSet-MpPreference\b[^\n]{0,60}-Disable\w*\s+\$?true/i, severity: 'HIGH' },
