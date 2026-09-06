@@ -117,6 +117,6 @@ export const JS_RULES = [
 export const JS_TAINT = {
   lang: 'js',
   ruleId: 'js.llm_output_to_sink',
-  aiCall: /\.(generate|invoke|run|complete|stream|predict|call)\s*\(|\.chat\.completions\.create\s*\(|\.messages\.create\s*\(|\.create(Chat)?Completion\s*\(/,
-  execSink: /(?<![.\w])eval\s*\(|\bnew\s+Function\s*\(|\b(execSync|execFileSync|spawnSync|execFile|exec|spawn)\s*\(|\bvm\.\w+\s*\(/g,
+  aiCall: /\.(generate|invoke|complete|stream|predict)\s*\(|\b\w{0,64}(?:[Cc]hain|[Ll]lm|LLM|[Mm]odel|[Aa]gent|[Ee]xecutor)\w{0,64}\.(call|run|invoke)\s*\(|\.chat\.completions\.create\s*\(|\.messages\.create\s*\(|\.create(Chat)?Completion\s*\(/,
+  execSink: /(?<![.\w])eval\s*\(|\bnew\s+Function\s*\(|\b(execSync|execFileSync|spawnSync|execFile)\s*\(|(?<![.\w])(exec|spawn)\s*\(|\b(child_process|childProcess|cp|proc)\.(exec|spawn)\s*\(|\bvm\.\w+\s*\(/g,
 };

