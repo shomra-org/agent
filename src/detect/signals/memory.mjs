@@ -1,11 +1,10 @@
 import { CLAIM_LABEL, claimSeverity, detectDurableClaims } from './durable-claims.mjs';
 import { LOCAL_URL_RE, egressHost } from './egress.mjs';
 import { lineOf, lineTextAt } from './lines.mjs';
-import { citationGoverns, describesAt, isDescriptiveLine, isDocumentationLine, isRiskTableRow, prohibitsAt } from './prose-context.mjs';
+import { citationGoverns, describesAt, insideMarkdownLinkLabel, isDescriptiveLine, isDocumentationLine, isRiskTableRow, prohibitsAt } from './prose-context.mjs';
 import { localScan } from './scan.mjs';
 import { NETWORK_VERBS, SENSITIVE_READ } from './sensitive.mjs';
 import { DANGEROUS_SHELL } from './shell.mjs';
-import { containsWord } from './text-match.mjs';
 
 const PERSISTENCE_MARKERS = /\b(in (all|every|future) (sessions?|conversations?|chats?|projects?)|from now on|going forward|permanently|persist(ent|ed)?|across (all )?sessions|every time|each time|whenever you|forever|always remember to|never forget( to)?|for all future)\b/i;
 
@@ -27,7 +26,7 @@ const NEGATION_GUARD = /\b(never|do not|don'?t|cannot|can'?t|avoid|refuse|must n
 
 const SABOTAGE_RULES = [
 
-  { re: /\b(disabl|turn(ing)? off|deactivat|switch off|remov|drop|skip|suppress|circumvent)\w*\b[^.\n]{0,50}\b(security|safety|guard(?:rail)?s?|protection|moderation|content[- ]?filters?|safeguards?|sandbox(?:ing)?|controls?|restrictions?|policies|policy|filters?)\b/i, label: 'disable-safety', guarded: true },
+  { re: /\b(disabl|turn(ing)? off|deactivat|switch off|remov|drop|skip|suppress|circumvent)\w*\b[^.\n]{0,50}\b(security|safety|guard(?:rail)?s?|protection|moderation|content[- ]?filters?|safeguards?|sandbox(?:ing)?|(?<!-)controls?|restrictions?|(?<!-)policies|(?<!-)policy|filters?)\b/i, label: 'disable-safety', guarded: true },
   { re: /\bbypass(?:ing)?\b[^.\n]{0,50}\b(human(?:[- ]in[- ]the[- ]loop)?|hitl|verification|approval|confirmation|review|guard(?:rail)?s?|safety|security|checks?|policy|policies|restrictions?|sandbox|permission)\b/i, label: 'bypass-controls', guarded: true },
   { re: /\bprioriti[sz]e\b[^.\n]{0,60}\b(above|over)\b[^.\n]{0,40}\b(prompt|instruction|input|request|message|command|direction)s?\b/i, label: 'priority-hijack', guarded: true },
 
@@ -42,9 +41,10 @@ export function offendingLine(sig, text) {
     if (m.index == null) continue;
     const line = lineTextAt(text, m.index);
     if (sig.refine && !sig.refine(line)) continue;
-    if (isDocumentationLine(line)) continue;
-    if (prohibitsAt(line, line.indexOf(m[0]))) continue;
-    if (describesAt(line, line.indexOf(m[0]))) continue;
+    const at = line.indexOf(m[0]);
+    if (isDocumentationLine(line, at < 0 ? undefined : at)) continue;
+    if (prohibitsAt(line, at)) continue;
+    if (describesAt(line, at)) continue;
     if (isRiskTableRow(line)) continue;
     return line;
   }
@@ -69,13 +69,30 @@ function lineMatchingAll(text, ...res) {
   return null;
 }
 
+const EXFIL_OBJECT_RE =
+  /(?:\b(?:env(?:ironment)?|secrets?|credentials?|tokens?|api[- ]?keys?|keys?|passwords?|cookies?|sessions?|data|files?|contents?|conversations?|history|context|output|transcript|prompt|clipboard|id_rsa|private[- ]?key|database|dump)|\.env(?:ironment)?|\.ssh)\b/i;
+
+function urlIsMarkdownTarget(line, matched) {
+  const um = /https?:\/\/\S+/.exec(matched);
+  if (!um) return false;
+  const at = line.indexOf(um[0]);
+  if (at < 1) return false;
+  return line[at - 1] === '(' && line.slice(0, at - 1).trimEnd().endsWith(']');
+}
+
+const SEND_AS_NOUN_RE =
+  /\b(?:a|an|the|this|that|your|our|each|any|bug|security|error|crash|incident|status|progress|test|coverage|issue)\s+(?:reports?|pushes?|transfers?|uploads?|deliver(?:y|ies))\b/i;
+
+const PASSIVE_SEND_RE =
+  /\b(?:are|is|was|were|been|being|get|gets|got)\s+(?:\w+\s+){0,2}?(?:published|posted|sent|shipped|forwarded|transferred|delivered|uploaded|transmitted|reported)\b/i;
+
 const EXFIL_RULES = [
   { re: /\b(exfiltrat|smuggl)\w*/i, label: 'exfiltration', severity: 'CRITICAL', descGuard: true },
-  { re: /\bleak\w*\b[^.\n]{0,60}(?:\b(?:content|data|secret|file|credential|key|token|password|env|private[- ]?key|id_rsa|api[- ]?key)|\.ssh)\b/i, label: 'leak-secrets', severity: 'CRITICAL', descGuard: true },
+  { re: /\bleak\w*\b(?!\s+(?:memory|memories|resources?|handles?|descriptors?|sockets?|connections?|goroutines?|threads?|references?|buffers?))[^.\n]{0,60}(?:\b(?:content|data|secret|file|credential|key|token|password|env|private[- ]?key|id_rsa|api[- ]?key)|\.ssh)\b/i, label: 'leak-secrets', severity: 'CRITICAL', descGuard: true },
 
   { re: /\b(base64|hex|rot13|gzip|xor|url[- ]?encod)\w*\b[^.\n]{0,50}\b(before|then|prior to|and\s+then|and\s+immediately)\b[^.\n]{0,25}\b(send|post|upload|transmit|exfil|deliver|beacon|forward|transfer)\w*/i, label: 'obfuscate-before-send', severity: 'CRITICAL', descGuard: true },
   { re: /\bsilent(ly)?\b[^.\n]{0,70}\b(send|post|upload|collect|encod|transmit|copy|forward|read|leak|deliver|beacon|transfer)\w*/i, label: 'covert-action', severity: 'CRITICAL', descGuard: true },
-  { re: /\b(send|post|upload|transmit|forward|deliver|beacon|report|ship|push|transfer)\w*\b[^.\n]{0,80}\b(https?:\/\/\S+|attacker|c2\b|command[- ]and[- ]control|remote (server|host|endpoint)|external (server|host|endpoint|url|site|service))/i, label: 'send-to-external', severity: 'HIGH' },
+  { re: /\b(send|post|upload|transmit|forward|deliver|beacon|report|ship|push|transfer)(?:s|es|ed|ing|ted|ping)?\b(?:[^.\n]|\.(?!\s)){0,80}\b(https?:\/\/\S+|attacker|c2\b|command[- ]and[- ]control|remote (server|host|endpoint)|external (server|host|endpoint|url|site|service))/i, label: 'send-to-external', severity: 'HIGH' },
 
   {
     re: /\b(?:read|open|cat|load|import|source|inspect|include|copy|dump|print|show)\b(?:[^.\n]|\.(?!\s)){0,50}(?:~?\/?\.ssh\/(?:id_[a-z0-9]+|config)(?!\.pub)|~?\/?\.aws\/credentials|~?\/?\.kube\/config|~?\/?\.gnupg|\bid_(?:rsa|ed25519|dsa)\b(?!\.pub)|~?\/?\.npmrc|~?\/?\.netrc|\/etc\/shadow|(?:^|[\s'"`(])\.env(?:\.[\w-]+)?\b)/i,
@@ -106,6 +123,12 @@ function scanDirectives(text) {
       if (r.descGuard && citationGoverns(line, m.index)) continue;
       if (r.descGuard && isRiskTableRow(line)) continue;
       if (r.label === 'send-to-external' && LOCAL_URL_RE.test(line) && !/\b(attacker|c2|command[- ]and[- ]control|external|evil)\b/i.test(line)) continue;
+      if (r.label === 'send-to-external' && m.index != null && insideMarkdownLinkLabel(line, m.index)) continue;
+      if (r.label === 'send-to-external' && m.index != null) {
+        const around = line.slice(Math.max(0, m.index - 24), m.index + 24);
+        if (SEND_AS_NOUN_RE.test(around) || PASSIVE_SEND_RE.test(around)) continue;
+        if (urlIsMarkdownTarget(line, m[0]) && !EXFIL_OBJECT_RE.test(m[0])) continue;
+      }
       const prev = exfil.get(r.label);
       if (!prev || (prev === 'HIGH' && r.severity === 'CRITICAL')) exfil.set(r.label, r.severity);
     }
@@ -244,12 +267,22 @@ function reportStagedPayload(text, { noun }, push) {
   }
 }
 
+function hasWordFrom(line, words) {
+  const low = line.toLowerCase();
+  return words.some((w) => {
+    const t = w.toLowerCase().trim();
+    if (!t) return false;
+    if (/^[a-z0-9]+$/.test(t)) return new RegExp(`\\b${t}\\b`).test(low);
+    return low.includes(t);
+  });
+}
+
 function reportToxicFlow(text, { noun }, push) {
   if (!IMPERATIVE.test(text)) return;
   const line = text.split(/\r?\n/).find((candidate) => IMPERATIVE.test(candidate)
     && !NEGATION_GUARD.test(candidate)
-    && containsWord(candidate, SENSITIVE_READ)
-    && containsWord(candidate, NETWORK_VERBS)
+    && hasWordFrom(candidate, SENSITIVE_READ)
+    && hasWordFrom(candidate, NETWORK_VERBS)
     && !isDescriptiveLine(candidate));
   if (!line) return;
   push(
