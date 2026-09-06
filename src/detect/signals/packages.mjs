@@ -1,5 +1,5 @@
 export const INSTALL_LURE = [
-  { name: 'Instructs downloading an executable/archive to run', re: /\b(download|install|fetch|grab|extract)\b[^\n]{0,180}\.(zip|exe|dmg|pkg|msi|bin|appimage|jar|scr|apk|deb|rpm|tar\.gz|tgz)\b/i, severity: 'MEDIUM' },
+  { name: 'Instructs downloading an executable/archive to run', re: /\b(download|install|fetch|grab|extract)\b[^\n]{0,180}(?<=[\w-])\.(zip|exe|dmg|pkg|msi|bin|appimage|jar|scr|apk|deb|rpm|tar\.gz|tgz)\b(?![\w/])/i, severity: 'MEDIUM' },
   { name: 'Password-protected archive (evades AV / scanners)', re: /(?<![.\w$-])(?:unzip|7z|7za|unrar|rar|zip|tar|gpg|openssl|extract|decompress|archive)\b(?![.:=\w])[^\n]{0,50}(?:^|[\s;|&(])(?:-P\b|--password\b|pass(?:word|phrase)?|pwd)\s*[:= ]\s*\S/i, severity: 'HIGH' },
   { name: 'Coercion: claims a helper is required before the task works', re: /\b(required to (function|work|deploy|run)|will not (work|function|run)( correctly| properly)?( without)?|does not work without|otherwise it is impossible|cannot [a-z ]{0,24} without (installing|running)|must (be )?(install(ed)?|run) (this |the )?)/i, severity: 'MEDIUM' },
   { name: 'Coercion: re-run / retry until it succeeds', re: /\b(re-?run (if needed|until|the command)|run (it |the command )?again|try again after)/i, severity: 'LOW' },
