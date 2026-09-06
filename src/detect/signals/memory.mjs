@@ -10,7 +10,12 @@ const PERSISTENCE_MARKERS = /\b(in (all|every|future) (sessions?|conversations?|
 
 const MALICIOUS_OVERRIDE = /\b(ignore (all |any |the )?(previous|prior|earlier|above|system)|disregard (the |your |all )?(instructions?|guidelines?|system|rules?)|do not (tell|inform|mention|reveal|disclose) (the |any)?(user|anyone|them)|without (telling|informing|asking|notifying) the user|no matter what (the )?(user|system|instructions?) (say|says|state)|bypass (the |all )?(safety|guard|security|policy|restrictions?))\b/i;
 
-const PRECEDENCE_MARKERS = /\b(regardless of (what|any|your|the)|supersede?s?|takes? precedence|highest[- ]priority|overrid(e|ing|es)\b[^.\n]{0,30}\b(instruction|prompt|rule|system|user|guidance|directive|context|behaviou?r|polic|guardrail|safety))\b/i;
+const PRECEDENCE_OBJECT = String.raw`\b[^.\n]{0,40}\b(instruction|prompt|rule|system|user|guidance|directive|context|behaviou?r|polic|guardrail|safety|memor(?:y|ies)|previous|prior|earlier|above)\b`;
+
+const PRECEDENCE_MARKERS = new RegExp(
+  String.raw`\b(regardless of (what|any|your|the)|(supersede?s?|takes? precedence|highest[- ]priority|overrid(e|ing|es))${PRECEDENCE_OBJECT})`,
+  'i',
+);
 
 const OVERRIDE_MARKERS = new RegExp(`${MALICIOUS_OVERRIDE.source}|${PRECEDENCE_MARKERS.source}`, 'i');
 
@@ -55,7 +60,7 @@ function firstDirectiveLine(text, re) {
   for (const line of text.split(/\r?\n/)) {
     if (!re.test(line)) continue;
     if (NEGATION_GUARD.test(line)) continue;
-    if (isDescriptiveLine(line)) continue;
+    if (isDescriptiveLine(stripSelfReference(line))) continue;
     if (citationGoverns(line, re.exec(line)?.index)) continue;
     return line;
   }
@@ -141,6 +146,8 @@ const SELF_REFERENCE =
 
 const SELF_RECREATE =
   /\b(re-?(add|writ(e|ing)|creat(e|ing)|insert(ing)?|instat(e|ing)|appl(y|ying)|introduc(e|ing))|restor(e|ing)|recreat(e|ing)|reinstat(e|ing)|re-?establish(ing)?|put .{0,20}back|add .{0,20}back)\b/i;
+
+const stripSelfReference = (line) => String(line).replace(SELF_REFERENCE, ' ');
 
 const SELF_PROPAGATE =
   /\b(copy|copies|duplicat(e|ing)|replicat(e|ing)|propagat(e|ing)|carry (it |this )?over|mirror|append|add|includ(e|ing)|writ(e|ing)|sav(e|ing))\b[^.\n]{0,60}\b(every|each|all|any (new|other)|other|future|subsequent)\b[^.\n]{0,40}\b(session|conversation|chat|project|repo|repositor(y|ies)|workspace|memor(y|ies)|context|file|store)s?\b/i;
