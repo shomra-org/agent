@@ -35,7 +35,7 @@ const GIT_EXEC_KEYS =
 
 const GIT_ALIAS_KEY = /\balias\.[\w-]+\b/i;
 
-const HIJACK_PLAIN_PROGRAM = /^[\w./-]{1,64}(?:\s+-{1,2}[\w-]{1,32}){0,4}$/;
+const HIJACK_PLAIN_PROGRAM = /^(?:[A-Za-z]:[\\/])?[\w.\\/-]{1,64}(?:\s+-{1,2}[\w-]{1,32}){0,4}$/;
 
 const HIJACK_SHELLY = /[;&|`$(){}<>]|\s-c\s|(?<![.\w])(?:sh|bash|zsh|dash|python\d?|node|perl|ruby|eval)\b/i;
 
@@ -48,6 +48,8 @@ const HIJACK_GIT_CONFIG =
   /\bgit\s+config\s+(?:--(?:global|system|local|worktree|add|replace-all)\s+|--file\s+\S+\s+)*([\w.*-]+)\s+("[^"]*"|'[^']*'|\S+)/i;
 
 const hijackUnquote = (raw) => String(raw ?? '').replace(/^["']|["']$/g, '');
+
+const hijackConfigValue = (raw) => String(raw ?? '').trim().replace(/^["'`]{1,4}/, '').replace(/["'`.,;:!?)\]]{1,4}$/, '');
 
 function hijackForeignTarget(value) {
   if (HIJACK_SHELLY.test(value)) return true;
@@ -111,7 +113,7 @@ export function detectExecutionHijack(command) {
     const m = HIJACK_GIT_CONFIG.exec(line);
     if (!m) continue;
     const key = m[1];
-    const value = hijackUnquote(m[2].trim());
+    const value = hijackConfigValue(m[2]);
     const isAlias = GIT_ALIAS_KEY.test(key) && /^\s*!/.test(value);
     if (!GIT_EXEC_KEYS.test(key) && !isAlias) continue;
     const shelly = HIJACK_SHELLY.test(value) || HIJACK_WORLD_WRITABLE.test(value) || isAlias;

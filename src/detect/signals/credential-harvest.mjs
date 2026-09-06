@@ -12,7 +12,7 @@ const HARVEST_PROMPTS = [
 const HARVEST_STORES = [
   { re: /\bsecurity\s+(?:dump-keychain|find-(?:generic|internet)-password|export)\b/i, family: 'credential-store', label: 'macOS keychain read' },
   { re: /(?:~|\$HOME|\/Users\/[^/\s]+)\/Library\/Keychains\b/i, family: 'credential-store', label: 'macOS keychain files' },
-  { re: /\bLogin\s?Data\b|\bLocal\s?State\b(?=[\s\S]{0,80}(?:Chrome|Chromium|Edge|Brave))/i, family: 'credential-store', label: 'Chromium credential database' },
+  { re: /\bLogin[ \t]Data\b|(?:\bLogin\s?Data\b|\bLocal\s?State\b)(?=[\s\S]{0,80}(?:Chrome|Chromium|Edge|Brave))/i, family: 'credential-store', label: 'Chromium credential database' },
   { re: /\b(?:logins\.json|key[34]\.db|cert9\.db)\b/i, family: 'credential-store', label: 'Firefox credential database' },
   { re: /\bcookies\.sqlite\b|\bCookies\b(?=[\s\S]{0,80}(?:Chrome|Chromium|Edge|Brave|Safari))/i, family: 'credential-store', label: 'browser cookie store' },
   { re: /(?:~|\$HOME)\/\.(?:mozilla|config\/google-chrome|config\/chromium|config\/BraveSoftware)\b/i, family: 'credential-store', label: 'browser profile directory' },

@@ -22,6 +22,13 @@ function insideQuotedSpan(line, at) {
   return dq % 2 === 1 || tick % 2 === 1;
 }
 
+const LINE_COMMENT_RE = /(?<!:)\/\/|\/\*/;
+
+function inCodeComment(line, at) {
+  const m = LINE_COMMENT_RE.exec(line);
+  return m != null && m.index != null && at > m.index;
+}
+
 export function localAutonomy(text) {
   const body = String(text ?? '');
   if (!body.trim()) return [];
@@ -35,6 +42,7 @@ export function localAutonomy(text) {
       if (seen.has(rule.label)) continue;
       const m = rule.re.exec(line);
       if (!m) continue;
+      if (inCodeComment(line, m.index)) continue;
       if (isDocumentationLine(line)) continue;
       if (prohibitsAt(line, m.index) || describesAt(line, m.index)) continue;
       if (insideQuotedSpan(line, m.index)) continue;

@@ -3,7 +3,7 @@ import { autonomySeverity, localAutonomy } from './autonomy.mjs';
 import { localMemory, offendingLine } from './memory.mjs';
 import { INSTALL_LURE } from './packages.mjs';
 import { localPropagation } from './propagation.mjs';
-import { localScan } from './scan.mjs';
+import { downrankCodeContext, localScan } from './scan.mjs';
 import { grade } from './severity.mjs';
 
 const INSTRUCTION_BASENAMES = new Set([
@@ -13,6 +13,10 @@ const INSTRUCTION_BASENAMES = new Set([
 ]);
 
 const MEMORY_BASENAMES = new Set(['memory.md', 'mem0.json', 'letta_memory.json', 'memgpt_memory.json']);
+
+const SOURCE_EXT_RE = /\.(?:[cm]?[jt]sx?|py|rb|go|rs|java|kt|scala|php|cs|swift|c|cc|cpp|h|hpp)$/i;
+
+const isSourceFile = (p) => SOURCE_EXT_RE.test(String(p ?? '').split(/[\\/]+/).pop() ?? '');
 
 function governedKindFor(kind, path) {
   if (kind === 'rules') return 'INSTRUCTION';
@@ -38,7 +42,8 @@ export function localGate(content, { kind, path } = {}) {
     for (const f of localScan(content || '', { categories: ['config'] }).findings) push(f.severity, f.label, undefined, f.line);
   } else {
     const scan = localScan(content || '', { categories: ['shell', 'injection', 'secret', 'config', 'egress', 'pii'] });
-    for (const f of scan.findings) {
+    const graded = isSourceFile(path) ? downrankCodeContext(scan.findings) : scan.findings;
+    for (const f of graded) {
 
       if ((kind === 'agent-card' || kind === 'mcp') && f.category === 'pii' && f.label.includes('IPv4')) continue;
       push(f.severity, f.label, undefined, f.line);
