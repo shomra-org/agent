@@ -17,10 +17,10 @@ export const SECRET_PATTERNS = [
 
   {
     name: 'Database URL with password',
-    re: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/(?!(?:user|username|admin|root|myuser|dbuser):(?:pass|password|passwd|secret|changeme|mypassword|yourpassword|xxx+|123456)@)[^\s:@/]+:[^\s:@/]{4,}@/i,
+    re: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/(?!(?:user|username|admin|root|myuser|dbuser):(?:pass|password|passwd|secret|changeme|mypassword|yourpassword|xxx+|123456)@)(?!([^\s:@/]+):\1@)(?!(?:some|my|your|our|the|test|demo|example|dummy|fake|sample|foo|bar|placeholder)[\w-]*:(?:some|my|your|our|the|test|demo|example|dummy|fake|sample|foo|bar|placeholder)[\w-]*@)[^\s:@/]+:[^\s:@/]{4,}@/i,
   },
   { name: 'Generic bearer', re: /bearer\s+[A-Za-z0-9._-]{20,}/i },
-  { name: 'Private key block', re: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/ },
+  { name: 'Private key block', re: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]{0,80}?[\r\n]+\s*[A-Za-z0-9+/=]{32,}/ },
 
   { name: 'Groq API key', re: /\bgsk_[A-Za-z0-9]{40,}/ },
   { name: 'Replicate API token', re: /\br8_[A-Za-z0-9]{30,}/ },

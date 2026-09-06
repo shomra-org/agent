@@ -28,10 +28,10 @@ export function targetsExternalNetwork(line) {
   });
 }
 
-const RM_RF_RE = /\brm\b(?=[^\n;|&]*(?:-[a-zA-Z]*r|--recursive))(?=[^\n;|&]*(?:-[a-zA-Z]*f|--force))/i;
+const RM_RF_RE = /\brm\b(?=[^\n;|&]{0,200}(?:-[a-zA-Z]*r|--recursive))(?=[^\n;|&]{0,200}(?:-[a-zA-Z]*f|--force))/i;
 
 export function rmTargetClass(line) {
-  if (/\brm\s+-{1,2}[a-zA-Z][\w-]*\s*["'`,)\]}?!]\s*$/.test(line)) return 'local';
+  if (/\brm\s+-{1,2}[a-zA-Z][\w-]*\s*["'`,)\]}?!](?![\w./~$*-])/.test(line)) return 'local';
   const m = /\brm\s+((?:--?[a-zA-Z][\w-]*\s+)+)(.*)$/.exec(line);
   if (!m) return 'catastrophic';
 
@@ -75,23 +75,23 @@ export const DANGEROUS_SHELL = [
     severity: 'HIGH',
   },
   { name: 'Fetches from a raw IP address', re: /\b(curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n]{0,220}https?:\/\/\d{1,3}(\.\d{1,3}){3}/i, severity: 'HIGH', refine: targetsExternalNetwork },
-  { name: 'Writes to shell profile / SSH keys / crontab', re: /(>>?\s*~?\/?\.?(bashrc|zshrc|bash_profile|profile)|(tee|echo|cat|printf)\b[^\n]{0,80}(\.bashrc|\.zshrc|\.bash_profile|\.profile|authorized_keys)|>>?\s*[^\n]{0,40}authorized_keys|crontab\s+(-|[^\n]{0,40}<)|id_rsa\b[^\n]{0,20}(>|cp|scp|curl|cat))/i, severity: 'HIGH' },
+  { name: 'Writes to shell profile / SSH keys / crontab', re: /(>>?\s*(?:~\/|\$HOME\/|\/etc\/)?\.(bashrc|zshrc|bash_profile|profile)\b|>>?\s*\/etc\/profile\b|(tee|echo|cat|printf)\b[^\n]{0,80}(\.bashrc|\.zshrc|\.bash_profile|\.profile|authorized_keys)|>>?\s*[^\n]{0,40}authorized_keys|crontab\s+(-|[^\n]{0,40}<)|id_rsa\b[^\n]{0,20}(>|cp|scp|curl|cat))/i, severity: 'HIGH' },
 
   {
     name: 'World-writable permissions on the filesystem root (chmod -R 777 /)',
-    re: /\bchmod\b(?=[^\n;|&]*(?:-[a-zA-Z]*R|--recursive))(?=[^\n;|&]*(?:\b0?[0-7][0-7][2367]\b|a\+rwx|a=rwx|o\+w|ugo\+rwx))(?=[^\n;|&]*\s\/(?:\s|\*|$))/i,
+    re: /\bchmod\b(?=[^\n;|&]{0,200}(?:-[a-zA-Z]*R|--recursive))(?=[^\n;|&]{0,200}(?:\b0?[0-7][0-7][2367]\b|a\+rwx|a=rwx|o\+w|ugo\+rwx))(?=[^\n;|&]{0,200}\s\/(?:\s|\*|$))/i,
     severity: 'CRITICAL',
   },
   {
     name: 'World-writable permissions on a credential or system path (chmod 777)',
-    re: /\bchmod\b(?=[^\n;|&]*(?:\b0?[0-7][0-7][2367]\b|a\+rwx|a=rwx|o\+w|ugo\+rwx))(?=[^\n;|&]*(?:~(?:\s|$|\/\.)|\$HOME\b|\/etc\b|\/root\b|\/usr\b|\/var\b|\/boot\b|\.ssh\b|id_rsa\b|authorized_keys\b|\.aws\b|\.gnupg\b|\.kube\b))/i,
+    re: /\bchmod\b(?=[^\n;|&]{0,200}(?:\b0?[0-7][0-7][2367]\b|a\+rwx|a=rwx|o\+w|ugo\+rwx))(?=[^\n;|&]{0,200}(?:~(?:\s|$|\/\.)|\$HOME\b|\/etc\b|\/root\b|\/usr\b|\/var\b|\/boot\b|\.ssh\b|id_rsa\b|authorized_keys\b|\.aws\b|\.gnupg\b|\.kube\b))/i,
     severity: 'HIGH',
   },
   { name: 'Recursive force delete of a protected path (rm -rf)', re: RM_RF_RE, severity: 'HIGH', refine: (l) => rmTargetClass(l) === 'catastrophic' },
   { name: 'Recursive force delete (rm -rf)', re: RM_RF_RE, severity: 'MEDIUM', refine: (l) => rmTargetClass(l) === 'local' },
 
-  { name: 'Inline eval / exec of a string', re: /(?<![-.\w$>:`"'])(eval|exec)\s*[("`']/i, severity: 'HIGH' },
-  { name: 'Pipes an env dump to the network', re: /\b(env|printenv|set)\b[^\n|]{0,80}\|[^\n]{0,80}(curl|wget|nc\b|http)/i, severity: 'HIGH' },
+  { name: 'Inline eval / exec of a string', re: /(?<![-.\w$>:`"'\/])(eval|exec)\s*(?!\((?:[^()\n]{0,160}\)\s*\{|\s*_?[A-Za-z$][\w$]{0,64}\s*\??\s*:))[("`']/i, severity: 'HIGH' },
+  { name: 'Pipes an env dump to the network', re: /(?<![.\w$-])(env|printenv|set)\b(?![.:=\w])(?!\s*[:=])[^\n|]{0,80}(?<!\|)\|(?!\|)[^\n]{0,80}(curl\b|wget\b|nc\b|https?\b)/i, severity: 'HIGH' },
   { name: 'Disables TLS / cert verification', re: /(NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*0|GIT_SSL_NO_VERIFY|--no-check-certificate|--insecure\b|verify\s*=\s*False)/i, severity: 'MEDIUM' },
   { name: 'python -c one-liner', re: /python[0-9.]*\s+-c\b/i, severity: 'MEDIUM' },
   { name: 'node -e one-liner', re: /\bnode\s+-e\b/i, severity: 'MEDIUM' },
@@ -106,7 +106,7 @@ export const DANGEROUS_SHELL = [
   { name: 'Force-deletes a cloud storage bucket (aws s3 rb --force)', re: /\b(aws\s+s3\s+rb|gsutil\s+(rm\s+-r|rb)|az\s+storage\s+(account|container)\s+delete)\b[^\n]{0,80}(--force|--yes|-f\b|\bs3:\/\/|\bgs:\/\/)/i, severity: 'HIGH' },
   { name: 'Force-pushes over a protected branch (rewrites shared history)', re: /\bgit\s+push\b[^\n]{0,80}(--force\b(?!-with-lease)|(?:^|\s)-f\b)[^\n]{0,60}\b(main|master|release|prod(uction)?)\b/i, severity: 'MEDIUM' },
 
-  { name: 'Recursive force delete of the filesystem root (rm -rf /, --no-preserve-root)', re: /\brm\b(?=[^\n;|&]*(?:-[a-zA-Z]*r|--recursive))(?=[^\n;|&]*(?:-[a-zA-Z]*f|--force))(?=[^\n;|&]*(?:--no-preserve-root|\s\/(?:\s|\*|$)))/i, severity: 'CRITICAL' },
+  { name: 'Recursive force delete of the filesystem root (rm -rf /, --no-preserve-root)', re: /\brm\b(?=[^\n;|&]{0,200}(?:-[a-zA-Z]*r|--recursive))(?=[^\n;|&]{0,200}(?:-[a-zA-Z]*f|--force))(?=[^\n;|&]{0,200}(?:--no-preserve-root|\s\/(?:\s|\*|$)))/i, severity: 'CRITICAL' },
   { name: 'Fork bomb (process-exhaustion DoS)', re: /(:|\b[a-z_][a-z0-9_]*)\s*\(\s*\)\s*\{\s*\1\s*[^\n}]*\|\s*\1[^\n}]*&\s*\}\s*;\s*\1/i, severity: 'HIGH' },
   { name: 'Writes over a raw disk device (data destruction)', re: /\b(dd\b[^\n]{0,80}\bof=\/dev\/[sh]d|mkfs(\.\w+)?\s+[^\n]{0,40}\/dev\/|>\s*\/dev\/[sh]d[a-z])/i, severity: 'CRITICAL' },
   { name: 'Reads the system password-hash / sudo policy file', re: /\b(cat|less|more|head|tail|strings|xxd|od|grep|awk|sed|cp|scp|tar)\b[^\n]{0,80}\/etc\/(shadow|gshadow|sudoers(\.d)?)\b/i, severity: 'HIGH' },
@@ -126,7 +126,7 @@ export const DANGEROUS_SHELL = [
   { name: 'Preloads a shared library into every process (LD_PRELOAD)', re: /\b(?:LD_PRELOAD|LD_AUDIT|DYLD_INSERT_LIBRARIES)\s*=\s*\S|>>?\s*\/etc\/ld\.so\.preload\b/i, severity: 'HIGH' },
   { name: 'Installs a scheduled or boot-time persistence unit', re: /\bsystemd-run\b[^\n]{0,80}--on-(?:boot|calendar|active|unit)|>>?\s*\/etc\/(?:systemd\/system|cron\.(?:d|daily|hourly)|init\.d)\/\S|\bschtasks\b[^\n]{0,80}\/create\b|\blaunchctl\s+(?:load|bootstrap)\b|\b(?:echo|printf)\b[^\n]{0,120}\|\s*at\s+(?:now|\+|\d)/i, severity: 'MEDIUM' },
   { name: 'Opens a reverse tunnel to a remote host', re: /\bssh\b[^\n]{0,80}\s-\w*R\s*\d{1,5}:[^\n\s]{1,60}|\b(?:ngrok|cloudflared|localtunnel|frpc)\b[^\n]{0,60}\b(?:tcp|http|tunnel)\b/i, severity: 'HIGH' },
-  { name: 'Encodes command output into DNS lookups (exfiltration channel)', re: /(?:^|[\n;&|(]\s*)(?:dig|nslookup|drill|host)\s+[^\n]{0,120}(?:\$\(|`[^`\n]+`|\$\{)[^\n]{0,80}\.[a-z]{2,}/i, severity: 'HIGH' },
+  { name: 'Encodes command output into DNS lookups (exfiltration channel)', re: /(?:^|[\n;&|(]\s*)(?:dig|nslookup|drill|host)\s+(?![-+*/%|&^]?=)[^\n]{0,120}(?:\$\(|`|\$\{)[^\n]{0,80}\.[a-z]{2,}|\b(?:base64|base32|xxd|hexdump|od\s|openssl\s+enc)\b[^\n]{0,140}\b(?:dig|nslookup|drill|host)\s+[^\n]{0,60}\$\w+\.[\w.-]{2,}\.[a-z]{2,}/i, severity: 'HIGH' },
   { name: 'Copies credentials or home directories off the machine over ssh', re: new RegExp(String.raw`\b(?:scp|rsync)\b(?=[^\n]{0,200}\s\S{0,40}@[\w.-]+:)(?=[^\n]{0,200}(?:${SENSITIVE_PATH}))` + String.raw`|\btar\b(?=[^\n]{0,160}\|\s*ssh\b)(?=[^\n]{0,160}(?:${SENSITIVE_PATH}))`, 'i'), severity: 'HIGH' },
   { name: 'Flushes the host firewall', re: /\b(?:iptables|ip6tables|nft)\b[^\n]{0,60}(?:-F\b|--flush\b|flush ruleset)|\bufw\s+disable\b|\bnetsh\s+advfirewall\s+set\s+\S+\s+state\s+off\b/i, severity: 'MEDIUM' },
   { name: 'Kills the audit / EDR agent (anti-forensics)', re: /\b(?:pkill|killall|kill)\b[^\n]{0,40}\b(?:auditd|osqueryd?|falcon-sensor|falconctl|wazuh|ossec|filebeat|splunkd|sysmon|crowdstrike|carbonblack|cbagent)\b|\bSet-MpPreference\b[^\n]{0,60}-Disable\w*\s+\$?true/i, severity: 'HIGH' },

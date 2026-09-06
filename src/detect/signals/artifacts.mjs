@@ -101,7 +101,7 @@ export function localAgentCard(content) {
 export function localCommandExtras(content) {
   const out = [];
   const body = content || '';
-  const bang = [...body.matchAll(/^!\s*`?([^`\n]+)`?/gm)];
+  const bang = [...body.matchAll(/^!\s*`?([A-Za-z_./~$][^`\n]*)`?/gm)].filter((m) => !/^(?:function|class|void|\(|\[)/.test(m[1]));
   if (bang.length) {
     const line = bang[0].index != null ? lineAt(body, bang[0].index) : undefined;
     out.push({ severity: 'LOW', title: `Command runs ${bang.length} shell command(s) before the prompt`, remediationText: 'Confirm each "!" command is fixed and safe; avoid interpolating untrusted arguments.', ...(line ? { line } : {}) });

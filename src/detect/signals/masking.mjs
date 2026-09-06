@@ -12,6 +12,17 @@ const UNICODE_ESCAPE_RUN_RE = /(?:\\u\{?00[0-9A-Fa-f]{2}\}?){3,}/g;
 
 const DECIMAL_CHAR_RUN_RE = /(?:\b(?:3[2-9]|[4-9]\d|1[01]\d|12[0-6])\s*,\s*){6,}(?:3[2-9]|[4-9]\d|1[01]\d|12[0-6])\b/g;
 
+const COMMAND_SHAPE_RE = /[|;&><]|\$\(|\$\{|`|(?:^|\s)-{1,2}[A-Za-z]|\/[\w.]|https?:\/\/|\\x[0-9A-Fa-f]{2}/;
+
+const SOURCE_MAP_RE = /^\s*\{[\s\S]{0,400}?"version"\s*:\s*3[\s\S]{0,400}?"(?:mappings|sources|sourcesContent)"\s*:/;
+
+const INERT_DATA_URI_RE = /data:(?:application\/json|image\/[\w.+-]+|font\/[\w.+-]+|text\/css|audio\/[\w.+-]+|video\/[\w.+-]+)[^,]{0,64},$/i;
+
+function inertEncodedBlob(text, index, decoded) {
+  if (SOURCE_MAP_RE.test(decoded)) return true;
+  return INERT_DATA_URI_RE.test(text.slice(Math.max(0, index - 96), index));
+}
+
 const printableRatio = (s) => (s ? s.replace(/[^\x09\x0a\x0d\x20-\x7e]/g, '').length / s.length : 0);
 
 export function deobfuscate(text) {
@@ -21,6 +32,8 @@ export function deobfuscate(text) {
     let out = '';
     try { out = Buffer.from(m[0].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'); } catch { continue; }
     if (!out || printableRatio(out) < 0.85) continue;
+    if (inertEncodedBlob(text, m.index ?? 0, out)) continue;
+    if (!COMMAND_SHAPE_RE.test(out)) continue;
     if (DECODED_PAYLOAD_RE.test(out)) { decoded.push(out); payload = true; }
   }
   const literal = (run, decode) => {
@@ -69,7 +82,7 @@ export function codeMask(text) {
       if (c === "'") { state = 1; mask[i++] = 1; continue; }
       if (c === '"') { state = 2; mask[i++] = 1; continue; }
       if (c === '`') { state = 3; mask[i++] = 1; continue; }
-      if (c === '/' && c2 === '/') { state = 4; mask[i++] = 1; continue; }
+      if (c === '/' && c2 === '/' && text[i - 1] !== ':') { state = 4; mask[i++] = 1; continue; }
       if (c === '#' && (i === 0 || /\s/.test(text[i - 1]))) { state = 4; mask[i++] = 1; continue; }
       if (c === '/' && c2 === '*') { state = 5; mask[i++] = 1; continue; }
       if (c === '<' && text.startsWith('<!--', i)) { state = 6; mask[i++] = MARK_CONCEALED; continue; }

@@ -7,7 +7,7 @@ const AUTONOMY_RULES = [
   { family: 'concealment', label: 'Own actions hidden from the user', re: /\b(?:do(?:es)? not|don'?t|never)\s+(?:mention|tell|inform|notify|report to|disclose to|reveal to|show)\s+(?:the\s+)?(?:user|human|operator|them|anyone)\b|\bwithout (?:telling|informing|notifying|alerting)\s+(?:the\s+)?(?:user|human|operator|anyone)\b/i },
   { family: 'concealment', label: 'Work not reported back', re: /\b(?:do(?:es)? not|don'?t|never)\s+(?:summari[sz]e|report|log|record|list|describe|explain)[^.\n]{0,40}\b(?:what you (?:did|changed|ran|edited|deleted|installed)|the (?:changes|commands|actions|edits) you|your (?:changes|actions|edits|commands))\b/i },
   { family: 'concealment', label: 'Instructions kept secret', re: /\b(?:do(?:es)? not|don'?t|never)\s+(?:mention|reveal|disclose|quote|repeat|share|output)[^.\n]{0,30}\b(?:these|this|your|the)\s+(?:instructions?|rules?|prompt|guidelines?|file)\b|\bkeep (?:this|these|it) (?:secret|hidden|confidential|between us|to yourself)\b/i },
-  { family: 'guardrail', label: 'Safety control overridden', re: /\b(?:ignore|disable|bypass|override|turn off|switch off|work around|circumvent|disregard)(?:\s+\w+){0,3}\s+(?:the\s+|any\s+|all\s+)?(?:safety|guardrails?|guard|security (?:check|control|policy)|restrictions?|limitations?|policies|policy|safeguards?|protections?)\b/i },
+  { family: 'guardrail', label: 'Safety control overridden', re: /\b(?:ignore|disable|bypass|override|turn off|switch off|work around|circumvent|disregard)(?:\s+\w+){0,3}\s+(?:the\s+|any\s+|all\s+)?(?:safety|guardrails?|guard|security (?:check|control|policy)|policies|policy|safeguards?|protections?|(?:safety|security|content|moderation|usage|access|policy|system)[ -]?(?:restrictions?|limitations?))\b/i },
   { family: 'verification', label: 'Verification waived', re: /\b(?:do(?:es)? not|don'?t|never|no need to|skip)\s+(?:bother\s+)?(?:run(?:ning)?|execut\w+)?\s*(?:the\s+)?(?:tests?|test suite|linter|lint|type ?check|build|review|checks)\s*(?:before|first|prior to)\b|\b(?:skip|bypass)\s+(?:the\s+)?(?:review|code review|tests?|test suite|ci)\b/i },
 ];
 
@@ -20,6 +20,13 @@ function insideQuotedSpan(line, at) {
     else if (c === '`') tick++;
   }
   return dq % 2 === 1 || tick % 2 === 1;
+}
+
+const LINE_COMMENT_RE = /(?<!:)\/\/|\/\*/;
+
+function inCodeComment(line, at) {
+  const m = LINE_COMMENT_RE.exec(line);
+  return m != null && m.index != null && at > m.index;
 }
 
 export function localAutonomy(text) {
@@ -35,6 +42,7 @@ export function localAutonomy(text) {
       if (seen.has(rule.label)) continue;
       const m = rule.re.exec(line);
       if (!m) continue;
+      if (inCodeComment(line, m.index)) continue;
       if (isDocumentationLine(line)) continue;
       if (prohibitsAt(line, m.index) || describesAt(line, m.index)) continue;
       if (insideQuotedSpan(line, m.index)) continue;
