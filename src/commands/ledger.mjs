@@ -18,7 +18,6 @@ function readJson(file) {
   }
 }
 
-
 function mcpReach() {
   let total = 0;
   let mediated = 0;

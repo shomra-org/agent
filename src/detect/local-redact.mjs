@@ -3,7 +3,6 @@ import { PII_PATTERNS, SECRET_PATTERNS, isPlaceholderSecret, luhnValid } from '.
 const MAX_TEXT = 200_000;
 const MAX_SPANS = 200;
 
-
 export function redactLocally(text, opts = {}) {
   const src = String(text ?? '');
   if (!src || src.length > MAX_TEXT) return { text: src, masked: [], unmaskable: [], changed: false };
@@ -53,7 +52,6 @@ export function redactLocally(text, opts = {}) {
 
   return { text: out, masked, unmaskable: [], changed: true };
 }
-
 
 export function unmaskableFindings(findings, redaction) {
   const maskedLabels = new Set((redaction?.masked ?? []).flatMap((m) => String(m.label).split(' + ')));

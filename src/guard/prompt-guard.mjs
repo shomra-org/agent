@@ -170,7 +170,6 @@ function promptInjectionNote(injection) {
   );
 }
 
-
 function buildPromptGuardBody(norm, agent, clientDecision, clientReason) {
   const redaction = localTierDisabled()
     ? { text: norm.prompt, masked: [], changed: false }

@@ -66,7 +66,6 @@ function ledger() {
   return makeLedgerStore(CONFIG_DIR, { version: VERSION });
 }
 
-/** A call that ran with no server verdict: Tier-0 screened it, or nothing did. */
 function countUnscreened(reason) {
   try {
     ledger().count(localTierDisabled() ? 'unscreened' : 'local', reason);
@@ -76,7 +75,6 @@ function countUnscreened(reason) {
   }
 }
 
-/** Close the open window and hand the backend everything not yet acknowledged. */
 function sendLedger() {
   try {
     const store = ledger();
@@ -223,7 +221,6 @@ async function requestServerDecision({ url, apiKey, agentId, body, agent, strict
   }
 }
 
-/** Honours a seconds or an HTTP-date Retry-After; null when the server named none. */
 function retryAfterMs(response) {
   const raw = response.headers?.get?.('retry-after');
   if (!raw) return null;
@@ -280,17 +277,11 @@ export async function cmdToolGuard(flags) {
    * capability check, no flow control, and no gate event to read afterwards. */
   const severe = unscreenedSevere(normalized, tool, input);
   const escalate = alwaysEscalate || severe || local.verdict === 'FLAG' || guardNeedsServer(tool, input, !!agentId);
-  /* ⚠ A call the client CHOSE not to escalate is still a call no server graded,
-   * and the denominator has to carry it or the fail-open rate is measured over
-   * the escalated traffic alone - which flatters it by exactly the calls the
-   * client decided were dull. */
   if (!escalate) {
     countUnscreened('not escalated - screened by the local tier only');
     process.exit(0);
   }
 
-  /* Every path out of here that did NOT get a server verdict goes through this
-   * one door, so a new way of failing cannot quietly skip the rung check. */
   const onUnreachable = (why) => {
     countUnscreened(why);
     if (severe) askUnscreened(agent, why);
@@ -309,9 +300,6 @@ export async function cmdToolGuard(flags) {
     onUnreachable,
     body: {
       ...buildGuardBody(normalized, agent, flagged ? 'FLAG' : undefined, flagged ? local.top?.label : undefined),
-      /* The window closes the moment a verdict arrives, and rides out on the
-       * SAME request - a separate report would be a second round trip on the
-       * firewall's hot path, and one that fails exactly when the first did. */
       guard_ledger: sendLedger(),
     },
   });

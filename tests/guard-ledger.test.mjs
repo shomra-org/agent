@@ -1,13 +1,5 @@
 
 
-
-
-
-
-
-
-
-
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -29,15 +21,12 @@ import {
 
 const T0 = 1_700_000_000_000;
 
-
-
 test('rule 1 - an empty ledger still produces an envelope', () => {
   const env = envelope(emptyLedger(), { version: '0.3.9' });
   assert.ok(env, 'the envelope object must exist even with nothing to report');
   assert.ok(Array.isArray(env.gaps), 'gaps must be an array, not undefined');
   assert.equal(env.gaps.length, 0);
-  
-  
+
   assert.equal(env.client_version, '0.3.9');
 });
 
@@ -46,27 +35,21 @@ test('rule 1 - a null state still produces an envelope', () => {
   assert.ok(env && Array.isArray(env.gaps));
 });
 
-
-
 test('openWindow is idempotent - the FIRST failure owns the window', () => {
   let s = openWindow(emptyLedger(), { at: T0, reason: 'network' });
   const firstOpenedAt = s.open.openedAt;
   s = openWindow(s, { at: T0 + 5_000, reason: 'timeout' });
   assert.equal(s.open.openedAt, firstOpenedAt, 'a later failure must not restart the window');
   assert.equal(s.open.reason, 'network', 'nor overwrite why it started');
-  
-  
+
 });
 
 test('countCall opens a window when none is open', () => {
-  
-  
+
   const s = countCall(emptyLedger(), { at: T0, kind: 'local' });
   assert.ok(s.open, 'counting must be able to start a window');
   assert.equal(s.open.local, 1);
 });
-
-
 
 test('Tier-0-screened and wholly-unscreened calls are counted apart', () => {
   let s = countCall(emptyLedger(), { at: T0, kind: 'local' });
@@ -74,11 +57,8 @@ test('Tier-0-screened and wholly-unscreened calls are counted apart', () => {
   s = countCall(s, { at: T0 + 2, kind: 'unscreened' });
   assert.equal(s.open.local, 2);
   assert.equal(s.open.unscreened, 1);
-  
-  
+
 });
-
-
 
 test('a window with zero calls is discarded, not reported', () => {
   const s = closeWindow(openWindow(emptyLedger(), { at: T0, reason: 'timeout' }), { at: T0 + 100 });
@@ -99,8 +79,6 @@ test('a window with calls is reported, with both counts and a real duration', ()
   assert.equal(g.reason, 'timeout');
 });
 
-
-
 test('rule 4 - a stale window closes as UNKNOWN, never as now()', () => {
   let s = countCall(emptyLedger(), { at: T0, kind: 'unscreened', reason: 'network' });
   
@@ -108,8 +86,7 @@ test('rule 4 - a stale window closes as UNKNOWN, never as now()', () => {
   const g = s.pending[0];
   assert.equal(g.closed_at, undefined, 'no end may be invented for a window we did not observe end');
   assert.match(g.reason, /end not observed/, 'and the row says so');
-  
-  
+
 });
 
 test('a window inside the staleness horizon still reports a real end', () => {
@@ -117,8 +94,6 @@ test('a window inside the staleness horizon still reports a real end', () => {
   s = closeWindow(s, { at: T0 + STALE_WINDOW_MS - 1 });
   assert.ok(s.pending[0].closed_at, 'a window we watched end keeps its measured duration');
 });
-
-
 
 test('rule 5 - overflow MERGES, it never truncates', () => {
   const gaps = Array.from({ length: MAX_GAPS + 10 }, (_, i) => ({
@@ -132,8 +107,7 @@ test('rule 5 - overflow MERGES, it never truncates', () => {
   assert.ok(out.length <= MAX_GAPS, 'the list is bounded');
   const sumU = out.reduce((n, g) => n + g.unscreened_calls, 0);
   const sumL = out.reduce((n, g) => n + g.locally_decided_calls, 0);
-  
-  
+
   assert.equal(sumU, gaps.length * 1, 'no unscreened call is lost to compaction');
   assert.equal(sumL, gaps.length * 2, 'no locally-decided call is lost either');
   assert.match(out[0].reason, /merged/, 'the merged row says what it is');
@@ -159,13 +133,10 @@ test('compact leaves a list under the cap completely alone', () => {
   assert.deepEqual(compact(gaps), gaps);
 });
 
-
-
 test('ack drops what was sent and KEEPS what arrived meanwhile', () => {
   const sentGap = { opened_at: new Date(T0).toISOString(), unscreened_calls: 1, locally_decided_calls: 0, reason: 'a' };
   const raced = { opened_at: new Date(T0 + 1).toISOString(), unscreened_calls: 5, locally_decided_calls: 0, reason: 'b' };
-  
-  
+
   const s = ack({ open: null, pending: [sentGap, raced] }, [sentGap]);
   assert.equal(s.pending.length, 1);
   assert.equal(s.pending[0].opened_at, raced.opened_at);
@@ -176,14 +147,11 @@ test('ack tolerates an undefined payload', () => {
   assert.deepEqual(s.pending, []);
 });
 
-
-
 test('the store survives a corrupt file rather than throwing', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shomra-ledger-'));
   const store = makeLedgerStore(dir);
   fs.writeFileSync(store.file, '{not json');
-  
-  
+
   assert.deepEqual(store.read(), emptyLedger());
   assert.ok(store.envelope().gaps, 'and it still produces an envelope');
   fs.rmSync(dir, { recursive: true, force: true });

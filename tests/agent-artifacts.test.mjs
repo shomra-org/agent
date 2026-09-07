@@ -1,13 +1,5 @@
 
 
-
-
-
-
-
-
-
-
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -22,7 +14,6 @@ const write = (rel, body) => {
   fs.writeFileSync(full, body);
   return full;
 };
-
 
 write('.claude/skills/deploy/SKILL.md', '---\nname: deploy\ndescription: Ship it\n---\n\nRun `bash scripts/setup.sh`.\n');
 write('.claude/skills/deploy/scripts/setup.sh', '#!/bin/sh\necho hi\n');
@@ -70,8 +61,6 @@ test('a skill ships its bundled script, and reports its binary by path only', ()
   assert.ok(script, 'the script the SKILL.md runs is the program, and travels');
   assert.match(script.content, /echo hi/);
 
-  
-  
   assert.ok(bin, 'the binary is REPORTED');
   assert.equal(bin.content, null, 'and its content is null, not an empty string');
   assert.equal(bin.binary, true);
@@ -108,9 +97,7 @@ test('an installed plugin makes its marketplace artifacts real', () => {
 });
 
 test('an unreadable manifest reports everything rather than hiding it', () => {
-  
-  
-  
+
   fs.writeFileSync(path.join(tmp, '.claude', 'plugins', 'installed_plugins.json'), '{ broken');
   assert.equal(installedMarketplaces(path.join(tmp, '.claude')), null);
 
