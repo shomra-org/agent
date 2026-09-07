@@ -32,10 +32,6 @@ const FORCE_PUSH = { tool_name: 'Bash', tool_input: { command: 'git push --force
  * carries the ledger without itself being a severe call under test. */
 const ROUTINE_ESCALATED = { tool_name: 'mcp__jira__get_issue', tool_input: { key: 'PROJ-1' }, cwd: home };
 
-/* ⚠ ASYNC ON PURPOSE. `spawnSync` blocks the event loop, so the stub server
- * created in this same process never accepts the connection and every
- * server-backed case reads as an outage - the exact state these tests exist to
- * tell apart from a real one. */
 function guard(payload, env = {}) {
   const base = { ...process.env, USERPROFILE: home, HOME: home, NO_COLOR: '1' };
   for (const k of Object.keys(base)) if (k.startsWith('SHOMRA_')) delete base[k];
@@ -68,7 +64,6 @@ function guard(payload, env = {}) {
   });
 }
 
-/** A server that answers however the case needs, on a real port. */
 async function serve(handler) {
   /* ⚠ Drain the request first. The hook posts a body and sends
    * `Connection: close`; a handler that answers without consuming it leaves the
@@ -86,7 +81,6 @@ async function serve(handler) {
 const KEY = 'shm_test_key_0000000000000000';
 
 test('a SEVERE call the guard could not screen ASKS a person, it does not silently allow', async () => {
-  /* Nothing is listening on this port, so the fetch fails the way an outage does. */
   const out = await guard(SEVERE, { SHOMRA_API_KEY: KEY, SHOMRA_URL: 'http://127.0.0.1:9', SHOMRA_GUARD_TIMEOUT_MS: '300' });
   assert.equal(out.decision, 'ask', `expected ask, got ${out.decision} (${out.stdout})`);
   assert.match(out.reason, /could not screen/i);
@@ -98,12 +92,12 @@ test('…and the sentence says the call was NOT judged, rather than calling it d
   assert.doesNotMatch(out.reason, /\bmalicious\b|\battack\b/i);
 });
 
-test('a force push over a shared branch counts as severe — it was MATERIAL until the ladder was fixed', async () => {
+test('a force push over a shared branch counts as severe - it was MATERIAL until the ladder was fixed', async () => {
   const out = await guard(FORCE_PUSH, { SHOMRA_API_KEY: KEY, SHOMRA_URL: 'http://127.0.0.1:9', SHOMRA_GUARD_TIMEOUT_MS: '300' });
   assert.equal(out.decision, 'ask', `expected ask, got ${out.decision}`);
 });
 
-test('a ROUTINE call still flows when the guard is unreachable — this is what keeps the hook installed', async () => {
+test('a ROUTINE call still flows when the guard is unreachable - this is what keeps the hook installed', async () => {
   const out = await guard(ROUTINE, { SHOMRA_API_KEY: KEY, SHOMRA_URL: 'http://127.0.0.1:9', SHOMRA_GUARD_TIMEOUT_MS: '300' });
   assert.equal(out.decision, null, `a routine call must not prompt; got ${out.stdout}`);
   assert.equal(out.code, 0);
@@ -139,7 +133,7 @@ test('a 429 is retried against Retry-After, and a served verdict is honoured', a
   }
 });
 
-test('a 429 that keeps coming does not trip the breaker — one burst must not switch the server off', async () => {
+test('a 429 that keeps coming does not trip the breaker - one burst must not switch the server off', async () => {
   const s = await serve((req, res) => {
     res.writeHead(429, { 'retry-after': '0', 'content-type': 'application/json' });
     res.end('{}');
@@ -158,7 +152,7 @@ test('a 429 that keeps coming does not trip the breaker — one burst must not s
   }
 });
 
-test('a reachable server that ALLOWS is still an allow — the rung check only covers the unscreened case', async () => {
+test('a reachable server that ALLOWS is still an allow - the rung check only covers the unscreened case', async () => {
   const s = await serve((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ decision: 'ALLOW' }));
@@ -181,7 +175,7 @@ test('a reachable server that ALLOWS is still an allow — the rung check only c
  * Every row here therefore asserts the SEAM, not the module. The module's own
  * unit tests were green the whole time it was inert.
  */
-test('an unreachable screen opens a gap window on disk — an outage nothing recorded reads like a quiet one', async () => {
+test('an unreachable screen opens a gap window on disk - an outage nothing recorded reads like a quiet one', async () => {
   await guard(SEVERE, { SHOMRA_API_KEY: KEY, SHOMRA_URL: 'http://127.0.0.1:9', SHOMRA_GUARD_TIMEOUT_MS: '300' });
   const file = path.join(home, '.shomra', 'guard-ledger.json');
   assert.ok(fs.existsSync(file), 'no ledger file: the window was never opened');

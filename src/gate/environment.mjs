@@ -37,13 +37,6 @@ export const REMOTE_RUNTIMES = [
   },
 ];
 
-/**
- * ⚠ CODESPACES AND DEVCONTAINERS ARE DELIBERATELY ABSENT. They are containers,
- * but they PERSIST between sessions, can be enrolled, and their guard survives
- * to report a window it spent blind - which is the whole distinction REMOTE
- * draws. Filing them here would put "we cannot vouch for its silence" on
- * machines that can in fact vouch for it.
- */
 export function remoteRunner(e = process.env) {
   for (const rt of REMOTE_RUNTIMES) {
     for (const key of rt.vars) if (String(e?.[key] ?? '').trim()) return rt.runner;

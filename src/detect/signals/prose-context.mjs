@@ -98,12 +98,6 @@ export function prohibitsAt(line, offset) {
   return !DOUBLE_NEGATIVE_RE.test(before);
 }
 
-/**
- * ⚠ AN OFFSET ON THE OPENING BACKTICK IS INSIDE THE SPAN. Several rules anchor
- * on the backtick itself (a markdown code span and a shell command substitution
- * are the same character), so counting only what precedes the offset put every
- * code-span guard one character outside the span it was meant to be inside.
- */
 function insideCodeSpan(line, offset) {
   let ticks = 0;
   for (let i = 0; i < offset && i < line.length; i++) if (line[i] === '`') ticks++;
@@ -112,7 +106,7 @@ function insideCodeSpan(line, offset) {
 }
 
 /**
- * ⚠ A LINE THAT NAMES A COMMAND AS ITS SUBJECT IS DESCRIBING IT — the second
+ * ⚠ A LINE THAT NAMES A COMMAND AS ITS SUBJECT IS DESCRIBING IT - the second
  * carve-out `carriesHardEvidence` needs, for the same reason `prohibitsAt` was
  * the first. Security documentation is written in exactly this mood -
  * *"`curl … | sh` is a pipe-to-shell installer"*, *"`chmod 777` means the file
@@ -128,7 +122,7 @@ function insideCodeSpan(line, offset) {
  *
  * ⚠ THE MATCH MUST BE INSIDE A CODE SPAN, and ⚠ AN IMPERATIVE BEFORE IT WINS.
  *
- * Mirrors `describesAt` in the backend's prose-context.ts — `local-mirror-bench`
+ * Mirrors `describesAt` in the backend's prose-context.ts - `local-mirror-bench`
  * compares the two on every mood, in both directions.
  */
 const DESCRIPTIVE_PREDICATE_RE =
