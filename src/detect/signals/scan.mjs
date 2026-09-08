@@ -2,7 +2,7 @@ import { RISKY_CONFIG_MARKERS, riskyConfigHit } from './config-markers.mjs';
 import { detectCredentialHarvest } from './credential-harvest.mjs';
 import { egressHost } from './egress.mjs';
 import { detectExecutionHijack } from './execution-hijack.mjs';
-import { BUILD_ARTIFACT, INJECTION_PHRASES, INJECTION_REGEXES, INVISIBLE_CHARS_RE, PRECEDING_NEGATION, describesRatherThanInstructs } from './injection.mjs';
+import { BUILD_ARTIFACT, INJECTION_PHRASES, INJECTION_REGEXES, INVISIBLE_CHARS_RE, precededByNegation, describesRatherThanInstructs } from './injection.mjs';
 import { lineAt, locate } from './lines.mjs';
 import { codeMask, deobfuscate } from './masking.mjs';
 import { PII_PATTERNS, RESERVED_IPV4, SECRET_PATTERNS, VERSION_CONTEXT, isPlaceholderSecret, luhnValid } from './secrets.mjs';
@@ -32,7 +32,7 @@ export function localScan(text, opts = {}) {
     for (const p of INJECTION_PHRASES) {
       const at = low.indexOf(p);
       if (at < 0) continue;
-      if (PRECEDING_NEGATION.test(t.slice(Math.max(0, at - 20), at))) continue;
+      if (precededByNegation(t.slice(Math.max(0, at - 60), at))) continue;
       findings.push({ label: `Injected instruction: "${p}"`, severity: 'HIGH', category: 'injection', ...locate(t, p, mask) });
       break;
     }
@@ -40,7 +40,7 @@ export function localScan(text, opts = {}) {
       const m = t.match(re);
       if (!m) continue;
       const at = m.index ?? 0;
-      if (PRECEDING_NEGATION.test(t.slice(Math.max(0, at - 20), at))) continue;
+      if (precededByNegation(t.slice(Math.max(0, at - 60), at))) continue;
       if (label === 'Bulk destructive command' && BUILD_ARTIFACT.test(m[0])) continue;
       if (moodGuarded && describesRatherThanInstructs(t, at)) continue;
       findings.push({ label, severity: 'HIGH', category: 'injection', ...locate(t, re, mask) });

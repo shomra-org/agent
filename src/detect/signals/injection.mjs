@@ -50,6 +50,14 @@ export function describesRatherThanInstructs(text, at) {
 
 export const PRECEDING_NEGATION = /\b(never|not|do not|don'?t|cannot|can'?t|must not|mustn'?t|should not|shouldn'?t|avoid|refuse to|forbidden to|prohibited from|without)\s*$/i;
 
+// Reaches a negation across a coordinated verb chain ("never modify or exfiltrate"); mirrors backend.
+export const COORDINATED_NEGATION =
+  /\b(?:never|not|do not|don'?t|cannot|can'?t|must not|mustn'?t|should not|shouldn'?t|avoid|refuse to|forbidden to|prohibited from)\b[\w\t ,]*?(?:\bor\b|\band\b|\bnor\b|,)[\t ]*$/i;
+
+export function precededByNegation(before) {
+  return PRECEDING_NEGATION.test(before.slice(-20)) || COORDINATED_NEGATION.test(before.slice(-60));
+}
+
 export const BUILD_ARTIFACT = /\b(node_modules|dist|build|out|coverage|target|cache|generated|tmp|temp|__pycache__|artifacts?|logs?|tests?|test|fixtures?|staging|scratch|migrations?)\b/i;
 
 export const INVISIBLE_CHARS_RE = /[؜ᅟᅠ᠎​‌‎‏‪-‮⁠-⁤⁦-⁩ㅤ﻿ﾠ￹-￻]|[\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/u;

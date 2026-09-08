@@ -132,6 +132,7 @@ export const DANGEROUS_SHELL = [
   { name: 'Kills the audit / EDR agent (anti-forensics)', re: /\b(?:pkill|killall|kill)\b[^\n]{0,40}\b(?:auditd|osqueryd?|falcon-sensor|falconctl|wazuh|ossec|filebeat|splunkd|sysmon|crowdstrike|carbonblack|cbagent)\b|\bSet-MpPreference\b[^\n]{0,60}-Disable\w*\s+\$?true/i, severity: 'HIGH' },
   { name: 'Downloads and executes through a signed system binary (LOLBin)', re: /\bcertutil\b[^\n]{0,80}-urlcache\b|\bbitsadmin\b[^\n]{0,80}\/transfer\b|\bmshta\b\s+https?:\/\/|\bregsvr32\b[^\n]{0,60}\/i:\s*https?:\/\/|\brundll32\b[^\n]{0,60}\b(?:url\.dll|javascript:)|\bwmic\b[^\n]{0,60}\bprocess\s+call\s+create\b|\bmsiexec\b[^\n]{0,40}\/i\s+https?:\/\//i, severity: 'CRITICAL' },
   { name: 'PowerShell runs a base64-encoded command', re: /\bpowershell(?:\.exe)?\b[^\n]{0,80}\s-(?:e|ec|enc|encoded|encodedcommand)\b/i, severity: 'CRITICAL' },
-  { name: 'Interpreter opens a raw socket (reverse shell)', re: /\b(?:perl|ruby|php|python[0-9.]*|node)\b[^\n]{0,40}-(?:e|r|c)\b[^\n]{0,200}\b(?:fsockopen|socket\s*\(|Socket::|SOCK_STREAM|net\.connect|createConnection)\b/i, severity: 'CRITICAL' },
+  // No trailing \b: socket()/Socket:: end on a non-word char (mirrors backend).
+  { name: 'Interpreter opens a raw socket (reverse shell)', re: /\b(?:perl|ruby|php|python[0-9.]*|node)\b[^\n]{0,40}-(?:e|r|c)\b[^\n]{0,200}(?:\bfsockopen|\bsocket\s*\(|\bSocket::|\bSOCK_STREAM\b|\bnet\.connect|\bcreateConnection\b)/i, severity: 'CRITICAL' },
   { name: 'Netcat listener or command-execution flag', re: /\bn?c(?:at)?\b[^\n]{0,40}\s-\w*[ec]\s+\S{0,30}(?:sh|bash|cmd|powershell)\b|\bn?c(?:at)?\b[^\n]{0,20}\s-\w*l\w*\s*(?:-\w+\s*)*\d{2,5}\b/i, severity: 'HIGH' },
 ];
