@@ -136,7 +136,7 @@ export function discoverAiDependencies(roots = [process.cwd()], files = null) {
   for (const { pkg, eco, manifests, specs } of byPkg.values()) {
     const list = [...manifests];
     assets.push({
-      type: 'AI_TOOL',
+      type: 'AI_LIBRARY',
       name: `${pkg} (${eco})`,
       identifier: `dep:${eco}:${pkg}`,
       vendor: 'ai-sdk',
@@ -166,7 +166,7 @@ export function discoverAiUsageInCode(roots = [process.cwd()], files = null) {
   for (const row of rollupAiUsage(usages)) {
     const site = row.firstSite;
     assets.push({
-      type: 'AI_TOOL',
+      type: 'AI_LIBRARY',
       name: `${row.label} (in code)`,
       identifier: `ai-usage:${row.provider}`,
       vendor: 'ai-sdk',

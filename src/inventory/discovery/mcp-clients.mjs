@@ -55,7 +55,7 @@ export function discoverMcpClients(roots = [process.cwd()], files = null) {
   for (const { pkg, eco, manifests, specs } of byPkg.values()) {
     const list = [...manifests];
     assets.push({
-      type: 'AI_TOOL',
+      type: 'AI_LIBRARY',
       name: `${pkg} (${eco})`,
       identifier: `mcp-client:${eco}:${pkg}`,
       vendor: 'mcp-client',
