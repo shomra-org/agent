@@ -77,12 +77,7 @@ const uncommented = (text) =>
     .map((l) => l.replace(/(^|[ \t])#[^\n]*$/, '$1'))
     .join('\n');
 
-/**
- * ⚠ The SPEC TRAVELS RAW and the backend decides what counts as PINNED.
- * `parseExactVersion` lives once, on the server, so the endpoint plane and the
- * repo plane cannot disagree about which versions are precise enough to match
- * against an advisory.
- */
+
 export function pySpecFor(text, pkg) {
   const body = uncommented(text);
   const name = escRe(pkg).replace(/[-_]/g, '[-_]');
