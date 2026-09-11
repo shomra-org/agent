@@ -72,7 +72,7 @@ function locate(word, effectivePath, cwd, statSync) {
  * the filesystem this machine actually has - the two things the server does not
  * hold and no pattern can recover from the string.
  *
- * ⚠⚠ IT NEVER EXECUTES ANYTHING. `$(…)` and backticks are REPORTED unresolved,
+ *  IT NEVER EXECUTES ANYTHING. `$(…)` and backticks are REPORTED unresolved,
  * never evaluated: running attacker-influenced text in order to screen it is the
  * vulnerability, not the control. Same reason the scanner resolves an MCP source
  * without launching it.

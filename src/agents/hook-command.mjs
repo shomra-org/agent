@@ -12,7 +12,7 @@ function quoteArg(argument) {
 export const PACKAGE_SPEC = `@shomra/agent@${VERSION}`;
 
 /**
- * ⚠⚠ AN ABSOLUTE PATH DOES NOT SURVIVE THE FILE IT IS WRITTEN INTO. A project
+ *  AN ABSOLUTE PATH DOES NOT SURVIVE THE FILE IT IS WRITTEN INTO. A project
  * install lands in `.claude/settings.json`, which is COMMITTED - so the hook is
  * read on a colleague's laptop and inside the ephemeral cloud container Claude
  * Code on the web clones the repo into. Neither has this checkout, so the hook

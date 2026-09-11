@@ -50,7 +50,7 @@ function unscreenedSevere(normalized, tool, input) {
 }
 
 /**
- * ⚠⚠ THE LEDGER HAD NO PRODUCER. `guard/ledger.mjs` builds the fail-open window
+ *  THE LEDGER HAD NO PRODUCER. `guard/ledger.mjs` builds the fail-open window
  * the backend's EnforcementGap reads - and nothing in this repo ever called
  * `countCall`, so every client reported ZERO gaps forever. The backend then
  * asks whether a capable reporter exists, gets silence, and the estate reads

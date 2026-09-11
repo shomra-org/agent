@@ -166,7 +166,7 @@ test('a reachable server that ALLOWS is still an allow - the rung check only cov
 });
 
 /**
- * ⚠⚠ THE LEDGER HAD NO PRODUCER. `guard/ledger.mjs` builds the fail-open window
+ *  THE LEDGER HAD NO PRODUCER. `guard/ledger.mjs` builds the fail-open window
  * the backend's EnforcementGap reads, and until now NOTHING in this repo called
  * countCall - so every client reported zero gaps forever. The backend then asks
  * whether a capable reporter exists, gets silence, and the estate reads "no

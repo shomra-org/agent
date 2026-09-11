@@ -39,7 +39,7 @@ test('SHOMRA_ENVIRONMENT declares a runtime whose markers nobody has read yet', 
   assert.equal(declaredEnvironment(e), 'REMOTE');
 });
 
-test('⚠⚠ the override may only RAISE - it can never relabel a cloud container as a laptop', () => {
+test(' the override may only RAISE - it can never relabel a cloud container as a laptop', () => {
   const sneaky = { CLAUDE_CODE_CONTAINER_ID: 'abc', SHOMRA_ENVIRONMENT: 'LOCAL' };
   assert.equal(detectEnv(sneaky).environment, 'REMOTE');
   assert.equal(detectEnv(sneaky).runner, 'claude-code-cloud');
@@ -79,7 +79,7 @@ test('⚠ Codespaces and devcontainers are NOT remote - they persist and can rep
   assert.equal(detectEnv({ CODESPACES: 'true' }).environment, 'LOCAL');
 });
 
-test('⚠⚠ a project hook resolves through npm, not an absolute path', () => {
+test(' a project hook resolves through npm, not an absolute path', () => {
   const portable = hookCommand('tool-guard --agent claude', { portable: true });
   assert.match(portable, /^npx -y @shomra\/agent@/);
   assert.ok(!portable.includes(process.execPath));
@@ -153,7 +153,7 @@ test('⚠ an unconfigured CLOUD session says so in different words than a laptop
   assert.equal(laptop.remote, false);
 });
 
-test('⚠⚠ a blocked cloud session says its gap ledger dies with the container', () => {
+test(' a blocked cloud session says its gap ledger dies with the container', () => {
   const p = sessionPosture({ environment: 'REMOTE' }, { apiKey: 'k', url: 'https://x' }, false);
   assert.equal(p.enforcing, 'degraded');
   assert.match(p.message, /EPHEMERAL/);

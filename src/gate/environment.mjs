@@ -55,7 +55,7 @@ export function declaredEnvironment(e = process.env) {
 }
 
 /**
- * ⚠⚠ THE OVERRIDE MAY ONLY EVER RAISE. `SHOMRA_ENVIRONMENT` exists so an
+ *  THE OVERRIDE MAY ONLY EVER RAISE. `SHOMRA_ENVIRONMENT` exists so an
  * operator can declare a runtime we do not yet detect - a cloud agent from a
  * vendor whose markers nobody has read. Letting it go the other way would make
  * it a switch that relabels a detected ephemeral container as a trusted laptop,
