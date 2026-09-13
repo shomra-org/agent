@@ -117,3 +117,20 @@ test('the sweep is bounded and says so', () => {
   assert.ok(Array.isArray(result.capped), 'caps are always reported, even when empty');
   assert.equal(result.capped.length, 0, 'a small fixture hits no cap');
 });
+
+test('a Copilot hook file under .github/hooks is collected whatever it is named', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shomra-copilot-hooks-'));
+  const put = (rel, body) => {
+    const full = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, body);
+  };
+  put('.github/hooks/policy.json', JSON.stringify({ version: 1, hooks: { preToolUse: [{ type: 'command', bash: './scripts/pre.sh' }] } }));
+  put('.github/hooks/notes.json', JSON.stringify({ owner: 'platform' }));
+  put('.github/workflows/ci.json', JSON.stringify({ hooks: { x: [] } }));
+  const found = discoverAgentArtifacts(dir, [{ vendor: 'copilot', scope: 'project', dir: path.join(dir, '.github') }]);
+  const hooks = found.artifacts.filter((a) => a.kind === 'hook');
+  assert.deepEqual(hooks.map((h) => h.path), ['.github/hooks/policy.json']);
+  assert.ok(hooks[0].content.includes('./scripts/pre.sh'));
+  assert.ok(!hooks[0].content.includes('version'), 'only the hooks object leaves the machine');
+});

@@ -1,9 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { PLUGIN_MANIFEST_RE, TOOL_MANIFEST_RE } from '../detect/signals/manifests.mjs';
 
 export const ARTIFACT_MATCHERS = [
+  { kind: 'plugin', re: PLUGIN_MANIFEST_RE },
+  { kind: 'tool-manifest', re: TOOL_MANIFEST_RE },
   { kind: 'mcp', re: /(^|\/)\.?mcp\.json$/i },
   { kind: 'mcp', re: /(^|\/)\.(vscode|cursor)\/mcp\.json$/i },
+  { kind: 'mcp', re: /(^|\/)\.(kiro\/settings|amazonq|roo|windsurf|vs|junie\/mcp)\/mcp\.json$/i },
+  { kind: 'mcp', re: /(^|\/)(opencode\.jsonc?|crush\.json|\.codex\/config\.toml|\.continue\/(config\.ya?ml|mcpServers\/[^/]+\.(ya?ml|json)))$/i },
+  { kind: 'model-config', re: /(^|\/)(tokenizer_config|generation_config|adapter_config|model_index|special_tokens_map|config_sentence_transformers|preprocessor_config|processor_config)\.json$/i },
+  { kind: 'model-config', re: /(^|\/)(chat_template\.(jinja2?|json)|(.*\.)?modelfile|MLmodel|config\.pbtxt|bentofile\.ya?ml)$/i },
   { kind: 'skill', re: /(^|\/)SKILL\.md$/i },
   { kind: 'command', re: /(^|\/)\.claude\/commands\/[^/]+\.md$/i },
   { kind: 'subagent', re: /(^|\/)\.claude\/agents\/[^/]+\.md$/i },

@@ -8,6 +8,7 @@ import { SEV_COLOR, VERDICT_COLOR, bold, cyan, dim, gray, green, red, yellow } f
 import { VERSION } from '../core/version.mjs';
 import { discoverAgentArtifacts } from '../inventory/agent-artifacts.mjs';
 import { discoverAll } from '../inventory/discovery.mjs';
+import { unreadMcpStores } from '../inventory/discovery/mcp-servers.mjs';
 
 function discover(flags) {
 
@@ -24,12 +25,17 @@ export async function cmdScan(flags) {
   const cfg = loadConfig();
   const assets = discover(flags);
   const { artifacts, capped, available } = discoverArtifacts(flags);
+  const unreadStores = unreadMcpStores();
+  
   if (flags.json && !flags.report) {
-    console.log(JSON.stringify({ machine: machineInfo(cfg), assets, artifacts, capped, available }, null, 2));
+    console.log(JSON.stringify({ machine: machineInfo(cfg), assets, artifacts, capped, available, ...(unreadStores.length ? { unreadMcpStores: unreadStores } : {}) }, null, 2));
     return;
   }
   console.log(bold(cyan('\n  Shomra')) + dim(` agent v${VERSION} - local scan`));
   printAssets(assets);
+  for (const s of unreadStores) {
+    console.log(`  ${yellow('⚠')} ${dim(`MCP servers in ${s.file} were NOT read (${s.state === 'no-sqlite' ? 'this Node has no node:sqlite - use Node 22.5+' : s.state}) - not the same as none.`)}`);
+  }
   printArtifacts(artifacts, capped, available);
 
   if (flags.report) {

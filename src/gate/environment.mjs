@@ -1,32 +1,10 @@
-import { execSync } from 'node:child_process';
+import { git } from '../core/git-exec.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const GATE_KINDS = ['mcp', 'skill', 'command', 'subagent', 'hook', 'rules', 'agent-card', 'memory', 'auto'];
+export const GATE_KINDS = ['mcp', 'skill', 'command', 'subagent', 'hook', 'rules', 'agent-card', 'memory', 'plugin', 'tool-manifest', 'model-config', 'extension', 'workflow', 'guardrail', 'framework', 'auto'];
 
-/**
- * ⚠ A CLOUD AGENT SESSION IS NOT A DEVELOPER MACHINE, and until this existed it
- * reported as one. Claude Code on the web runs in an EPHEMERAL container: fresh
- * $HOME, no `shomra` config, a hostname nobody will ever see again. It carries
- * no CI variables, so it fell through to LOCAL - and an operator counting
- * "screened laptops" was counting containers that no longer exist.
- *
- * ⚠ CI IS CHECKED FIRST and stays first. A cloud session driven by a GitHub
- * Action is CI: that branch carries repo, ref and commit, which is the stronger
- * attribution. REMOTE is what is left when nothing else names where this ran.
- */
-/**
- * ⚠ ONE ENTRY PER RUNTIME, and only where the variable has been SEEN. A marker
- * invented from a vendor's docs either never fires - useless - or fires on a
- * name something else uses, which labels a real laptop as an ephemeral
- * container and puts a `floor` on a machine the org actually owns. Add a row
- * here once somebody has read the variable out of a live session of that
- * runtime; until then that runtime uses SHOMRA_ENVIRONMENT below, which is the
- * whole reason the override exists.
- *
- * `verified` records who has actually seen it, so the next person can tell a
- * confirmed marker from an optimistic one.
- */
+
 export const REMOTE_RUNTIMES = [
   {
     runner: 'claude-code-cloud',
@@ -54,15 +32,7 @@ export function declaredEnvironment(e = process.env) {
   return v in ENV_RANK ? v : null;
 }
 
-/**
- *  THE OVERRIDE MAY ONLY EVER RAISE. `SHOMRA_ENVIRONMENT` exists so an
- * operator can declare a runtime we do not yet detect - a cloud agent from a
- * vendor whose markers nobody has read. Letting it go the other way would make
- * it a switch that relabels a detected ephemeral container as a trusted laptop,
- * clearing the `floor` its unreportable silence earns. That is the same
- * privilege-reduction shape `mayRaiseOnly` and `foldTimeout` refuse on the
- * server, and it would be reachable by anything that can set an env var.
- */
+
 export function mergeEnvironment(detected, declared) {
   if (!declared) return detected;
   return ENV_RANK[declared] > ENV_RANK[detected] ? declared : detected;
@@ -140,16 +110,8 @@ export function detectEnv(env) {
 }
 
 function gitContext() {
-  const run = (args) => {
-    try {
-      return execSync(`git ${args}`, { stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000 })
-        .toString()
-        .trim();
-    } catch {
-      return undefined;
-    }
-  };
-  const origin = run('config --get remote.origin.url');
+  const run = (args) => git(args, { timeout: 2000 })?.trim();
+  const origin = run(['config', '--get', 'remote.origin.url']);
   let repo;
   if (origin) {
     const m = origin.match(/[:/]([^/:]+\/[^/]+?)(?:\.git)?$/);
@@ -158,7 +120,7 @@ function gitContext() {
 
   let repoUrl = origin || undefined;
   if (repoUrl) repoUrl = repoUrl.replace(/^([a-z][\w+.-]*:\/\/)[^/@]*@/i, '$1');
-  return { repo, repoUrl, ref: run('rev-parse --abbrev-ref HEAD'), commit: run('rev-parse HEAD') };
+  return { repo, repoUrl, ref: run(['rev-parse', '--abbrev-ref', 'HEAD']), commit: run(['rev-parse', 'HEAD']) };
 }
 
 export function collectSiblings(fullTarget, relPath) {

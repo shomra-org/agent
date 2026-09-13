@@ -16,7 +16,7 @@ export function redactLocally(text, opts = {}) {
     let guard = 0;
     while ((m = rx.exec(src)) !== null && guard++ < MAX_SPANS) {
       if (!m[0]) { rx.lastIndex += 1; continue; }
-      if (category === 'secret' && isPlaceholderSecret(m[0])) continue;
+      if (category === 'secret' && !/private key/i.test(label) && isPlaceholderSecret(m[0])) continue;
       if (label === 'Credit card number' && !luhnValid(m[0])) continue;
       spans.push({ start: m.index, end: m.index + m[0].length, label, category });
     }

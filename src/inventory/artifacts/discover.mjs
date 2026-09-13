@@ -4,8 +4,12 @@ import { clampArtifact } from '../../core/wire-limits.mjs';
 import { classify, declaredName } from './classify.mjs';
 import { readText } from './file-read.mjs';
 import { canonicalHooks } from './hooks.mjs';
-import { MAX_ARTIFACTS, MAX_BUNDLED, MAX_DIRS, MAX_TOTAL_BYTES, TEXT_EXTS, extOf } from './limits.mjs';
+import { bundleHookScripts } from './hook-scripts.mjs';
+import { HOME, MAX_ARTIFACTS, MAX_BUNDLED, MAX_DIRS, MAX_TOTAL_BYTES, TEXT_EXTS, extOf } from './limits.mjs';
+import { extractInstructionImports } from '../../detect/signals/instruction-paths.mjs';
 import { CATALOGUE_DIR_RE, PLUGIN_PATH_RE, installedMarketplaces } from './marketplaces.mjs';
+import { MARKETPLACE_ROOT_RE, MAX_MANIFEST_BYTES, bundlePluginComponents, installedPluginManifests, manifestName, pluginRootOf } from './plugins.mjs';
+import { bundleExtensionSource } from './extensions.mjs';
 import { artifactRoots } from './roots.mjs';
 import { walkRoot } from './walk.mjs';
 
@@ -16,10 +20,13 @@ function relativeToSite(site, absolutePath) {
 }
 
 function artifactName(kind, content, absolutePath) {
+  if (kind === 'plugin') return manifestName(content, path.basename(pluginRootOf(absolutePath)) || path.basename(absolutePath));
+  if (kind === 'extension') return manifestName(content, path.basename(path.dirname(absolutePath)));
   const declared = declaredName(content);
   if (declared) return declared;
   if (kind === 'skill') return path.basename(path.dirname(absolutePath));
   if (kind === 'hook') return `${path.basename(absolutePath)} · hooks`;
+  if (kind === 'rules') return path.basename(absolutePath);
   return path.basename(absolutePath).replace(/\.(md|toml)$/i, '');
 }
 
@@ -30,8 +37,10 @@ function resolveActivation(marketplace, installed) {
 }
 
 function readArtifactContent(kind, absolutePath) {
-  const read = readText(absolutePath);
+  const manifest = kind === 'plugin' || kind === 'extension';
+  const read = readText(absolutePath, manifest ? MAX_MANIFEST_BYTES : undefined);
   if (!read) return null;
+  if (manifest && read.truncated) return { ...read, content: null, oversize: true };
   if (kind !== 'hook') return { ...read, content: read.text };
   const content = canonicalHooks(read.text);
   return content ? { ...read, content } : null;
@@ -77,7 +86,12 @@ function collectFromSite({ site, files, state, project }) {
     }
 
     const marketplace = PLUGIN_PATH_RE.exec(relativePath)?.[2] ?? null;
-    const activation = resolveActivation(marketplace, installed);
+
+    if (kind === 'plugin' && marketplace && !MARKETPLACE_ROOT_RE.test(relativePath)) {
+      availableBy.set(marketplace, (availableBy.get(marketplace) ?? 0) + 1);
+      continue;
+    }
+    const activation = kind === 'plugin' && marketplace ? 'active' : resolveActivation(marketplace, installed);
     if (activation === 'not-installed') {
       availableBy.set(marketplace, (availableBy.get(marketplace) ?? 0) + 1);
       continue;
@@ -85,6 +99,10 @@ function collectFromSite({ site, files, state, project }) {
 
     const read = readArtifactContent(kind, absolutePath);
     if (!read) continue;
+    if (read.oversize) {
+      capped.push({ reason: 'manifest-too-large', path: relativePath });
+      continue;
+    }
     if (read.bytes > budget.bytes) {
       capped.push({ reason: 'byte-budget', path: relativePath });
       continue;
@@ -97,6 +115,76 @@ function collectFromSite({ site, files, state, project }) {
     consumed.add(absolutePath);
     artifacts.push(artifact);
     if (kind === 'skill') skills.push({ artifact, dir: path.dirname(absolutePath), site });
+    if (kind === 'rules') state.rules.push({ artifact, absolutePath });
+    if (kind === 'plugin') state.plugins.push({ artifact, absolutePath, site });
+    if (kind === 'extension') state.extensions.push({ artifact, absolutePath, site });
+    if (kind === 'hook') (state.hooks ??= []).push({ artifact, absolutePath, site });
+  }
+}
+
+function collectInstalledPlugins({ sites, state, project }) {
+  const { artifacts, capped, consumed, budget } = state;
+  for (const site of sites) {
+    if (site.vendor !== 'claude-code' || site.scope !== 'user') continue;
+    for (const { manifest, marketplace } of installedPluginManifests(site.dir)) {
+      if (consumed.has(manifest)) continue;
+      if (artifacts.length >= MAX_ARTIFACTS) { capped.push({ reason: 'artifact-cap', path: manifest }); return; }
+      const relativePath = relativeToSite(site, manifest);
+      const read = readArtifactContent('plugin', manifest);
+      if (!read) continue;
+      if (read.oversize) { capped.push({ reason: 'manifest-too-large', path: relativePath }); continue; }
+      if (read.bytes > budget.bytes) { capped.push({ reason: 'byte-budget', path: relativePath }); continue; }
+      budget.bytes -= Buffer.byteLength(read.content);
+      const artifact = buildArtifact({
+        kind: 'plugin', content: read.content, read, relativePath, site, project, marketplace, activation: 'active', absolutePath: manifest,
+      });
+      consumed.add(manifest);
+      artifacts.push(artifact);
+      state.plugins.push({ artifact, absolutePath: manifest, site });
+    }
+  }
+}
+
+const IMPORT_READABLE_RE = /\.(?:md|mdx|markdown|mdc|rst|txt)$/i;
+const IMPORT_SECRET_RE = /(?:^|[\\/])(?:\.env|\.ssh|\.aws|\.gnupg|\.netrc|\.npmrc)|id_(?:rsa|dsa|ecdsa|ed25519)|secret|credential|password|\.pem$|\.key$/i;
+const MAX_IMPORT_DEPTH = 5;
+
+function resolveImport(ref, fromFile) {
+  if (ref.startsWith('~/')) return path.join(HOME, ref.slice(2));
+  if (path.isAbsolute(ref)) return ref;
+  return path.resolve(path.dirname(fromFile), ref);
+}
+
+function bundleRuleImports(state) {
+  const { capped, budget } = state;
+  for (const { artifact, absolutePath } of state.rules) {
+    const seen = new Set([absolutePath]);
+    const queue = [{ file: absolutePath, text: artifact.content, depth: 0 }];
+    while (queue.length) {
+      const { file, text, depth } = queue.shift();
+      if (depth >= MAX_IMPORT_DEPTH) continue;
+      for (const ref of extractInstructionImports(text)) {
+        if (!IMPORT_READABLE_RE.test(ref) || IMPORT_SECRET_RE.test(ref)) continue;
+        const target = resolveImport(ref, file);
+        if (seen.has(target)) continue;
+        seen.add(target);
+        if (artifact.files.length >= MAX_BUNDLED) {
+          capped.push({ reason: 'bundle-cap', path: artifact.path });
+          queue.length = 0;
+          break;
+        }
+        const read = readText(target);
+        if (!read) continue;
+        if (read.bytes > budget.bytes) {
+          capped.push({ reason: 'byte-budget', path: ref });
+          continue;
+        }
+        budget.bytes -= Buffer.byteLength(read.text);
+        artifact.files.push({ path: ref.replace(/^[~.]*\//, ''), content: read.text, binary: false });
+        queue.push({ file: target, text: read.text, depth: depth + 1 });
+      }
+    }
+    if (artifact.files.length) artifact.metadata.importCount = artifact.files.length;
   }
 }
 
@@ -164,12 +252,34 @@ export function discoverAgentArtifacts(cwd = process.cwd(), roots = null) {
     capped: [],
     consumed: new Set(),
     skills: [],
+    rules: [],
+    plugins: [],
+    extensions: [],
     availableBy: new Map(),
   };
 
   const walked = walkSites(sites, state.budget);
   for (const { site, files } of walked) collectFromSite({ site, files, state, project });
+  collectInstalledPlugins({ sites, state, project });
   bundleSkillFiles({ skills: state.skills, walked, state });
+  bundleRuleImports(state);
+  for (const { artifact, absolutePath, site } of state.hooks ?? []) {
+    bundleHookScripts(artifact, absolutePath, {
+      projectDir: site.scope === 'project' ? path.dirname(site.dir) : cwd,
+      relPath: (abs) => {
+        const rel = relativeToSite(site, abs);
+        return rel.startsWith('..') || path.isAbsolute(rel) ? null : rel;
+      },
+      budget: state.budget,
+      capped: state.capped,
+    });
+  }
+  for (const { artifact, absolutePath, site } of state.extensions) {
+    bundleExtensionSource(artifact, absolutePath, (abs) => relativeToSite(site, abs), state.budget, state.capped);
+  }
+  for (const { artifact, absolutePath, site } of state.plugins) {
+    bundlePluginComponents(artifact, absolutePath, (abs) => relativeToSite(site, abs), state.budget, state.capped);
+  }
 
   if (state.budget.dirs <= 0) state.capped.push({ reason: 'walk-budget', path: null });
 

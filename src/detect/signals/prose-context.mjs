@@ -83,9 +83,11 @@ export function isDocumentationLine(line, offset) {
 }
 
 const PROHIBITION_MARKER_RE =
-  /\b(?:never|do not|don'?t|cannot|can'?t|must not|mustn'?t|should not|shouldn'?t|avoid|avoids|avoiding|refuse to|refrain from|forbidden|prohibited|disallow\w*|instead of|rather than|beware of|do NOT)\b[^.:;\n]{0,60}$/i;
+  /\b(?:never|do not|don'?t|cannot|can'?t|must not|mustn'?t|should not|shouldn'?t|avoid|avoids|avoiding|refuse to|refrain from|forbidden|prohibited|disallow\w*|instead of|rather than|beware of|do NOT|(?:ask|check with)(?: the user| a human| me| for (?:confirmation|approval|permission))? before|confirm(?: with the user)? before|(?:get|obtain|wait for) (?:explicit )?(?:approval|confirmation|sign-?off) before|require (?:explicit )?(?:approval|confirmation) (?:before|for))\b[^.:;\n]{0,60}$/i;
 
 const DOUBLE_NEGATIVE_RE = /\b(?:hesitate|worry|be afraid|forget|fail|neglect|shy away)\b/i;
+
+const NEGATED_GUARD_RE = /\b(?:never|do not|don'?t|no need to|without|skip)\s[\w ]{0,20}\b(?:ask|asking|confirm|confirming|check|checking|wait|waiting|prompt|prompting|approval)\b/i;
 
 const COORDINATE_TAIL_RE = /(?:\b(?:and|or|but|then|also)\b|[,;])\s*$/i;
 
@@ -95,6 +97,7 @@ export function prohibitsAt(line, offset) {
   const before = line.slice(Math.max(0, at - 90), at);
   if (!PROHIBITION_MARKER_RE.test(before)) return false;
   if (COORDINATE_TAIL_RE.test(before)) return false;
+  if (NEGATED_GUARD_RE.test(before)) return false;
   return !DOUBLE_NEGATIVE_RE.test(before);
 }
 

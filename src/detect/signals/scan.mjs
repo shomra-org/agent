@@ -48,7 +48,7 @@ export function localScan(text, opts = {}) {
     if (INVISIBLE_CHARS_RE.test(t)) findings.push({ label: 'Invisible / zero-width characters', severity: 'MEDIUM', category: 'injection', ...locate(t, INVISIBLE_CHARS_RE, mask) });
   }
   if (cats.includes('secret')) {
-    for (const { name, re } of SECRET_PATTERNS) { const m = t.match(re); if (m && !isPlaceholderSecret(m[0])) findings.push({ label: `Live credential: ${name}`, severity: 'CRITICAL', category: 'secret', ...locate(t, re, mask) }); }
+    for (const { name, re } of SECRET_PATTERNS) { const m = t.match(re); if (m && (/private key/i.test(name) || !isPlaceholderSecret(m[0]))) findings.push({ label: `Live credential: ${name}`, severity: 'CRITICAL', category: 'secret', ...locate(t, re, mask) }); }
   }
   if (cats.includes('pii')) {
     for (const { name, re } of PII_PATTERNS) {

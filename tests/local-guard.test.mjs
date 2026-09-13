@@ -24,7 +24,7 @@ test('localGate leaves a benign filesystem MCP server ALLOW (no false positive)'
     { kind: 'mcp', path: '.mcp.json' },
   );
   assert.equal(res.verdict, 'ALLOW');
-  assert.equal((res.findings ?? []).length, 0);
+  assert.ok((res.findings ?? []).every((f) => f.severity === 'LOW' && /unpinned/.test(f.title)), JSON.stringify(res.findings));
 });
 
 test('localScan flags prompt-injection / instruction-override prose', () => {

@@ -6,6 +6,8 @@ import { isMemoryPath, reportMemoryWrite } from '../commands/memory-scan.mjs';
 import { breakerOpen, breakerReset, breakerTrip, guardTimeoutMs } from '../core/circuit-breaker.mjs';
 import { CONFIG_DIR } from '../core/config.mjs';
 import { makeLedgerStore } from './ledger.mjs';
+import { memoryWritesFor, outOfBandChange, recordLedger, sha256 } from './memory-write.mjs';
+import { gateMachine } from '../core/api-client.mjs';
 import { VERSION } from '../core/version.mjs';
 import { loadConfig, resolveSettings } from '../core/config.mjs';
 import { classifyConsequence, downrankCodeContext, grade, localScan } from '../detect/guard-signals.mjs';
@@ -19,23 +21,7 @@ import { buildGuardBody, reportGuardDecision } from './report.mjs';
 
 const ALLOW_VERDICT = { verdict: 'ALLOW', top: null, findings: [] };
 
-/**
- * ⚠ FAILING OPEN ON EVERYTHING IS AN ENFORCEMENT BYPASS AN ATTACKER BUYS WITH A
- * SLOW INPUT. The hook has to fail open - an agent that hard-stops on an
- * unreachable SaaS backend is one nobody keeps installed - but "open on every
- * call" means padding a command until the screen times out runs it unscreened,
- * which is cheaper than any evasion in the corpus.
- *
- * So the rung decides. A routine or material call still flows: that is the
- * promise that keeps the hook installed. A SEVERE one - a recursive delete, a
- * force push over a shared branch, a write into ~/.ssh - stops and ASKS.
- *
- * ⚠ IT ASKS, IT DOES NOT DENY. A deny during an outage is unappealable at 3am
- * and gets the hook uninstalled, taking every other control with it. An ask
- * puts the human who is already sitting there in the loop and says plainly
- * that the call was NOT screened, which is the honest sentence: we do not know
- * that this is dangerous, we know that we could not check.
- */
+
 function failOpenOnSevere() {
   return envFlag('SHOMRA_GUARD_FAILOPEN_SEVERE');
 }
@@ -49,19 +35,7 @@ function unscreenedSevere(normalized, tool, input) {
   }) === 'severe';
 }
 
-/**
- *  THE LEDGER HAD NO PRODUCER. `guard/ledger.mjs` builds the fail-open window
- * the backend's EnforcementGap reads - and nothing in this repo ever called
- * `countCall`, so every client reported ZERO gaps forever. The backend then
- * asks whether a capable reporter exists, gets silence, and the estate reads
- * either "no outages" or NOT_ATTEMPTABLE. Both are wrong and one is flattering:
- * a smoke detector reporting no fire with a dead battery, which is the exact
- * shape enforcement-availability.ts was written to prevent.
- *
- * ⚠ COUNTS ARE LOWER BOUNDS BY DESIGN - concurrent hook processes race this
- * file, and the backend already treats them as a floor. Do not "fix" that with
- * a lock on the firewall's hot path.
- */
+
 function ledger() {
   return makeLedgerStore(CONFIG_DIR, { version: VERSION });
 }
@@ -70,8 +44,6 @@ function countUnscreened(reason) {
   try {
     ledger().count(localTierDisabled() ? 'unscreened' : 'local', reason);
   } catch {
-    /* The ledger is a record, never a gate: a failure to write one must not
-     * take the firewall down. The count is a floor and this makes it lower. */
   }
 }
 
@@ -83,7 +55,6 @@ function sendLedger() {
     pendingLedger = env.gaps ?? [];
     return env;
   } catch {
-    /* No ledger is a lower bound, not a wrong number. */
     return undefined;
   }
 }
@@ -95,8 +66,6 @@ function ackLedger() {
   try {
     ledger().ack(pendingLedger);
   } catch {
-    /* Unacknowledged gaps are re-sent next time; a duplicate is a floor read
-     * twice, which is safe. Losing one is not. */
   }
   pendingLedger = [];
 }
@@ -136,28 +105,56 @@ function screenLocally(normalized, tool, input) {
   return { ...grade(findings), top, findings };
 }
 
-function memoryWriteContent(input) {
-  if (typeof input.content === 'string') return input.content;
-  if (typeof input.new_string === 'string') return input.new_string;
-  return null;
+const READ_TOOLS_RE = /^(read|read_file|view|open_file|cat)$/i;
+const OUT_OF_BAND = 'changed outside any agent write the Shomra hook observed';
+
+function memoryReportBase(filePath, normalized) {
+  const machine = gateMachine();
+  return {
+    path: path.resolve(filePath).split(path.sep).join('/'),
+    name: path.basename(String(filePath)),
+    machineId: machine.machineId,
+    hostname: machine.hostname,
+    actor: machine.username,
+    sessionId: normalized.session_id,
+  };
 }
 
-async function recordMemoryWrite({ url, apiKey, input, normalized }) {
-  const memoryPath = input.file_path || input.path;
-  if (!memoryPath || !isMemoryPath(memoryPath) || breakerOpen()) return;
+async function reportOutOfBand(url, apiKey, filePath, current, normalized) {
+  if (current == null || !outOfBandChange(filePath, current)) return;
+  await reportMemoryWrite(url, apiKey, { ...memoryReportBase(filePath, normalized), content: current, writer: 'UNKNOWN', source: OUT_OF_BAND });
+  recordLedger(filePath, [sha256(current)]);
+}
 
-  const content = memoryWriteContent(input);
-  if (content == null) return;
+async function recordMemoryWrite({ url, apiKey, tool, input, normalized }) {
+  if (breakerOpen()) return;
 
-  await reportMemoryWrite(url, apiKey, {
-    path: String(memoryPath).split(path.sep).join('/'),
-    name: path.basename(String(memoryPath)),
-    content,
-    writer: 'AGENT',
-    source: os.hostname(),
-    actor: os.userInfo().username,
-    sessionId: normalized.session_id,
-  });
+  if (READ_TOOLS_RE.test(tool || '')) {
+    const target = input.file_path || input.path || input.target_file;
+    if (!target || !isMemoryPath(target)) return;
+    const abs = path.resolve(normalized.cwd || process.cwd(), String(target));
+    let current = null;
+    try {
+      current = fs.readFileSync(abs, 'utf8');
+    } catch {
+      return;
+    }
+    await reportOutOfBand(url, apiKey, abs, current, normalized);
+    return;
+  }
+
+  const writes = memoryWritesFor(tool, input, { cwd: normalized.cwd }).filter((w) => w.path && isMemoryPath(w.path));
+  for (const w of writes) {
+    await reportOutOfBand(url, apiKey, w.path, w.before, normalized);
+    await reportMemoryWrite(url, apiKey, {
+      ...memoryReportBase(w.path, normalized),
+      content: w.content,
+      writer: 'AGENT',
+      source: os.hostname(),
+      contentBasis: w.basis,
+    });
+    recordLedger(w.path, [w.before != null ? sha256(w.before) : null, w.basis === 'whole' ? sha256(w.content) : null]);
+  }
 }
 
 function reportUnauthenticated(agent, status, strict) {
@@ -191,12 +188,6 @@ async function requestServerDecision({ url, apiKey, agentId, body, agent, strict
 
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) reportUnauthenticated(agent, response.status, strict);
-      /* ⚠ A 429 IS NOT AN OUTAGE, and treating it as one was a silent
-       * enforcement bypass: tripping the breaker skips the server for the whole
-       * cooldown, so one burst past the rate limit switched org policy, agent
-       * identity and flow control off for thirty seconds - on the machine, with
-       * nothing said. It means "we are here, come back", so it is retried once
-       * against Retry-After and never counted against the breaker. */
       if (response.status === 429) {
         const wait = retryAfterMs(response);
         if (wait !== null && !retried) {
@@ -268,13 +259,9 @@ export async function cmdToolGuard(flags) {
     process.exit(0);
   }
 
-  await recordMemoryWrite({ url, apiKey, input, normalized });
+  await recordMemoryWrite({ url, apiKey, tool, input, normalized });
 
-  /* ⚠ A SEVERE CALL IS ALWAYS WORTH THE ROUND TRIP. `guardNeedsServer` asks
-   * which calls are worth escalating and answered NO for `git push --force
-   * origin main` and `rm -rf` alike - so the most destructive calls in the
-   * estate were graded by the offline tier and NOTHING ELSE: no org policy, no
-   * capability check, no flow control, and no gate event to read afterwards. */
+
   const severe = unscreenedSevere(normalized, tool, input);
   const escalate = alwaysEscalate || severe || local.verdict === 'FLAG' || guardNeedsServer(tool, input, !!agentId);
   if (!escalate) {

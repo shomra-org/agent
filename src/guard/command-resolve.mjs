@@ -53,15 +53,45 @@ function isExecutable(file, statSync) {
   }
 }
 
+/**
+ * PATH as the shell running the command splits it.
+ *
+ * ⚠ The commands screened here are shell text - bash, or Git Bash on Windows -
+ * where `PATH=/tmp/bin:$PATH` is colon-separated. Splitting on the HOST's
+ * delimiter read that on Windows as one directory named `/tmp/bin:/usr/bin`, so
+ * the shadowing binary the prefix planted was never found and the report named
+ * nothing. A `$PATH` substituted from a Windows environment adds `;` and drive
+ * letters, so: split on `;`, and on `:` except the one after a drive letter.
+ */
+function pathEntries(value) {
+  const out = [];
+  let cur = '';
+  for (const ch of String(value ?? '')) {
+    if (ch === ';' || (ch === ':' && !/^[A-Za-z]$/.test(cur))) {
+      if (cur) out.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur) out.push(cur);
+  return out.slice(0, MAX_PATH_ENTRIES);
+}
+
+const windowsStyle = (p) => /^[A-Za-z]:[\\/]/.test(p) || p.includes('\\');
+const flavour = (p) => (windowsStyle(p) ? path.win32 : path.posix);
+
 function locate(word, effectivePath, cwd, statSync) {
   if (!word) return null;
+  const base = cwd || '.';
   if (word.includes('/') || word.includes('\\')) {
-    const abs = path.isAbsolute(word) ? word : path.resolve(cwd || '.', word);
+    const abs = flavour(word).isAbsolute(word) ? word : flavour(base).join(base, word);
     return isExecutable(abs, statSync) ? abs : null;
   }
-  const entries = String(effectivePath ?? '').split(path.delimiter).filter(Boolean).slice(0, MAX_PATH_ENTRIES);
-  for (const dir of entries) {
-    const candidate = path.join(dir, word);
+  for (const dir of pathEntries(effectivePath)) {
+    // A relative entry (`.`, `bin`) is relative to where the COMMAND runs - which is how it shadows.
+    const at = flavour(dir).isAbsolute(dir) ? dir : flavour(base).join(base, dir);
+    const candidate = flavour(at).join(at, word);
     if (isExecutable(candidate, statSync)) return candidate;
   }
   return null;

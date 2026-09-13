@@ -84,7 +84,7 @@ const JS_EXT = /\.(m|c)?[jt]sx?$/i;
 
 const NB_EXT = /\.ipynb$/i;
 
-const MODEL_CONFIG_RE = /(^|\/)(config|tokenizer_config|generation_config|preprocessor_config)\.json$/i;
+const MODEL_CONFIG_RE = /(^|\/)(config|tokenizer_config|generation_config|preprocessor_config|processor_config|adapter_config|config_sentence_transformers)\.json$/i;
 
 export function isScannableSource(path) {
   return PY_EXT.test(path) || JS_EXT.test(path) || NB_EXT.test(path);

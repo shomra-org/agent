@@ -1,7 +1,7 @@
-import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ARTIFACT_MATCHERS, walkArtifacts } from '../artifacts/matchers.mjs';
+import { git } from '../core/git-exec.mjs';
 import { loadConfig, resolveSettings } from '../core/config.mjs';
 import { bold, cyan, dim, green, red, yellow } from '../core/terminal.mjs';
 import { VERSION } from '../core/version.mjs';
@@ -14,17 +14,9 @@ import { fixOneFile } from './fix.mjs';
 const GIT_TIMEOUT_MS = 3000;
 
 function gitChangedArtifacts(root, { staged }) {
-  const run = (args) => {
-    try {
-      return execSync(`git ${args}`, { cwd: root, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_TIMEOUT_MS }).toString();
-    } catch {
-      return null;
-    }
-  };
-
   const output = staged
-    ? run('diff --cached --name-only --relative --diff-filter=ACM')
-    : run('diff HEAD --name-only --relative --diff-filter=ACM');
+    ? git(['diff', '--cached', '--name-only', '--relative', '--diff-filter=ACM'], { cwd: root, timeout: GIT_TIMEOUT_MS })
+    : git(['diff', 'HEAD', '--name-only', '--relative', '--diff-filter=ACM'], { cwd: root, timeout: GIT_TIMEOUT_MS });
   if (output === null) return null;
 
   return output

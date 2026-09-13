@@ -12,7 +12,7 @@ ${bold(cyan('shomra admin'))} ${dim('- governance & advanced security operations
   ${dim('Deep scans (backend + key)')}
   ${cyan('scan-zip')}      Static-scan a workspace ZIP            ${dim('<file.zip> [--project <id>] [--json]')}
   ${cyan('model-scan')}    SAST-scan a public AI model            ${dim('<hf-url | owner/model | github-url> [--project <id>] [--json]')}
-  ${cyan('memory-scan')}   Scan memory + rules files for poisoning ${dim('[path] [--scope …] [--writer …] [--json]')}
+  ${cyan('memory-scan')}   Scan memory + rules files for poisoning ${dim('[path] [--machine] [--scope …] [--writer …] [--json]')}
 
   ${dim('Offense & runtime identity')}
   ${cyan('redteam')}       Continuously red-team your guardrails  ${dim('[--target llm-guard|model] [--evolve] [--min 80] [--fail-on-regression] [--json]')}

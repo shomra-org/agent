@@ -1,7 +1,7 @@
-import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { EXIT_USAGE } from '../core/exit-codes.mjs';
+import { git } from '../core/git-exec.mjs';
 import { bold, dim, green, red, yellow } from '../core/terminal.mjs';
 
 export async function cmdInstallPrecommit(flags, positional) {
@@ -152,7 +152,7 @@ function installPreReceive(flags, positional) {
 
 function gitHooksDir(root) {
   try {
-    const dir = execSync('git rev-parse --git-path hooks', { cwd: root, stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).toString().trim();
+    const dir = git(['rev-parse', '--git-path', 'hooks'], { cwd: root, timeout: 3000 })?.trim();
     if (!dir) return null;
     const abs = path.isAbsolute(dir) ? dir : path.join(root, dir);
     fs.mkdirSync(abs, { recursive: true });

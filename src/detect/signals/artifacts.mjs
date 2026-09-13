@@ -1,7 +1,6 @@
 import { assessUrl } from './egress.mjs';
 import { lineAt, lineOf } from './lines.mjs';
-import { MALICIOUS_PACKAGE_SEED, POPULAR_PACKAGES, editDistance, packageFromCommand } from './packages.mjs';
-import { SECRET_PATTERNS } from './secrets.mjs';
+import { gradeMcpDocument } from './mcp-config.mjs';
 
 export const HIGH_IMPACT_TOOLS = ['bash', 'shell', 'exec', 'execute', 'run', 'terminal', 'command', 'write', 'edit', 'multiedit', 'writefile', 'write_file', 'create', 'delete', 'remove', 'rm', 'webfetch', 'web_fetch', 'fetch', 'browser', 'network', 'http', 'curl', 'computer', 'automation'];
 
@@ -33,40 +32,13 @@ export function frontmatter(text) {
   return data;
 }
 
-function mcpServersFrom(content) {
-  let json;
-  try { json = JSON.parse(content); } catch { return []; }
-  const map = json?.mcpServers ?? json?.servers ?? json?.mcp?.servers ?? json?.context_servers ?? {};
-  if (!map || typeof map !== 'object') return [];
-  return Object.entries(map).map(([name, cfg]) => ({ name, ...(cfg && typeof cfg === 'object' ? cfg : {}) }));
-}
 
-export function localMcp(content) {
-  const out = [];
-  const push = (severity, title, remediationText, line) => out.push({ severity, title, remediationText, ...(line ? { line } : {}) });
-  for (const s of mcpServersFrom(content)) {
-    const cmdLine = [s.command, ...(s.args ?? [])].filter(Boolean).join(' ');
-    if (s.url && String(s.url).startsWith('http://')) {
-      push('MEDIUM', `MCP server "${s.name}" uses plaintext HTTP`, 'Use an https:// endpoint and require an authenticated bearer token.', lineOf(content, String(s.url)));
-    }
-    const envBlob = JSON.stringify(s.env ?? {});
-    for (const { name, re } of SECRET_PATTERNS) {
-      if (re.test(envBlob) || re.test(cmdLine)) {
-        push('CRITICAL', `Static credential in MCP server "${s.name}"`, 'Rotate the credential and pass it via a runtime env reference, not a literal in the config.', lineOf(content, re));
-        break;
-      }
-    }
-    const pkg = packageFromCommand(s.command, s.args ?? []);
-    if (pkg) {
-      if (MALICIOUS_PACKAGE_SEED.has(pkg)) {
-        push('CRITICAL', `MCP server "${s.name}" runs a known-malicious package (${pkg})`, 'Remove this server and audit for compromise. Replace with a vetted alternative.', lineOf(content, pkg));
-      } else {
-        const squat = POPULAR_PACKAGES.find((p) => p !== pkg && editDistance(pkg, p) === 1);
-        if (squat) push('MEDIUM', `Possible typosquat in "${s.name}": ${pkg} (looks like "${squat}")`, `Confirm the intended package is "${squat}", not "${pkg}", and pin it.`, lineOf(content, pkg));
-      }
-    }
-  }
-  return out;
+export function localMcp(content, { path } = {}) {
+  const { findings } = gradeMcpDocument(content, path ?? '');
+  return findings.map((f) => {
+    const line = f.anchor ? lineOf(content, f.anchor) ?? lineOf(content, f.server) : lineOf(content, f.server);
+    return { severity: f.severity, title: f.title, remediationText: f.remediationText, ...(line ? { line } : {}) };
+  });
 }
 
 export function localAgentCard(content) {

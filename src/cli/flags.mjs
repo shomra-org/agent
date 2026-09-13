@@ -1,9 +1,9 @@
 const BOOLEAN_FLAGS = new Set([
   'strict', 'json', 'sarif', 'fix', 'staged', 'changed', 'all', 'history', 'force',
   'apply', 'dry-run', 'global', 'local', 'trailer', 'evolve', 'report', 'init',
-  'no-suppress', 'no-baseline', 'no-policy', 'no-index', 'adaptive',
+  'no-suppress', 'no-baseline', 'no-policy', 'no-index', 'adaptive', 'offline',
   'fail-on-regression', 'fail-on-blocked', 'write', 'yes', 'stdin', 'quiet', 'help',
-  'check', 'checklist', 'pre-receive', 'uninstall', 'save', 'list',
+  'check', 'checklist', 'pre-receive', 'uninstall', 'save', 'list', 'machine',
 ]);
 
 const VALUE_FLAGS = new Set([

@@ -11,8 +11,10 @@ import { GATE_KINDS, collectSiblings, detectEnv } from '../gate/environment.mjs'
 import { localAsGateResult, printGateResult } from '../gate/result.mjs';
 import { toSarif } from '../gate/sarif.mjs';
 import { collectLocalSast, mergeSastIntoResult } from '../gate/sast.mjs';
+import { withMcpAdvisories } from '../gate/advisories.mjs';
+import { readZipEntry } from '../core/zip-lite.mjs';
 
-const GATE_USAGE = 'shomra gate <file> [--kind mcp|skill|command|subagent|hook|rules|agent-card|memory] [--name x] [--strict] [--json]';
+const GATE_USAGE = 'shomra gate <file> [--kind mcp|skill|command|subagent|hook|rules|agent-card|memory|plugin|tool-manifest|extension|workflow|guardrail|framework] [--name x] [--strict] [--json]';
 
 function resolveGateFile(file) {
   let target = path.resolve(String(file));
@@ -43,6 +45,20 @@ function readGateTarget(flags, positional) {
     process.exit(EXIT_USAGE);
   }
   const target = resolveGateFile(file);
+  
+  if (/\.(?:dxt|mcpb)$/i.test(target)) {
+    const manifest = readZipEntry(fs.readFileSync(target), 'manifest.json');
+    if (manifest == null) {
+      console.error(`${red('✗')} ${file} is not a readable extension bundle (no manifest.json at its root).`);
+      process.exit(EXIT_USAGE);
+    }
+    return {
+      content: manifest,
+      relPath: `${path.relative(process.cwd(), target).split(path.sep).join('/')}!/manifest.json`,
+      fullTarget: null,
+      bundle: true,
+    };
+  }
   return {
     content: fs.readFileSync(target, 'utf8'),
     relPath: path.relative(process.cwd(), target).split(path.sep).join('/'),
@@ -79,8 +95,8 @@ export async function cmdGate(flags, positional) {
   const { apiKey, url } = resolveSettings(loadConfig());
   if (flags.all) return cmdGateAll(flags, positional, { apiKey, url });
 
-  const { content, relPath, fullTarget } = readGateTarget(flags, positional);
-  const kind = flags.kind && GATE_KINDS.includes(String(flags.kind)) ? String(flags.kind) : undefined;
+  const { content, relPath, fullTarget, bundle } = readGateTarget(flags, positional);
+  const kind = flags.kind && GATE_KINDS.includes(String(flags.kind)) ? String(flags.kind) : bundle ? 'mcp' : undefined;
   const name = flags.name ? String(flags.name) : (relPath ? relPath.split('/').pop() : 'artifact');
   const local = localGate(content, { kind, path: relPath });
 
@@ -97,7 +113,13 @@ export async function cmdGate(flags, positional) {
     console.error(`  ${dim('Not enrolled - on-machine analysis only. Run')} ${bold('shomra init')} ${dim('to also apply org policy.')}`);
   }
 
-  const base = serverVerdict || localAsGateResult(local, name, kind);
+  let shownLocal = local;
+  if (!serverVerdict) {
+    const { local: withAdv, advisories } = await withMcpAdvisories(local, { content, path: relPath, kind, flags });
+    shownLocal = withAdv;
+    if (advisories === 'unavailable' && !flags.json) console.error(`  ${yellow('⚠')} ${dim('Advisory lookup (OSV) unreachable - pinned MCP packages were not checked for published CVEs.')}`);
+  }
+  const base = serverVerdict || localAsGateResult(shownLocal, name, kind);
   const result = mergeSastIntoResult(base, collectLocalSast({ fullPath: fullTarget, relPath, kind, content }));
   printGateResult(result, serverVerdict ? 'server' : 'local', flags);
 

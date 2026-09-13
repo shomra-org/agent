@@ -7,6 +7,7 @@ import { localGate } from '../detect/guard-signals.mjs';
 import { applyRepoPolicy, loadRepoPolicy } from './repo-policy.mjs';
 import { localAsGateResult } from './result.mjs';
 import { collectLocalSast, mergeSastIntoResult } from './sast.mjs';
+import { withMcpAdvisories } from './advisories.mjs';
 import { loadBaseline, loadIgnoreRules, suppressResult } from './suppressions.mjs';
 
 const DEFAULT_CONCURRENCY = 8;
@@ -121,6 +122,15 @@ export async function gateArtifactList(artifacts, { apiKey, url, env, flags, roo
 
   const prepared = analyseLocally(artifacts, quiet);
   const { verdicts, rejected, backendDown } = await requestServerVerdicts(prepared, { apiKey, url, env, flags, quiet });
+
+  let advisoryOutage = false;
+  await Promise.all(prepared.map(async (p, i) => {
+    if (verdicts[i] || p.artifact.kind !== 'mcp') return;
+    const { local, advisories } = await withMcpAdvisories(p.local, { content: p.content, path: p.artifact.rel, kind: 'mcp', flags });
+    p.local = local;
+    if (advisories === 'unavailable') advisoryOutage = true;
+  }));
+  if (advisoryOutage && !quiet) console.log(`  ${yellow('⚠')} ${dim('Advisory lookup (OSV) unreachable - pinned MCP packages were not checked for published CVEs.')}`);
 
   const results = [];
   let blocked = 0;

@@ -177,6 +177,13 @@ const MEMORY_SCAN = () => `${bold('MEMORY-SCAN')}
   each write (with provenance) so Shomra can track drift from an approved baseline
   and roll back a poisoned store. Once ${bold('install-hook')} is wired, the agent's own
   memory and rules-file writes are captured automatically. Analysis is static.
+
+  With no path it scans the current directory ${bold('and')} this machine's agent memory:
+  Claude Code (auto + subagent memory), Codex memories, Gemini/Qwen memory, Windsurf,
+  Goose, Serena, basic-memory, the VS Code Copilot memory tool, mem0/Letta stores.
+  ${bold('--machine')} scans only those. Binary stores (SQLite, protobuf, vector DBs) are
+  reported as found-but-unread, never as clean. A store whose content changed
+  outside any agent write the hook saw is reported as an out-of-band write.
 `;
 
 const REDTEAM = () => `${bold('REDTEAM')}

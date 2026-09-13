@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { git, safeRef } from '../core/git-exec.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { MAX_ARTIFACT_BYTES, SKIP_DIRS } from '../artifacts/matchers.mjs';
@@ -12,8 +12,7 @@ function redactSecret(s) {
 }
 
 function isGitRepo(root) {
-  try { execSync('git rev-parse --is-inside-work-tree', { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] }); return true; }
-  catch { return false; }
+  return git(['rev-parse', '--is-inside-work-tree'], { cwd: root }) !== null;
 }
 
 export function walkFiles(root, cap = 8000) {
@@ -34,8 +33,8 @@ export function walkFiles(root, cap = 8000) {
 
 function scanGitHistory(root, depth) {
   let out;
-  try { out = execSync(`git log --all -p -n ${depth} --no-color --format="commit %H %an %ad"`, { cwd: root, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 128 * 1024 * 1024 }).toString(); }
-  catch { return null; }
+  out = git(['log', '--all', '-p', '-n', String(Math.floor(Number(depth)) || 300), '--no-color', '--format=commit %H %an %ad'], { cwd: root, timeout: 120000, maxBuffer: 128 * 1024 * 1024 });
+  if (out === null) return null;
   const hits = [];
   const seen = new Set();
   let commit = '', file = '';

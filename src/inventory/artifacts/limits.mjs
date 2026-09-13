@@ -3,7 +3,7 @@ import path from 'node:path';
 
 export const HOME = os.homedir();
 
-export const ARTIFACT_KINDS = ['skill', 'command', 'subagent', 'hook'];
+export const ARTIFACT_KINDS = ['skill', 'command', 'subagent', 'hook', 'rules', 'plugin', 'extension'];
 
 export const MAX_DEPTH = 6;
 

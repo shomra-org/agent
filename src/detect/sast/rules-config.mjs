@@ -18,7 +18,7 @@ export const CONFIG_RULES = [
     severity: 'HIGH',
     category: 'remote-code',
     confidence: 0.8,
-    re: /"(AutoTokenizer|AutoProcessor|AutoFeatureExtractor|AutoImageProcessor)"\s*:\s*"([^"]+)"/,
+    re: /"(AutoTokenizer|AutoProcessor|AutoFeatureExtractor|AutoImageProcessor|AutoVideoProcessor)"\s*:\s*(?:"([^"]+)"|\[\s*(?:null\s*,\s*)?"([^"]+)")/,
     sink: (m) => `auto_map.${m[1]}`,
     message: 'config maps a tokenizer/processor class to repo-shipped code, executed under trust_remote_code when the tokenizer loads.',
     remediation: 'Review the referenced tokenizer code before loading; prefer a model whose tokenizer ships with transformers.',

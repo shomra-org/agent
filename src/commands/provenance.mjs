@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { git, safeRef } from '../core/git-exec.mjs';
 import path from 'node:path';
 import { api } from '../core/api-client.mjs';
 import { loadConfig, resolveSettings } from '../core/config.mjs';
@@ -6,23 +6,18 @@ import { EXIT_USAGE } from '../core/exit-codes.mjs';
 import { bold, cyan, dim, green, red, yellow } from '../core/terminal.mjs';
 
 function gitChangedPaths(root, { staged, base }) {
-  const run = (args) => {
-    try {
-      return execSync(`git ${args}`, { cwd: root, stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).toString();
-    } catch {
-      return null;
-    }
-  };
+  const run = (args) => git(args, { cwd: root });
   let out = null;
   if (staged) {
-    out = run('diff --cached --name-only --relative --diff-filter=ACM');
-  } else if (base) {
-    for (const b of [`origin/${base}`, base]) {
-      out = run(`diff --name-only --relative --diff-filter=ACM ${b}...HEAD`);
+    out = run(['diff', '--cached', '--name-only', '--relative', '--diff-filter=ACM']);
+  } else if (safeRef(base)) {
+    const ref = safeRef(base);
+    for (const b of [`origin/${ref}`, ref]) {
+      out = run(['diff', '--name-only', '--relative', '--diff-filter=ACM', `${b}...HEAD`]);
       if (out !== null) break;
     }
   }
-  if (out === null) out = run('diff HEAD~1 --name-only --relative --diff-filter=ACM');
+  if (out === null) out = run(['diff', 'HEAD~1', '--name-only', '--relative', '--diff-filter=ACM']);
   if (out === null) return null;
   return out.split('\n').map((s) => s.trim()).filter(Boolean);
 }

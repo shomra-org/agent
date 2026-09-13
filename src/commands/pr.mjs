@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { git, safeRef } from '../core/git-exec.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ARTIFACT_MATCHERS, walkArtifacts } from '../artifacts/matchers.mjs';
@@ -44,13 +44,14 @@ async function githubApi(token, method, apiPath, body) {
 }
 
 function gitChangedVsBase(root, base) {
-  const run = (args) => { try { return execSync(`git ${args}`, { cwd: root, stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).toString(); } catch { return null; } };
+  const run = (args) => git(args, { cwd: root });
   let out = null;
-  for (const b of [`origin/${base}`, base]) {
-    out = run(`diff --name-only --relative --diff-filter=ACM ${b}...HEAD`);
+  const ref = safeRef(base);
+  for (const b of ref ? [`origin/${ref}`, ref] : []) {
+    out = run(['diff', '--name-only', '--relative', '--diff-filter=ACM', `${b}...HEAD`]);
     if (out !== null) break;
   }
-  if (out === null) out = run('diff HEAD~1 --name-only --relative --diff-filter=ACM');
+  if (out === null) out = run(['diff', 'HEAD~1', '--name-only', '--relative', '--diff-filter=ACM']);
   if (out === null) return null;
   const files = out.split('\n').map((s) => s.trim()).filter(Boolean);
   return files.filter((rel) => ARTIFACT_MATCHERS.some((m) => m.re.test(rel)));
@@ -74,11 +75,7 @@ function writeWorkflow(flags) {
 }
 
 function headShaFromGit() {
-  try {
-    return execSync('git rev-parse HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
-  } catch {
-    return null;
-  }
+  return git(['rev-parse', 'HEAD'])?.trim() || null;
 }
 
 function resolvePrContext(flags) {

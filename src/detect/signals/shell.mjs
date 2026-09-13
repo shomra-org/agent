@@ -28,7 +28,7 @@ export function targetsExternalNetwork(line) {
   });
 }
 
-const RM_RF_RE = /\brm\b(?=[^\n;|&]{0,200}(?:-[a-zA-Z]*r|--recursive))(?=[^\n;|&]{0,200}(?:-[a-zA-Z]*f|--force))/i;
+const RM_RF_RE = /(?<!\b(?:docker|podman|nerdctl|kubectl|helm|conda|brew)\s{1,4})\brm\b(?=[^\n;|&]{0,200}?\s(?:-[a-zA-Z]*r[a-zA-Z]*|--recursive)(?![\w-]))(?=[^\n;|&]{0,200}?\s(?:-[a-zA-Z]*f[a-zA-Z]*|--force)(?![\w-]))/i;
 
 export function rmTargetClass(line) {
   if (/\brm\s+-{1,2}[a-zA-Z][\w-]*\s*["'`,)\]}?!](?![\w./~$*-])/.test(line)) return 'local';
@@ -106,7 +106,7 @@ export const DANGEROUS_SHELL = [
   { name: 'Force-deletes a cloud storage bucket (aws s3 rb --force)', re: /\b(aws\s+s3\s+rb|gsutil\s+(rm\s+-r|rb)|az\s+storage\s+(account|container)\s+delete)\b[^\n]{0,80}(--force|--yes|-f\b|\bs3:\/\/|\bgs:\/\/)/i, severity: 'HIGH' },
   { name: 'Force-pushes over a protected branch (rewrites shared history)', re: /\bgit\s+push\b[^\n]{0,80}(--force\b(?!-with-lease)|(?:^|\s)-f\b)[^\n]{0,60}\b(main|master|release|prod(uction)?)\b/i, severity: 'MEDIUM' },
 
-  { name: 'Recursive force delete of the filesystem root (rm -rf /, --no-preserve-root)', re: /\brm\b(?=[^\n;|&]{0,200}(?:-[a-zA-Z]*r|--recursive))(?=[^\n;|&]{0,200}(?:-[a-zA-Z]*f|--force))(?=[^\n;|&]{0,200}(?:--no-preserve-root|\s\/(?:\s|\*|$)))/i, severity: 'CRITICAL' },
+  { name: 'Recursive force delete of the filesystem root (rm -rf /, --no-preserve-root)', re: /(?<!\b(?:docker|podman|nerdctl|kubectl|helm|conda|brew)\s{1,4})\brm\b(?=[^\n;|&]{0,200}?\s(?:-[a-zA-Z]*r[a-zA-Z]*|--recursive)(?![\w-]))(?=[^\n;|&]{0,200}?\s(?:-[a-zA-Z]*f[a-zA-Z]*|--force)(?![\w-]))(?=[^\n;|&]{0,200}(?:--no-preserve-root|\s\/(?:\s|\*|$)))/i, severity: 'CRITICAL' },
   { name: 'Fork bomb (process-exhaustion DoS)', re: /(:|\b[a-z_][a-z0-9_]*)\s*\(\s*\)\s*\{\s*\1\s*[^\n}]*\|\s*\1[^\n}]*&\s*\}\s*;\s*\1/i, severity: 'HIGH' },
   { name: 'Writes over a raw disk device (data destruction)', re: /\b(dd\b[^\n]{0,80}\bof=\/dev\/[sh]d|mkfs(\.\w+)?\s+[^\n]{0,40}\/dev\/|>\s*\/dev\/[sh]d[a-z])/i, severity: 'CRITICAL' },
   { name: 'Reads the system password-hash / sudo policy file', re: /\b(cat|less|more|head|tail|strings|xxd|od|grep|awk|sed|cp|scp|tar)\b[^\n]{0,80}\/etc\/(shadow|gshadow|sudoers(\.d)?)\b/i, severity: 'HIGH' },
@@ -132,7 +132,6 @@ export const DANGEROUS_SHELL = [
   { name: 'Kills the audit / EDR agent (anti-forensics)', re: /\b(?:pkill|killall|kill)\b[^\n]{0,40}\b(?:auditd|osqueryd?|falcon-sensor|falconctl|wazuh|ossec|filebeat|splunkd|sysmon|crowdstrike|carbonblack|cbagent)\b|\bSet-MpPreference\b[^\n]{0,60}-Disable\w*\s+\$?true/i, severity: 'HIGH' },
   { name: 'Downloads and executes through a signed system binary (LOLBin)', re: /\bcertutil\b[^\n]{0,80}-urlcache\b|\bbitsadmin\b[^\n]{0,80}\/transfer\b|\bmshta\b\s+https?:\/\/|\bregsvr32\b[^\n]{0,60}\/i:\s*https?:\/\/|\brundll32\b[^\n]{0,60}\b(?:url\.dll|javascript:)|\bwmic\b[^\n]{0,60}\bprocess\s+call\s+create\b|\bmsiexec\b[^\n]{0,40}\/i\s+https?:\/\//i, severity: 'CRITICAL' },
   { name: 'PowerShell runs a base64-encoded command', re: /\bpowershell(?:\.exe)?\b[^\n]{0,80}\s-(?:e|ec|enc|encoded|encodedcommand)\b/i, severity: 'CRITICAL' },
-  // No trailing \b: socket()/Socket:: end on a non-word char (mirrors backend).
   { name: 'Interpreter opens a raw socket (reverse shell)', re: /\b(?:perl|ruby|php|python[0-9.]*|node)\b[^\n]{0,40}-(?:e|r|c)\b[^\n]{0,200}(?:\bfsockopen|\bsocket\s*\(|\bSocket::|\bSOCK_STREAM\b|\bnet\.connect|\bcreateConnection\b)/i, severity: 'CRITICAL' },
   { name: 'Netcat listener or command-execution flag', re: /\bn?c(?:at)?\b[^\n]{0,40}\s-\w*[ec]\s+\S{0,30}(?:sh|bash|cmd|powershell)\b|\bn?c(?:at)?\b[^\n]{0,20}\s-\w*l\w*\s*(?:-\w+\s*)*\d{2,5}\b/i, severity: 'HIGH' },
 ];

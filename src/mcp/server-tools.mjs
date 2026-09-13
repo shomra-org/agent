@@ -45,7 +45,7 @@ export const MCP_TOOLS = [
       properties: {
         content: { type: 'string', description: 'The full proposed file content.' },
         path: { type: 'string', description: 'The path you intend to write it to (drives which checks apply).' },
-        kind: { type: 'string', description: 'Optional artifact kind: mcp, skill, command, subagent, hook, rules, agent-card, memory.' },
+        kind: { type: 'string', description: 'Optional artifact kind: mcp, skill, command, subagent, hook, rules, agent-card, memory, plugin, tool-manifest, extension, workflow (a CI definition that runs an agent), guardrail (a guardrail / content-filter config), framework (CrewAI / ADK / AutoGen / Langflow / Flowise / Dify file).' },
       },
       required: ['content', 'path'],
     },

@@ -6,6 +6,7 @@ import { SEV_COLOR, bold, cyan, dim, green, red, yellow } from '../core/terminal
 import { localGate } from '../detect/guard-signals.mjs';
 import { mcpIndexAlert, mcpLookup, mcpLookupId, parseEnvKV, worstMcpVerdict } from '../mcp/lookup.mjs';
 import { printAlternatives } from '../models/lookup.mjs';
+import { withMcpAdvisories } from '../gate/advisories.mjs';
 
 const MAX_FINDINGS_SHOWN = 6;
 const RUNNER_NAMES = /^(npx|bunx|pnpx|uvx|uv|node|deno|bun|python3?|py|docker|podman|sh|bash|zsh|ruby|go|cargo|dotnet)$/i;
@@ -130,7 +131,7 @@ export async function cmdMcpAdd(flags, positional, configFile) {
   assertUsableArguments(name, server, tokens);
 
   const candidate = JSON.stringify({ mcpServers: { [name]: server } }, null, 2);
-  const localVerdict = localGate(candidate, { kind: 'mcp', path: '.mcp.json' });
+  const { local: localVerdict } = await withMcpAdvisories(localGate(candidate, { kind: 'mcp', path: '.mcp.json' }), { content: candidate, path: '.mcp.json', kind: 'mcp', flags });
   const index = await lookupSecurityIndex(flags, server, name);
   const verdict = worstMcpVerdict(localVerdict.verdict, mcpIndexAlert(index));
 
