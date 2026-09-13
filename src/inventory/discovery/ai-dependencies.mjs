@@ -67,11 +67,35 @@ export const VECTOR_ENV = {
   CHROMA_HOST: { engine: 'chroma', kind: 'endpoint' },
 };
 
+export const MAX_SPECS = 8;
+
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const uncommented = (text) =>
+  text
+    .split(/\r?\n/)
+    .map((l) => l.replace(/(^|[ \t])#[^\n]*$/, '$1'))
+    .join('\n');
+
+
+export function pySpecFor(text, pkg) {
+  const body = uncommented(text);
+  const name = escRe(pkg).replace(/[-_]/g, '[-_]');
+  const req = body.match(new RegExp(`(^|[^a-z0-9_.-])${name}\\s*(?:\\[[^\\]]*\\])?\\s*(===?|~=|>=|<=|!=|>|<)\\s*([\\w.*+!-]+)`, 'im'));
+  if (req) return `${req[2]}${req[3]}`;
+
+  const toml = body.match(new RegExp(`(^|\\n)\\s*["\']?${name}["\']?\\s*=\\s*(?:["\']([^"\']+)["\']|\\{[^}\\n]*version\\s*=\\s*["\']([^"\']+)["\'])`, 'i'));
+  const val = toml?.[2] ?? toml?.[3];
+  return val && val !== '*' ? val : null;
+}
+
 function npmAiDeps(pkg) {
   const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}), ...(pkg.peerDependencies || {}), ...(pkg.optionalDependencies || {}) };
   const hits = [];
-  for (const name of Object.keys(deps)) {
-    if (NPM_AI.has(name) || NPM_AI_PREFIX.some((p) => name.startsWith(p))) hits.push(name);
+  for (const [name, spec] of Object.entries(deps)) {
+    if (NPM_AI.has(name) || NPM_AI_PREFIX.some((p) => name.startsWith(p))) {
+      hits.push({ name, spec: typeof spec === 'string' ? spec : null });
+    }
   }
   return hits;
 }
@@ -79,8 +103,8 @@ function npmAiDeps(pkg) {
 function pyAiDeps(text) {
   const hits = [];
   for (const pkg of PY_AI) {
-    const re = new RegExp(`(^|[^a-z0-9_.-])${pkg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9_.-]|$)`, 'im');
-    if (re.test(text)) hits.push(pkg);
+    const re = new RegExp(`(^|[^a-z0-9_.-])${escRe(pkg)}([^a-z0-9_.-]|$)`, 'im');
+    if (re.test(text)) hits.push({ name: pkg, spec: pySpecFor(text, pkg) });
   }
   return hits;
 }
@@ -88,10 +112,12 @@ function pyAiDeps(text) {
 export function discoverAiDependencies(roots = [process.cwd()], files = null) {
   const walk = files || walkWorkspace(roots);
   const byPkg = new Map();
-  const add = (eco, pkg, manifest) => {
+  const add = (eco, pkg, manifest, spec) => {
     const key = `${eco}:${pkg}`;
-    if (!byPkg.has(key)) byPkg.set(key, { pkg, eco, manifests: new Set() });
-    byPkg.get(key).manifests.add(manifest);
+    if (!byPkg.has(key)) byPkg.set(key, { pkg, eco, manifests: new Set(), specs: new Set() });
+    const row = byPkg.get(key);
+    row.manifests.add(manifest);
+    if (spec) row.specs.add(spec);
   };
   for (const { file } of walk.manifests) {
     const base = path.basename(file);
@@ -99,18 +125,18 @@ export function discoverAiDependencies(roots = [process.cwd()], files = null) {
       const json = readJson(file);
       if (!json) continue;
 
-      for (const pkg of npmAiDeps(json)) if (!isVectorLib(pkg)) add('npm', pkg, file);
+      for (const hit of npmAiDeps(json)) if (!isVectorLib(hit.name)) add('npm', hit.name, file, hit.spec);
     } else {
       const text = readText(file, 100_000);
       if (text == null) continue;
-      for (const pkg of pyAiDeps(text)) if (!isVectorLib(pkg)) add('pip', pkg, file);
+      for (const hit of pyAiDeps(text)) if (!isVectorLib(hit.name)) add('pip', hit.name, file, hit.spec);
     }
   }
   const assets = [];
-  for (const { pkg, eco, manifests } of byPkg.values()) {
+  for (const { pkg, eco, manifests, specs } of byPkg.values()) {
     const list = [...manifests];
     assets.push({
-      type: 'AI_TOOL',
+      type: 'AI_LIBRARY',
       name: `${pkg} (${eco})`,
       identifier: `dep:${eco}:${pkg}`,
       vendor: 'ai-sdk',
@@ -118,6 +144,7 @@ export function discoverAiDependencies(roots = [process.cwd()], files = null) {
         category: 'dependency',
         ecosystem: eco,
         package: pkg,
+        specs: [...specs].slice(0, MAX_SPECS),
         usedInProjects: list.length,
         manifests: list.slice(0, 10),
       },
@@ -139,7 +166,7 @@ export function discoverAiUsageInCode(roots = [process.cwd()], files = null) {
   for (const row of rollupAiUsage(usages)) {
     const site = row.firstSite;
     assets.push({
-      type: 'AI_TOOL',
+      type: 'AI_LIBRARY',
       name: `${row.label} (in code)`,
       identifier: `ai-usage:${row.provider}`,
       vendor: 'ai-sdk',
