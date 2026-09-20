@@ -38,5 +38,5 @@ export function locate(text, needle, mask) {
   }
   if (idx < 0) return { line: undefined, codeContext: false, concealed: false };
 
-  return { line: lineAt(text, idx), codeContext: mask[idx] === 1, concealed: mask[idx] === MARK_CONCEALED };
+  return { line: lineAt(text, idx), at: idx, codeContext: mask[idx] === 1, concealed: mask[idx] === MARK_CONCEALED };
 }

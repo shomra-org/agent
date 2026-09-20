@@ -2,9 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { listProcesses } from './coding-agents.mjs';
 import { firstExisting } from './fs-read.mjs';
-import { APPDATA, HOME, LOCALAPPDATA } from './platform.mjs';
+import { ollamaVersionMeta } from './installed-versions.mjs';
+import { userDirs } from './platform.mjs';
 
-export function discoverLocalRuntimes() {
+export function discoverLocalRuntimes(opts = {}) {
+  const { HOME, APPDATA, LOCALAPPDATA, own } = userDirs(opts.home);
   const runtimes = [
     { vendor: 'ollama', name: 'Ollama', dirs: [path.join(HOME, '.ollama'), path.join(LOCALAPPDATA, 'Ollama')], modelsDir: path.join(HOME, '.ollama', 'models', 'manifests'), proc: ['ollama'] },
     { vendor: 'lmstudio', name: 'LM Studio', dirs: [path.join(HOME, '.lmstudio'), path.join(HOME, '.cache', 'lm-studio'), path.join(LOCALAPPDATA, 'LM Studio')], proc: ['lm studio', 'lmstudio', 'lms'] },
@@ -15,13 +17,14 @@ export function discoverLocalRuntimes() {
     { vendor: 'textgen', name: 'Text Generation WebUI', dirs: [], proc: ['text-generation', 'oobabooga'] },
     { vendor: 'vllm', name: 'vLLM', dirs: [], proc: ['vllm'] },
   ];
-  const procs = listProcesses();
+  const procs = own ? listProcesses() : [];
   const assets = [];
   for (const r of runtimes) {
     const at = firstExisting(r.dirs);
     const running = r.proc.some((tok) => procs.some((p) => p.includes(tok)));
     if (!at && !running) continue;
     const meta = { category: 'local-runtime', detectedAt: at || null, running };
+    if (r.vendor === 'ollama') Object.assign(meta, ollamaVersionMeta(opts.home));
     if (r.vendor === 'ollama' && r.modelsDir) meta.models = ollamaModels(r.modelsDir);
     assets.push({ type: 'AI_TOOL', name: r.name, identifier: at || `proc:${r.vendor}`, vendor: r.vendor, metadata: meta });
   }

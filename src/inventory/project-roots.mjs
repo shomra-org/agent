@@ -1,20 +1,12 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseLooseToml, stripJsonc } from './grant-extract.mjs';
+import { userDirs } from './discovery/platform.mjs';
 
-const HOME = os.homedir();
-const PLAT = process.platform;
 const MAX_ROOTS = 40;
 const MAX_WORKSPACES = 150;
 const MAX_CLAUDE_JSON = 8 * 1024 * 1024;
-
-function editorUserDir(app) {
-  if (PLAT === 'win32') return path.join(process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming'), app, 'User');
-  if (PLAT === 'darwin') return path.join(HOME, 'Library', 'Application Support', app, 'User');
-  return path.join(HOME, '.config', app, 'User');
-}
 
 function readJson(file, max) {
   try {
@@ -26,12 +18,12 @@ function readJson(file, max) {
   }
 }
 
-function claudeProjects() {
+function claudeProjects(HOME) {
   const json = readJson(path.join(HOME, '.claude.json'), MAX_CLAUDE_JSON);
   return json && typeof json.projects === 'object' && !Array.isArray(json.projects) ? Object.keys(json.projects).map((p) => ({ dir: p, at: 0 })) : [];
 }
 
-function codexProjects() {
+function codexProjects(HOME) {
   try {
     const doc = parseLooseToml(fs.readFileSync(path.join(HOME, '.codex', 'config.toml'), 'utf8'));
     return doc && typeof doc.projects === 'object' ? Object.keys(doc.projects).map((p) => ({ dir: p, at: 0 })) : [];
@@ -49,7 +41,7 @@ function folderFromUri(uri) {
   }
 }
 
-function editorWorkspaces() {
+function editorWorkspaces(editorUserDir) {
   const out = [];
   for (const app of ['Code', 'Code - Insiders', 'Cursor', 'Windsurf']) {
     const dir = path.join(editorUserDir(app), 'workspaceStorage');
@@ -75,7 +67,7 @@ function editorWorkspaces() {
   return out;
 }
 
-function isProjectDir(dir) {
+function isProjectDir(dir, HOME) {
   try {
     const resolved = path.resolve(dir);
     if (resolved === path.resolve(HOME) || resolved === path.parse(resolved).root) return false;
@@ -85,12 +77,13 @@ function isProjectDir(dir) {
   }
 }
 
-export function projectRoots(cwd = process.cwd(), extra = []) {
+export function projectRoots(cwd = process.cwd(), extra = [], opts = {}) {
+  const { HOME, vscodeUserDir } = userDirs(opts.home);
   const candidates = [
     ...extra.map((dir) => ({ dir, at: Infinity })),
-    ...editorWorkspaces(),
-    ...claudeProjects(),
-    ...codexProjects(),
+    ...editorWorkspaces(vscodeUserDir),
+    ...claudeProjects(HOME),
+    ...codexProjects(HOME),
   ];
   candidates.sort((a, b) => b.at - a.at);
   const seen = new Set([path.resolve(cwd).toLowerCase()]);
@@ -100,7 +93,7 @@ export function projectRoots(cwd = process.cwd(), extra = []) {
     const key = path.resolve(dir).toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    if (!isProjectDir(dir)) continue;
+    if (!isProjectDir(dir, HOME)) continue;
     roots.push(path.resolve(dir));
     if (roots.length >= MAX_ROOTS) break;
   }

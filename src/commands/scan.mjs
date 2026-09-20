@@ -9,6 +9,8 @@ import { VERSION } from '../core/version.mjs';
 import { discoverAgentArtifacts } from '../inventory/agent-artifacts.mjs';
 import { discoverAll } from '../inventory/discovery.mjs';
 import { unreadMcpStores } from '../inventory/discovery/mcp-servers.mjs';
+import { mergeHomeArtifacts, mergeHomeAssets } from '../inventory/multi-home.mjs';
+import { consoleUser, isPrivileged, listUserHomes, orderHomes } from '../core/user-homes.mjs';
 
 function discover(flags) {
 
@@ -21,17 +23,41 @@ function discoverArtifacts(flags) {
   return discoverAgentArtifacts(cwd);
 }
 
+function discoverAllUsers(flags) {
+  const cwd = flags.path ? path.resolve(String(flags.path)) : process.cwd();
+  const homes = listUserHomes();
+  const ordered = orderHomes(homes, consoleUser({ homes }));
+  const runs = [];
+  const unreadStores = [];
+  for (const h of ordered) {
+    const assets = discoverAll(h.invoking ? [cwd] : [], { autoExpand: !flags.path, home: h.home });
+    for (const s of unreadMcpStores()) unreadStores.push(h.invoking ? s : { ...s, osUser: h.user });
+    const found = discoverAgentArtifacts(cwd, null, { home: h.home });
+    runs.push({ ...h, assets, ...found });
+  }
+  return { assets: mergeHomeAssets(runs), ...mergeHomeArtifacts(runs), unreadStores, homes: ordered.map((h) => ({ user: h.user, home: h.home })) };
+}
+
+function discoverEverything(flags) {
+  if (flags['all-users']) return discoverAllUsers(flags);
+  const assets = discover(flags);
+  const found = discoverArtifacts(flags);
+  return { assets, ...found, unreadStores: unreadMcpStores() };
+}
+
 export async function cmdScan(flags) {
   const cfg = loadConfig();
-  const assets = discover(flags);
-  const { artifacts, capped, available } = discoverArtifacts(flags);
-  const unreadStores = unreadMcpStores();
+  if (flags['all-users'] && !flags.json && !isPrivileged()) {
+    console.error(yellow('  ⚠ ') + dim('--all-users without root/Administrator: homes of other accounts are usually unreadable and will be missed.'));
+  }
+  const { assets, artifacts, capped, available, unreadStores, homes } = discoverEverything(flags);
   
   if (flags.json && !flags.report) {
-    console.log(JSON.stringify({ machine: machineInfo(cfg), assets, artifacts, capped, available, ...(unreadStores.length ? { unreadMcpStores: unreadStores } : {}) }, null, 2));
+    console.log(JSON.stringify({ machine: machineInfo(cfg), ...(homes ? { homes } : {}), assets, artifacts, capped, available, ...(unreadStores.length ? { unreadMcpStores: unreadStores } : {}) }, null, 2));
     return;
   }
   console.log(bold(cyan('\n  Shomra')) + dim(` agent v${VERSION} - local scan`));
+  if (homes) console.log(dim(`  ${homes.length} user home(s): ${homes.map((h) => h.user).join(', ')}`));
   printAssets(assets);
   for (const s of unreadStores) {
     console.log(`  ${yellow('⚠')} ${dim(`MCP servers in ${s.file} were NOT read (${s.state === 'no-sqlite' ? 'this Node has no node:sqlite - use Node 22.5+' : s.state}) - not the same as none.`)}`);
@@ -58,7 +84,7 @@ async function sendReport(cfg, assets, flags, extra = {}) {
   process.stdout.write(dim('\n  Reporting to platform… '));
   try {
     const res = await api(url, apiKey, '/agent/report', {
-      machine: machineInfo(cfg),
+      machine: { ...machineInfo(cfg), scope: flags['all-users'] ? 'all-users' : 'user' },
       assets,
       artifacts,
 

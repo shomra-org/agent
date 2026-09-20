@@ -1,8 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { userDirs } from './discovery/platform.mjs';
 
-const HOME = os.homedir();
 const PLAT = process.platform;
 const MAX_BYTES = 256 * 1024;
 const MAX_ITEMS = 10;
@@ -30,7 +29,8 @@ function managedSettingsPath() {
   return '/etc/claude-code/managed-settings.json';
 }
 
-function sourcesFor(vendor, cwd) {
+function sourcesFor(vendor, cwd, home) {
+  const { HOME } = userDirs(home);
   switch (vendor) {
     case 'claude-code':
       return [
@@ -126,9 +126,9 @@ export function classifyPair(key, value) {
   return h ? { key, kind: proxy ? 'proxy' : 'model-endpoint', host: h.host, scheme: h.scheme } : null;
 }
 
-export function readEnvRedirects(vendor, cwd = process.cwd(), env = process.env) {
+export function readEnvRedirects(vendor, cwd = process.cwd(), env = process.env, opts = {}) {
   const out = [];
-  for (const src of sourcesFor(vendor, cwd)) {
+  for (const src of sourcesFor(vendor, cwd, opts.home)) {
     const raw = readSmall(src.file);
     if (raw == null) continue;
     for (const [k, v] of pairsOf(src.shape, raw)) {

@@ -5,7 +5,7 @@ import { citationGoverns, describesAt, insideMarkdownLinkLabel, isDescriptiveLin
 import { localScan } from './scan.mjs';
 import { NETWORK_VERBS, SENSITIVE_READ } from './sensitive.mjs';
 import { DANGEROUS_SHELL } from './shell.mjs';
-import { incidentDirectives, logicalUnits, memoryText, mentionsOnlyProhibited, negatedAround, quotedMention } from './memory-directives.mjs';
+import { incidentDirectives, logicalUnits, memoryText, mentionNotDirective, mentionsOnlyProhibited, negatedAround, quotedMention } from './memory-directives.mjs';
 
 const PERSISTENCE_MARKERS = /\b(in (all|every|future) (sessions?|conversations?|chats?|projects?)|from now on|going forward|permanently|across (all )?sessions|whenever you|forever|always remember to|never forget( to)?|for all future)\b/i;
 
@@ -55,9 +55,27 @@ export function offendingLine(sig, text) {
     if (prohibitsAt(line, at)) continue;
     if (describesAt(line, at)) continue;
     if (isRiskTableRow(line)) continue;
+    // ⚠ `rm -rf /` inside "the engine ALLOWED …" is a WRITE-UP of a payload, not
+    // one parked for later. Same gate as the platform, so the offline verdict is
+    // never the stricter of the two.
+    if (at >= 0 && mentionNotDirective(line, at, m[0].length)) continue;
     return line;
   }
   return null;
+}
+
+/** The raw line around an absolute offset, and that offset WITHIN the line. */
+function lineSpanAt(text, at) {
+  const start = text.lastIndexOf('\n', at) + 1;
+  let end = text.indexOf('\n', at);
+  if (end === -1) end = text.length;
+  return { line: text.slice(start, end), index: at - start };
+}
+
+function mentionOnly(text, at, length) {
+  if (typeof at !== 'number' || at < 0 || at >= text.length) return false;
+  const { line, index } = lineSpanAt(text, at);
+  return mentionNotDirective(line, index, length);
 }
 
 function firstDirectiveLine(units, re) {
@@ -69,6 +87,7 @@ function firstDirectiveLine(units, re) {
     if (isDescriptiveLine(stripSelfReference(line))) continue;
     if (citationGoverns(line, m.index)) continue;
     if (quotedMention(line, m.index)) continue;
+    if (mentionNotDirective(line, m.index, m[0].length)) continue;
     return line;
   }
   return null;
@@ -337,6 +356,10 @@ function reportScanFindings(text, { noun, Noun }, push, findings, seenInjection)
   for (const finding of scan.findings) {
     if (finding.category === 'injection') {
       if (seenInjection) continue;
+      // ⚠ A NOTE THAT QUOTES AN ATTACK IS NOT AN ATTACK - the same gate the
+      // platform applies, so the OFFLINE verdict is never stricter than the
+      // server's on a security team's own notes.
+      if (mentionOnly(text, finding.at, String(finding.label ?? '').length)) continue;
       push(
         'HIGH',
         `Injected instruction in ${noun}: ${finding.label}`,

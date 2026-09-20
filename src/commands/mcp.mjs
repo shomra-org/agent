@@ -74,6 +74,12 @@ export async function cmdMcpGuard(flags, positional) {
 async function cmdMcpGuardInstall(flags) {
   const { wrapMcpConfig, unwrapMcpConfig, mcpConfigCandidates } = await import('../mcp/shim.mjs');
   const undo = !!flags.uninstall;
+  const screen = flags.screen === undefined ? undefined : String(flags.screen).trim().toLowerCase();
+  if (screen !== undefined && !['backend', 'local'].includes(screen)) {
+    console.error(`  ${red('✗')} --screen must be "backend" (org policy, taint, steering - calls and results are sent to Shomra) or "local" (on-machine rules only, nothing leaves the machine).`);
+    process.exitCode = 2;
+    return;
+  }
   const files = flags.config
     ? [{ label: 'config', file: path.resolve(String(flags.config)) }]
     : mcpConfigCandidates();
@@ -94,7 +100,7 @@ async function cmdMcpGuardInstall(flags) {
       continue;
     }
     const before = JSON.stringify(cfg);
-    const out = undo ? unwrapMcpConfig(cfg, SELF_PATH) : wrapMcpConfig(cfg, SELF_PATH, process.execPath);
+    const out = undo ? unwrapMcpConfig(cfg, SELF_PATH) : wrapMcpConfig(cfg, SELF_PATH, process.execPath, { screen });
     const changed = JSON.stringify(cfg) !== before;
     if (changed) {
       try {
@@ -112,6 +118,7 @@ async function cmdMcpGuardInstall(flags) {
     if (!flags.json) {
       const names = undo ? out.restored : out.wrapped;
       if (names.length) console.log(`  ${green('✓')} ${bold(label)} ${dim('- ' + (undo ? 'restored ' : 'guarded ') + names.join(', '))}`);
+      if (!undo && out.updated?.length) console.log(`  ${green('✓')} ${bold(label)} ${dim('- screening set to ' + screen + ' for ' + out.updated.join(', '))}`);
       else console.log(`  ${yellow('•')} ${label} ${dim('- nothing to ' + (undo ? 'restore' : 'guard'))}`);
       for (const s of out.skipped ?? []) console.log(`    ${dim('· ' + s.name + ' - ' + s.why)}`);
     }
@@ -122,6 +129,8 @@ async function cmdMcpGuardInstall(flags) {
     console.log(dim('\n  Every stdio MCP server now starts through Shomra: a DENIED / REVOKED / QUARANTINED'));
     console.log(dim('  server is refused before its process exists, and poisoned tool descriptions are'));
     console.log(dim('  withheld from the model at tools/list rather than at the first call.'));
+    console.log(dim('  Tool calls and results are screened ') + bold(screen === 'local' ? 'on this machine only' : screen === 'backend' ? 'by your Shomra org' : 'by your Shomra org when enrolled, else locally') + dim(' - change with --screen backend|local,'));
+    console.log(dim('  SHOMRA_MCP_SCREEN, or "mcpScreen" in ~/.shomra/config.json.'));
     console.log(dim('  Restart the agent to pick up the change. Undo: ') + bold('shomra mcp guard --uninstall') + '\n');
   } else {
     console.log(dim('\n  Original launch lines restored. Restart the agent.\n'));

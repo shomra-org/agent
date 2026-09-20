@@ -12,6 +12,7 @@ import { cmdInstallHook } from '../commands/install-hook.mjs';
 import { cmdLedger } from '../commands/ledger.mjs';
 import { cmdLlmProxy } from '../commands/llm-proxy.mjs';
 import { cmdMcp, cmdMcpGuard } from '../commands/mcp.mjs';
+import { cmdMdmScript } from '../commands/mdm-script.mjs';
 import { cmdMemoryScan } from '../commands/memory-scan.mjs';
 import { cmdModelScan } from '../commands/model-scan.mjs';
 import { cmdModels } from '../commands/models.mjs';
@@ -23,9 +24,11 @@ import { cmdProvenance } from '../commands/provenance.mjs';
 import { cmdCampaign, cmdHarden, cmdRedteam } from '../commands/redteam.mjs';
 import { cmdRules } from '../commands/rules.mjs';
 import { cmdRun } from '../commands/run.mjs';
+import { cmdSchedule } from '../commands/schedule.mjs';
 import { cmdScanZip } from '../commands/scan-zip.mjs';
 import { cmdScan } from '../commands/scan.mjs';
 import { cmdSecrets } from '../commands/secrets.mjs';
+import { cmdSelftest } from '../commands/selftest.mjs';
 import { cmdStatus } from '../commands/status.mjs';
 import { cmdWhy } from '../commands/why.mjs';
 import { cmdPromptGuard } from '../guard/prompt-guard.mjs';
@@ -37,6 +40,8 @@ export const COMMANDS = {
   init: (f) => cmdInit(f),
   scan: (f) => cmdScan(f),
   report: (f) => cmdScan({ ...f, report: true }),
+  schedule: (f, p) => cmdSchedule(f, p),
+  'mdm-script': (f) => cmdMdmScript(f),
   gate: (f, p) => cmdGate(f, p),
   run: (f, p) => cmdRun(f, p),
   check: (f, p) => cmdCheck(f, p),
@@ -68,6 +73,7 @@ export const COMMANDS = {
   design: (f, p) => cmdDesign(f, p),
   add: (f, p) => cmdAdd(f, p),
   'install-hook': (f) => cmdInstallHook(f),
+  selftest: (f) => cmdSelftest(f),
   protect: (f) => cmdProtect(f),
   ledger: (f) => cmdLedger(f),
   doctor: (f) => cmdDoctor(f),
@@ -81,4 +87,5 @@ export const ADMIN_VERBS = new Set([
   'scan-zip', 'model-scan', 'memory-scan',
   'redteam', 'campaign', 'harden',
   'agent-identity', 'agent-id', 'llm-proxy',
+  'mdm-script',
 ]);

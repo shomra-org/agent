@@ -3,7 +3,8 @@ import path from 'node:path';
 import { loadConfig } from '../../core/config.mjs';
 import { redactLocally } from '../../detect/local-redact.mjs';
 import { readText } from './file-read.mjs';
-import { HOME, MAX_BUNDLED } from './limits.mjs';
+import { MAX_BUNDLED } from './limits.mjs';
+import { userDirs } from '../discovery/platform.mjs';
 
 export const HOOK_SCRIPT_MODES = ['full', 'hash', 'off'];
 
@@ -69,13 +70,13 @@ export function pluginRootOf(hookFile) {
   return path.dirname(hookFile);
 }
 
-export function resolveRef(ref, { hookFile, projectDir }) {
+export function resolveRef(ref, { hookFile, projectDir, home }) {
   const m = /^(\$\{?([A-Za-z_]\w*)\}?|%([A-Za-z_]\w*)%|~)([\\/].*)$/.exec(ref);
   if (m) {
     const name = (m[2] ?? m[3] ?? '').toUpperCase();
     const rest = m[4].replace(/^[\\/]/, '');
     const base =
-      m[1] === '~' || name === 'HOME' || name === 'USERPROFILE' ? HOME
+      m[1] === '~' || name === 'HOME' || name === 'USERPROFILE' ? userDirs(home).HOME
         : name === 'CLAUDE_PLUGIN_ROOT' || name === 'EXTENSIONPATH' ? pluginRootOf(hookFile)
           : /^(?:CLAUDE|GEMINI|CURSOR|QWEN)_PROJECT_DIR$|^PWD$/.test(name) ? projectDir
             : null;
@@ -87,7 +88,7 @@ export function resolveRef(ref, { hookFile, projectDir }) {
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
-export function bundleHookScripts(artifact, hookFile, { projectDir, relPath, budget, capped, mode = hookScriptMode() }) {
+export function bundleHookScripts(artifact, hookFile, { projectDir, relPath, budget, capped, mode = hookScriptMode(), home }) {
   if (mode === 'off') return;
   const refs = [...new Set(hookCommands(artifact.content).flatMap(scriptRefs))].filter((r) => SCRIPT_EXT.test(r));
   const scripts = [];
@@ -101,7 +102,7 @@ export function bundleHookScripts(artifact, hookFile, { projectDir, relPath, bud
       capped.push({ reason: 'bundle-cap', path: artifact.path });
       break;
     }
-    const target = resolveRef(ref, { hookFile, projectDir }).find((p) => readText(p) != null);
+    const target = resolveRef(ref, { hookFile, projectDir, home }).find((p) => readText(p) != null);
     if (!target || SECRET_PATH.test(target)) {
       scripts.push({ ref, state: 'missing' });
       continue;

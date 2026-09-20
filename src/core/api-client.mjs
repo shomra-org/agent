@@ -1,6 +1,8 @@
 import os from 'node:os';
-import { getMachineId, loadConfig } from './config.mjs';
+import { getMachineId, getMachineSerial, loadConfig } from './config.mjs';
+import { readMachineSerial } from './machine-serial.mjs';
 import { clampInt } from './numbers.mjs';
+import { reportUsername } from './user-homes.mjs';
 import { VERSION } from './version.mjs';
 
 export function gateMachine() {
@@ -14,12 +16,14 @@ export function gateMachine() {
 }
 
 export function machineInfo(cfg) {
+  const serial = getMachineSerial(cfg, () => readMachineSerial());
   return {
     machineId: getMachineId(cfg),
+    ...(serial ? { serial } : {}),
     hostname: os.hostname(),
     platform: process.platform,
     osRelease: os.release(),
-    username: os.userInfo().username,
+    username: reportUsername(),
     agentVersion: VERSION,
   };
 }

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { readJsonAt, readText, stripJsonComments } from './file-read.mjs';
 import { canonicalHooks } from './hooks.mjs';
-import { HOME } from './limits.mjs';
+import { userDirs } from '../discovery/platform.mjs';
 
 export { PLUGIN_MANIFEST_RE } from '../../detect/signals/manifests.mjs';
 export const MARKETPLACE_ROOT_RE = /(^|\/)plugins\/marketplaces\/[^/]+\/\.claude-plugin\/marketplace\.json$/i;
@@ -80,7 +80,8 @@ export function bundlePluginComponents(artifact, absManifest, toRel, budget, cap
   artifact.metadata.bundledCount = artifact.files.length;
 }
 
-export function installedPluginManifests(claudeDir) {
+export function installedPluginManifests(claudeDir, home) {
+  const { HOME } = userDirs(home);
   const doc = readJsonAt(path.join(claudeDir, 'plugins', 'installed_plugins.json'));
   if (!doc || typeof doc !== 'object') return [];
   const out = [];

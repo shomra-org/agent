@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { SHOMRA_ANY_HOOK_RE, shomraHookRe } from './hook-command.mjs';
 
-function agentHookFiles(agent) {
+/** Every settings file a vendor's hook could be installed in - user scope first, then this repo. */
+export function agentHookFiles(agent) {
   const home = os.homedir();
   const cwd = process.cwd();
   switch (agent) {

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { exists, readJson, readText } from './fs-read.mjs';
-import { HOME } from './platform.mjs';
+import { userDirs } from './platform.mjs';
 
 /**
  * WHAT THIS MACHINE IS LOGGED INTO.
@@ -114,7 +114,7 @@ const asset = (name, vendor, identifier, metadata) => ({
  * Azure. `azureProfile.json` names every subscription the CLI is logged into
  * AND the principal it authenticated as - `user` or `servicePrincipal`.
  */
-function azure() {
+function azure(HOME) {
   const file = path.join(HOME, '.azure', 'azureProfile.json');
   if (!exists(file)) return [];
   const profile = readJson(file);
@@ -138,7 +138,7 @@ function azure() {
 }
 
 /** AWS. Profiles, the account/role they assume, and whether a static key sits here. */
-function aws() {
+function aws(HOME) {
   const cfgFile = path.join(HOME, '.aws', 'config');
   const credFile = path.join(HOME, '.aws', 'credentials');
   if (!exists(cfgFile) && !exists(credFile)) return [];
@@ -171,7 +171,7 @@ function aws() {
 }
 
 /** Google Cloud. The active account and project out of the config file. */
-function gcp() {
+function gcp(HOME) {
   const file = path.join(HOME, '.config', 'gcloud', 'configurations', 'config_default');
   if (!exists(file)) return [];
   const ini = parseIni(readText(file) ?? '');
@@ -196,7 +196,7 @@ function gcp() {
  * Kubernetes. The CURRENT context is the one a bare `kubectl` acts on, which is
  * the only one an agent reaches without naming anything.
  */
-function kubernetes() {
+function kubernetes(HOME) {
   const file = path.join(HOME, '.kube', 'config');
   if (!exists(file)) return [];
   const y = shallowYaml(readText(file) ?? '');
@@ -215,7 +215,7 @@ function kubernetes() {
 }
 
 /** GitHub CLI. The user it is logged in as; never the token. */
-function github() {
+function github(HOME) {
   const file = path.join(HOME, '.config', 'gh', 'hosts.yml');
   if (!exists(file)) return [];
   const y = shallowYaml(readText(file) ?? '');
@@ -237,7 +237,7 @@ function github() {
  * it authenticates with credentials that are usually NOT the ones `az` or `aws`
  * hold - so an estate that governs those two still has this one open.
  */
-function terraform() {
+function terraform(HOME) {
   const rc = [path.join(HOME, '.terraformrc'), path.join(HOME, 'terraform.rc')].find(exists);
   const tfc = path.join(HOME, '.terraform.d', 'credentials.tfrc.json');
   const out = [];
@@ -252,7 +252,7 @@ function terraform() {
 }
 
 /** Docker/OCI registries this host can push to. Registry NAMES, never the auth blob. */
-function docker() {
+function docker(HOME) {
   const file = path.join(HOME, '.docker', 'config.json');
   if (!exists(file)) return [];
   const j = readJson(file);
@@ -268,7 +268,7 @@ function docker() {
  * ⚠ An agent that can publish is an agent that can ship code to everyone who
  * installs it. It is inventory for the same reason the cloud entries are.
  */
-function packageRegistries() {
+function packageRegistries(HOME) {
   const out = [];
   const npmrc = path.join(HOME, '.npmrc');
   if (exists(npmrc)) {
@@ -297,7 +297,7 @@ function packageRegistries() {
  * one place in this file where a naive read would put a production database
  * password into a payload.
  */
-function databases() {
+function databases(HOME) {
   const out = [];
   const pgpass = path.join(HOME, '.pgpass');
   if (exists(pgpass)) {
@@ -332,7 +332,7 @@ function databases() {
  * with no passphrase cannot be told from one with a passphrase without reading
  * it - so this reports that a key exists and nothing more.
  */
-function ssh() {
+function ssh(HOME) {
   const dir = path.join(HOME, '.ssh');
   if (!exists(dir)) return [];
   const hosts = [];
@@ -360,7 +360,7 @@ function ssh() {
  * key to every other key - and it is the one entry whose blast radius does not
  * shrink when you tidy up the others.
  */
-function brokers() {
+function brokers(HOME) {
   const out = [];
   const vault = path.join(HOME, '.vault-token');
   if (exists(vault)) out.push(asset('HashiCorp Vault', 'vault', vault, { provider: 'broker', principal: null, hasStaticKey: true }));
@@ -374,7 +374,7 @@ function brokers() {
 }
 
 /** The rest, all the same shape: a config file naming an account. */
-function otherClouds() {
+function otherClouds(HOME) {
   const out = [];
   const simple = [
     { name: 'Databricks', vendor: 'databricks', file: path.join(HOME, '.databrickscfg'), provider: 'databricks' },
@@ -420,7 +420,7 @@ function otherClouds() {
 const ENV_CRED_NAMES =
   /\b(AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|AWS_PROFILE|AZURE_CLIENT_ID|AZURE_CLIENT_SECRET|AZURE_TENANT_ID|GOOGLE_APPLICATION_CREDENTIALS|GCLOUD_PROJECT|KUBECONFIG|VAULT_TOKEN|DATABRICKS_TOKEN|SNOWFLAKE_ACCOUNT|DIGITALOCEAN_ACCESS_TOKEN|GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN|DOCKER_PASSWORD)\b/g;
 
-function envAuth() {
+function envAuth(HOME, own = true) {
   const names = new Set();
   for (const f of ['.bashrc', '.bash_profile', '.zshrc', '.profile', '.zprofile'].map((n) => path.join(HOME, n))) {
     if (!exists(f)) continue;
@@ -428,7 +428,7 @@ function envAuth() {
   }
   // The live process env is the other half - a variable set by whatever launched
   // this scan, which no profile file records.
-  for (const k of Object.keys(process.env)) {
+  for (const k of own ? Object.keys(process.env) : []) {
     ENV_CRED_NAMES.lastIndex = 0;
     if (ENV_CRED_NAMES.test(k)) names.add(k);
   }
@@ -451,21 +451,22 @@ function envAuth() {
  * role or a mounted service-account token writes no config and appears nowhere
  * here - the collector reports what it read, and the surface says so.
  */
-export function discoverCloudClis() {
+export function discoverCloudClis(opts = {}) {
+  const { HOME, own } = userDirs(opts.home);
   return [
-    ...azure(),
-    ...aws(),
-    ...gcp(),
-    ...kubernetes(),
-    ...github(),
-    ...terraform(),
-    ...docker(),
-    ...packageRegistries(),
-    ...databases(),
-    ...ssh(),
-    ...brokers(),
-    ...otherClouds(),
-    ...envAuth(),
+    ...azure(HOME),
+    ...aws(HOME),
+    ...gcp(HOME),
+    ...kubernetes(HOME),
+    ...github(HOME),
+    ...terraform(HOME),
+    ...docker(HOME),
+    ...packageRegistries(HOME),
+    ...databases(HOME),
+    ...ssh(HOME),
+    ...brokers(HOME),
+    ...otherClouds(HOME),
+    ...envAuth(HOME, own),
   ];
 }
 

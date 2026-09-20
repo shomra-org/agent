@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isAiUsageScannable } from '../../detect/ai-usage.mjs';
 import { exists } from './fs-read.mjs';
-import { HOME } from './platform.mjs';
+import { userDirs } from './platform.mjs';
 
 const IGNORE_DIRS = new Set([
   'node_modules', '.git', '.hg', '.svn', 'dist', 'build', 'out', '.next', '.nuxt',
@@ -12,7 +12,7 @@ const IGNORE_DIRS = new Set([
   '.svelte-kit', 'bower_components', '.pnpm-store', 'site-packages', '.yarn',
 ]);
 
-function workspaceParents() {
+function workspaceParents(HOME) {
   const names = [
     'Desktop', 'Documents', 'source', 'source/repos', 'repos', 'Repos',
     'projects', 'Projects', 'dev', 'Dev', 'Developer', 'git', 'Git', 'code',
@@ -22,12 +22,13 @@ function workspaceParents() {
   return names.map((n) => path.join(HOME, n)).filter(exists);
 }
 
-export function resolveRoots(roots, autoExpand) {
+export function resolveRoots(roots, autoExpand, home) {
+  const { HOME } = userDirs(home);
   const out = new Set();
   for (const r of roots || []) if (r) out.add(path.resolve(r));
   if (autoExpand) {
     out.add(HOME);
-    for (const parent of workspaceParents()) {
+    for (const parent of workspaceParents(HOME)) {
       out.add(parent);
       try {
         for (const e of fs.readdirSync(parent, { withFileTypes: true })) {

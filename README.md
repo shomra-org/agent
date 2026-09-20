@@ -51,6 +51,7 @@ shomra fix .mcp.json --apply           # AI-fix one artifact and write it back
 shomra why .mcp.json                   # why each finding matters + is-it-a-false-positive
 shomra install-precommit               # block risky staged AI artifacts on git commit
 shomra install-hook --agent claude     # wire the runtime firewall into Claude Code
+shomra selftest --agent all            # prove the firewall is really in path on THIS machine
 shomra rules --write                   # teach the agent what gets blocked, so it never writes it
 shomra mcp install                     # let the agent gate its own content BEFORE writing it
 shomra scan                            # discover AI tooling on this machine
@@ -287,6 +288,39 @@ Three channels are screened:
 | **Prompt** | `UserPromptSubmit` (Claude Code) / `beforeSubmitPrompt` (Cursor) | what **you** paste, before it leaves the machine |
 | **Plan** | `PreToolUse` on `ExitPlanMode` (Claude Code) | nothing - it *informs*. See [`shomra plan`](#shomra-plan--threat-model-what-the-agent-is-about-to-build) |
 
+### Proving it is actually in path - `shomra selftest`
+
+An installed hook is not a covered one. The matcher in a settings file decides
+whether the hook runs at all, and a tool it does not name is never screened - not
+locally, not by the server. That gap is invisible from a server: a machine whose
+hook never fires and a machine whose agents are idle report exactly the same
+thing, which is nothing.
+
+```bash
+shomra selftest --agent all            # static + live, exits non-zero on any hole
+shomra selftest --json                 # the same reading, machine-readable
+shomra selftest --strict               # also non-zero on a warning
+```
+
+It does two things no simulation can:
+
+1. **Reads each installed agent's own settings** and reports every tool name that
+   vendor uses for shell, writes, edits, patches and MCP calls that the matcher
+   does **not** cover - with the command that widens it. A hook pointing at a
+   binary that is not on the machine is reported too: the agent logs a spawn
+   error nobody reads and runs the call.
+2. **Drives the real installed hook** with inert canaries in each vendor's own
+   wire shape - a shell install, a Dockerfile write, a `package.json` edit, a
+   Codex `apply_patch`, an MCP call - spawned exactly the way the vendor spawns
+   it, with the payload on stdin. Nothing is ever executed; the canaries name a
+   package that does not exist and write inside a throwaway directory.
+
+Each canary is then read against the org's live rules: escalated and answered,
+or decided locally *because the org has no rule of that type* (which is the
+correct answer, and is reported as one), or **porous** - the call reached no
+screen at all. When the machine is enrolled the result is reported to the org, so
+fleet coverage is a measured number rather than an install count.
+
 The prompt channel is the one a person controls, and the only one where the leak
 is a paste rather than a tool call. A live credential in a prompt is refused;
 pasted text that reads as an instruction to an agent is passed through but
@@ -472,6 +506,25 @@ content on disk costs a blocked tool call and a wasted turn. `shomra_rules`,
 `shomra_check`, `shomra_explain`, `shomra_fix` and `shomra_scan_models` are
 exposed too. `shomra mcp serve` runs the server directly (stdio JSON-RPC) if you
 prefer to wire it by hand.
+
+**`shomra mcp guard`** goes the other way: it rewrites your agents' MCP configs so
+every local (stdio) server launches behind a Shomra shim. The shim sits between
+the agent and the server and judges each tool call before it reaches the server
+and each result before it reaches the model. `--uninstall` puts the original
+launch lines back.
+
+```bash
+shomra mcp guard                     # wrap every stdio server; screening follows enrolment
+shomra mcp guard --screen backend    # each call/result goes to Shomra: tool policy, taint, steering, org policies
+shomra mcp guard --screen local      # on-machine rules only - no tool arguments or results leave the machine
+```
+
+The mode is read in this order: `--screen` on the wrapped launch line,
+`SHOMRA_MCP_SCREEN`, `mcpScreen` in `~/.shomra/config.json`, then the default:
+`backend` when the machine is enrolled, `local` when it is not. An unknown value
+is refused rather than guessed. `local` is a weaker tier you choose on purpose -
+no tool policy, taint or steering. In `backend` mode an unreachable backend falls
+back to the local rules; set `SHOMRA_GUARD_STRICT=1` to refuse instead.
 
 ## Adopting Shomra on an existing repo
 

@@ -1,13 +1,13 @@
 import path from 'node:path';
-import { HOME } from './limits.mjs';
+import { userDirs } from '../discovery/platform.mjs';
 import { EXTENSIONS_DIR_NAME, claudeDesktopDataDir } from './extensions.mjs';
 
 const PLAT = process.platform;
-const APPDATA = process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming');
-const XDG = PLAT === 'win32' ? APPDATA : path.join(HOME, '.config');
 const CLAUDE_MANAGED = PLAT === 'win32' ? 'C:\\Program Files\\ClaudeCode' : PLAT === 'darwin' ? '/Library/Application Support/ClaudeCode' : '/etc/claude-code';
 
-export function rulesRoots() {
+export function rulesRoots(home) {
+  const { HOME, APPDATA } = userDirs(home);
+  const XDG = PLAT === 'win32' ? APPDATA : path.join(HOME, '.config');
   return [
     { vendor: 'claude-code', scope: 'user', dir: CLAUDE_MANAGED, managed: true },
     { vendor: 'qwen-code', scope: 'user', dir: path.join(HOME, '.qwen') },
@@ -36,9 +36,10 @@ export function projectVendorRoots(cwd = process.cwd()) {
   ];
 }
 
-export function artifactRoots(cwd = process.cwd()) {
+export function artifactRoots(cwd = process.cwd(), home) {
+  const { HOME } = userDirs(home);
   return [
-    ...rulesRoots(),
+    ...rulesRoots(home),
     ...projectVendorRoots(cwd),
     { vendor: 'claude-code', scope: 'user', dir: path.join(HOME, '.claude') },
     { vendor: 'claude-code', scope: 'project', dir: path.join(cwd, '.claude') },
@@ -55,6 +56,6 @@ export function artifactRoots(cwd = process.cwd()) {
 
     { vendor: 'copilot', scope: 'user', dir: path.join(HOME, '.copilot') },
     { vendor: 'copilot', scope: 'project', dir: path.join(cwd, '.github') },
-    { vendor: 'claude-desktop', scope: 'user', dir: path.join(claudeDesktopDataDir(), EXTENSIONS_DIR_NAME) },
+    { vendor: 'claude-desktop', scope: 'user', dir: path.join(claudeDesktopDataDir(PLAT, home), EXTENSIONS_DIR_NAME) },
   ];
 }

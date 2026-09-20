@@ -36,10 +36,19 @@ export function isCleartextRemote(url        )          {
   return !!m && !LOCAL_HOST_RE.test(m[1]);
 }
 
+function tryJson(t        )                  {
+  try {
+    return JSON.parse(t);
+  } catch {
+    return undefined;
+  }
+}
+
 function parseDoc(path        , text        )      {
   const t = text.replace(/^﻿/, '');
   if (/\.json$/i.test(path) || /^\s*[{[]/.test(t)) {
-    try { return JSON.parse(t); } catch {  }
+    const parsed = tryJson(t);
+    if (parsed !== undefined) return parsed;
   }
   if (/\.(ya?ml|json)$/i.test(path)) return parseYaml(t);
   return null;

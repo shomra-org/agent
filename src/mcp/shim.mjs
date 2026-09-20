@@ -9,6 +9,8 @@ import { spawnGuardedServer } from './child-process.mjs';
 import { reportListing, requestConnectVerdict } from './connect-gate.mjs';
 import { createLineFramer, refusal, sendBlockedInitialize, writeMessage } from './jsonrpc.mjs';
 import { LISTING_KEY, RESULT_METHODS, screenListing, screenResult, screenToolCallArguments } from './screening.mjs';
+import { resolveAgentIdentityHandle } from '../commands/agent-identity.mjs';
+import { resolveScreenMode, screenCallRemote, screenResultRemote, shimSessionId } from './backend-screen.mjs';
 
 export { mcpConfigCandidates, unwrapMcpConfig, wrapMcpConfig } from './config-wrapping.mjs';
 
@@ -86,33 +88,91 @@ function launchServer(name, command, args) {
 function trackableMethod(message) {
   return message.method
     && 'id' in message
-    && (LISTING_KEY[message.method] || RESULT_METHODS.has(message.method));
+    && (LISTING_KEY[message.method] || RESULT_METHODS.has(message.method) || message.method === 'tools/call');
 }
 
-function createClientFilter({ child, pending, server }) {
-  return createLineFramer((message, line) => {
+/**
+ * ⚠ ONE MESSAGE AT A TIME, IN ORDER. A backend screen is async; handling the next
+ * line while the previous one waits would let a later message overtake a refused
+ * one, or a result arrive before the call it answers was judged.
+ */
+function serial(handler, onError) {
+  let chain = Promise.resolve();
+  return (message, line) => {
+    chain = chain
+      .then(() => handler(message, line))
+      .catch((error) => {
+        note(`mcp-guard: screening error (${error?.message ?? error}).`);
+        onError(message, line);
+      });
+  };
+}
+
+/**
+ * ⚠ A SCREEN THAT THREW NEVER PASSES THE MESSAGE UNREAD, AND NEVER SWALLOWS IT.
+ * A request gets an explicit refusal (the client is waiting on that id and would
+ * hang); a notification, which nobody waits on, is passed through.
+ */
+function refuseUnscreened(server, write) {
+  return (message, line) => {
+    if (message && 'id' in message) {
+      writeMessage(refusal(message.id, 'Shomra could not screen this message, so it was not passed on.', { source: 'shomra-mcp-shim', server, refusedBy: 'error' }));
+    } else {
+      write(line);
+    }
+  };
+}
+
+/**
+ * Judge one tool call or result: the backend in `backend` mode, the local rules in
+ * `local` mode or when the backend cannot answer. Returns { blocked, label, via }.
+ */
+async function judgeItem({ ctx, remote, local }) {
+  if (ctx.mode === 'backend') {
+    const d = await remote();
+    if (!d.unreachable) {
+      const label = d.held ? `held for approval${d.approvalId ? ` (${d.approvalId})` : ''}` : d.reason || 'refused by org policy';
+      return { blocked: d.blocked, label, via: 'backend' };
+    }
+    if (ctx.strict) return { blocked: true, label: `Shomra could not be reached (${d.unreachable}); refused by fail-closed policy`, via: 'strict' };
+    note(`mcp-guard: backend unreachable (${d.unreachable}) - judged by local rules only.`);
+  }
+  const screen = local();
+  return { blocked: screen.blocked, label: screen.label, via: 'local' };
+}
+
+function createClientFilter({ child, pending, server, ctx }) {
+  return createLineFramer(serial(async (message, line) => {
     if (!message) {
       child.stdin.write(`${line}\n`);
       return;
     }
     if (trackableMethod(message)) {
       if (pending.size >= MAX_PENDING_REQUESTS) pending.clear();
-      pending.set(JSON.stringify(message.id), message.method);
+      pending.set(JSON.stringify(message.id), { method: message.method, tool: message.params?.name, args: message.params?.arguments });
     }
     if (message.method === 'tools/call' && 'id' in message) {
-      const screen = screenToolCallArguments(message.params?.arguments);
-      if (screen.blocked) {
-        writeMessage(refusal(message.id, `Refused on-machine by Shomra: ${screen.label}.`, {
+      const tool = message.params?.name;
+      const args = message.params?.arguments;
+      const verdict = await judgeItem({
+        ctx,
+        remote: () => screenCallRemote({ settings: ctx.settings, server, tool, args, sessionId: ctx.sessionId, agentId: ctx.agentId }),
+        local: () => screenToolCallArguments(args),
+      });
+      if (verdict.blocked) {
+        pending.delete(JSON.stringify(message.id));
+        writeMessage(refusal(message.id, `Refused by Shomra (${verdict.via}): ${verdict.label}.`, {
           source: 'shomra-mcp-shim',
           server,
-          tool: message.params?.name,
+          tool,
           refusedBy: 'policy',
+          screenedBy: verdict.via,
         }));
         return;
       }
     }
     child.stdin.write(`${line}\n`);
-  });
+  }, refuseUnscreened(server, (l) => child.stdin.write(`${l}\n`))));
 }
 
 function listingTelemetry({ settings, server, agent, withheld, total }) {
@@ -127,17 +187,26 @@ function listingTelemetry({ settings, server, agent, withheld, total }) {
   });
 }
 
-function forwardResultMethod({ message, line, method, server }) {
-  const screen = screenResult(message.result);
-  if (!screen.blocked) {
+async function forwardResultMethod({ message, line, entry, server, ctx }) {
+  const { method } = entry;
+  // ⚠ tools/call results are the injection channel that matters most, and they were
+  // never screened here - only resources/read, prompts/get and completions were.
+  const verdict = method === 'tools/call'
+    ? await judgeItem({
+      ctx,
+      remote: () => screenResultRemote({ settings: ctx.settings, server, tool: entry.tool, args: entry.args, result: message.result, sessionId: ctx.sessionId, agentId: ctx.agentId }),
+      local: () => screenResult(message.result),
+    })
+    : { ...screenResult(message.result), via: 'local' };
+  if (!verdict.blocked) {
     process.stdout.write(`${line}\n`);
     return;
   }
-  note(`withheld a poisoned ${method} result from "${server}": ${screen.label}`);
+  note(`withheld a ${method} result from "${server}" (${verdict.via}): ${verdict.label}`);
   writeMessage(refusal(
     message.id,
-    `Shomra withheld this ${method} result: ${screen.label}. The content was not read into context - do not act on it.`,
-    { source: 'shomra-mcp-shim', server, method, refusedBy: 'content' },
+    `Shomra withheld this ${method} result: ${verdict.label}. The content was not read into context - do not act on it.`,
+    { source: 'shomra-mcp-shim', server, method, refusedBy: 'content', screenedBy: verdict.via },
   ));
 }
 
@@ -155,23 +224,24 @@ function forwardListing({ message, method, server, deniedTools, settings, agent 
   writeMessage({ ...message, result: screened.result });
 }
 
-function createServerFilter({ pending, server, deniedTools, settings, agent }) {
-  return createLineFramer((message, line) => {
+function createServerFilter({ pending, server, deniedTools, settings, agent, ctx }) {
+  return createLineFramer(serial(async (message, line) => {
     if (!message) {
       process.stdout.write(`${line}\n`);
       return;
     }
     const key = 'id' in message ? JSON.stringify(message.id) : null;
-    const method = key ? pending.get(key) : null;
-    if (!method || !message.result) {
+    const entry = key ? pending.get(key) : null;
+    if (!entry || !message.result) {
+      if (key) pending.delete(key);
       process.stdout.write(`${line}\n`);
       return;
     }
     pending.delete(key);
 
-    if (RESULT_METHODS.has(method)) forwardResultMethod({ message, line, method, server });
-    else forwardListing({ message, method, server, deniedTools, settings, agent });
-  });
+    if (RESULT_METHODS.has(entry.method) || entry.method === 'tools/call') await forwardResultMethod({ message, line, entry, server, ctx });
+    else forwardListing({ message, method: entry.method, server, deniedTools, settings, agent });
+  }, refuseUnscreened(server, (l) => process.stdout.write(`${l}\n`))));
 }
 
 export async function runMcpShim(flags, positional) {
@@ -182,8 +252,38 @@ export async function runMcpShim(flags, positional) {
   }
 
   const strict = envFlag('SHOMRA_GUARD_STRICT');
-  const settings = resolveSettings(loadConfig());
+  const config = loadConfig();
+  const settings = resolveSettings(config);
   const agent = flags.agent ? String(flags.agent) : undefined;
+
+  const screening = resolveScreenMode({
+    flag: flags.screen,
+    env: process.env.SHOMRA_MCP_SCREEN,
+    config: config?.mcpScreen,
+    enrolled: !!(settings.apiKey && settings.url),
+  });
+  if (screening.error) {
+    sendBlockedInitialize(`Shomra refused to start "${name}": ${screening.error}`, name);
+    note(screening.error);
+    process.exit(0);
+  }
+  if (screening.mode === 'backend' && !(settings.apiKey && settings.url)) {
+    const why = 'screening mode "backend" needs this machine enrolled - run: shomra init --key shm_… --url <backend>';
+    if (strict) {
+      sendBlockedInitialize(`Shomra refused to start "${name}": ${why}`, name);
+      process.exit(0);
+    }
+    note(`mcp-guard: ${why}; judging "${name}" by local rules only.`);
+    screening.mode = 'local';
+  }
+  const ctx = {
+    mode: screening.mode,
+    strict,
+    settings,
+    sessionId: shimSessionId(name),
+    agentId: resolveAgentIdentityHandle(flags),
+  };
+  if (process.env.SHOMRA_DEBUG) note(`mcp-guard: "${name}" screening=${ctx.mode} (from ${screening.source})`);
 
   const verdict = await resolveConnectVerdict({ name, command, args, flags, settings, strict });
   enforceConnectVerdict(verdict, name);
@@ -197,8 +297,8 @@ export async function runMcpShim(flags, positional) {
   child.on('exit', (code) => process.exit(code ?? 0));
 
   const pending = new Map();
-  process.stdin.on('data', createClientFilter({ child, pending, server: name }));
-  child.stdout.on('data', createServerFilter({ pending, server: name, deniedTools, settings, agent }));
+  process.stdin.on('data', createClientFilter({ child, pending, server: name, ctx }));
+  child.stdout.on('data', createServerFilter({ pending, server: name, deniedTools, settings, agent, ctx }));
   process.stdin.on('end', () => child.stdin.end());
 
   await new Promise(() => {});

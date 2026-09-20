@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { readText } from './file-read.mjs';
-import { HOME } from './limits.mjs';
+import { userDirs } from '../discovery/platform.mjs';
 
 const MAX_SOURCE_FILES = 20;
 const MAX_SOURCE_BYTES = 200_000;
@@ -11,9 +11,10 @@ const SKIP_DIRS = new Set(['node_modules', '.venv', 'venv', 'site-packages', '__
 
 export const EXTENSIONS_DIR_NAME = 'Claude Extensions';
 
-export function claudeDesktopDataDir(platform = process.platform) {
+export function claudeDesktopDataDir(platform = process.platform, home) {
+  const { HOME, APPDATA } = userDirs(home);
   if (platform === 'darwin') return path.join(HOME, 'Library', 'Application Support', 'Claude');
-  if (platform === 'win32') return path.join(process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming'), 'Claude');
+  if (platform === 'win32') return path.join(APPDATA, 'Claude');
   return path.join(HOME, '.config', 'Claude');
 }
 

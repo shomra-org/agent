@@ -6,17 +6,20 @@ import { isMemoryPath, reportMemoryWrite } from '../commands/memory-scan.mjs';
 import { breakerOpen, breakerReset, breakerTrip, guardTimeoutMs } from '../core/circuit-breaker.mjs';
 import { CONFIG_DIR } from '../core/config.mjs';
 import { makeLedgerStore } from './ledger.mjs';
-import { memoryWritesFor, outOfBandChange, recordLedger, sha256 } from './memory-write.mjs';
+import { MAX_POST_CONTENT, memoryWritesFor, outOfBandChange, postEditContents, recordLedger, sha256 } from './memory-write.mjs';
+import { readSubjectTypes, rememberSubjectTypes, subjectBearingPath, subjectEscalation } from './subject-preclassify.mjs';
+import { artifactKindFor } from './artifact-paths.mjs';
 import { gateMachine } from '../core/api-client.mjs';
 import { VERSION } from '../core/version.mjs';
 import { loadConfig, resolveSettings } from '../core/config.mjs';
 import { classifyConsequence, downrankCodeContext, grade, localScan } from '../detect/guard-signals.mjs';
-import { WRITE_TOOLS, guardNeedsServer, guardTargetPath, guardText } from './classify.mjs';
+import { WRITE_TOOLS, callSubjectTypes, guardNeedsServer, guardTargetPath, guardText } from './classify.mjs';
 import { emitGuardAsk, emitGuardDeny } from './emit.mjs';
 import { guardPathAllowlisted } from './ignore.mjs';
 import { screenModelLoad } from './model-load.mjs';
 import { normalizeGuardInput } from './normalize.mjs';
 import { envFlag, resolveAgentFlag } from './options.mjs';
+import { recordSelftest, selftestField } from './selftest-marker.mjs';
 import { buildGuardBody, reportGuardDecision } from './report.mjs';
 
 const ALLOW_VERDICT = { verdict: 'ALLOW', top: null, findings: [] };
@@ -232,6 +235,31 @@ function enforceServerDecision(agent, decision) {
   }
 }
 
+/** ⚠ Bounded BEFORE the read: a 2 GB file named by an Edit must not be pulled into memory to be refused. */
+function boundedRead(p) {
+  if (fs.statSync(p).size > MAX_POST_CONTENT) throw new Error('too large to send');
+  return fs.readFileSync(p, 'utf8');
+}
+
+/**
+ * The post-edit file of every governed path this call edits - see
+ * `postEditContents`. ⚠ Built only for a call that is being escalated, never
+ * on the local-only path, and never allowed to fail the call: a reconstruction
+ * that throws sends nothing and the server grades the fragment as a fragment.
+ */
+export function postContentField(tool, input, normalized, read = boundedRead) {
+  try {
+    const post = postEditContents(tool, input, {
+      cwd: normalized?.cwd,
+      read,
+      keep: (p) => subjectBearingPath(p) || !!artifactKindFor(String(p ?? '').replace(/\\/g, '/')),
+    });
+    return post.length ? { post_content: post } : {};
+  } catch {
+    return {};
+  }
+}
+
 export async function cmdToolGuard(flags) {
   const agent = resolveAgentFlag(flags);
   const agentId = resolveAgentIdentityHandle(flags);
@@ -245,6 +273,7 @@ export async function cmdToolGuard(flags) {
 
   const local = localTierDisabled() ? ALLOW_VERDICT : screenLocally(normalized, tool, input);
   if (local.verdict === 'BLOCK') {
+    recordSelftest({ stage: 'local-block', tool, reason: local.top?.label ?? 'dangerous tool call' });
     await reportGuardDecision(url, apiKey, agentId, buildGuardBody(normalized, agent, 'BLOCK', local.top?.label));
     emitGuardDeny(agent, `Blocked on-machine by Shomra: ${local.top?.label || 'dangerous tool call'}.`);
   }
@@ -252,6 +281,7 @@ export async function cmdToolGuard(flags) {
   await screenModelLoad(agent, tool, input, url);
 
   if (!apiKey) {
+    recordSelftest({ stage: 'not-configured', tool });
     if (strict) {
       emitGuardDeny(agent, 'Shomra is not configured on this machine (SHOMRA_GUARD_STRICT). Run: shomra init --key shm_…');
     }
@@ -263,14 +293,31 @@ export async function cmdToolGuard(flags) {
 
 
   const severe = unscreenedSevere(normalized, tool, input);
-  const escalate = alwaysEscalate || severe || local.verdict === 'FLAG' || guardNeedsServer(tool, input, !!agentId);
+  /**
+   * ⚠ The org's subject types come from the server's last answer, cached on
+   * disk - reading them costs no round trip. Unknown (no answer yet, stale, an
+   * older server) escalates every subject-bearing call: see `subject-preclassify`.
+   */
+  const subjectTypes = readSubjectTypes({ url });
+  const subjectCall = subjectEscalation(callSubjectTypes(tool, input, { cwd: normalized.cwd }), subjectTypes);
+  const escalate = alwaysEscalate || severe || local.verdict === 'FLAG' || subjectCall || guardNeedsServer(tool, input, !!agentId, { subjectTypes, cwd: normalized.cwd });
   if (!escalate) {
+    recordSelftest({ stage: 'not-escalated', tool, subjectTypes, reason: 'the local tier decided this call alone - the server never saw it' });
     countUnscreened('not escalated - screened by the local tier only');
     process.exit(0);
   }
 
+  /**
+   * ⚠ A SUBJECT CALL FOLLOWS THE MACHINE'S FAIL MODE, and says so. There is no
+   * org-level fail mode: `SHOMRA_GUARD_STRICT` is the setting. Strict skips the
+   * breaker and DENIES when the server cannot answer (`requestServerDecision`);
+   * the default fails open - and the ledger records that an org subject rule
+   * was NOT evaluated, distinct from an ordinary unscreened call, so a breaker
+   * window of unchecked installs is visible on the server once it answers.
+   */
   const onUnreachable = (why) => {
-    countUnscreened(why);
+    recordSelftest({ stage: 'unreachable', tool, reason: why });
+    countUnscreened(subjectCall ? `${why} - org subject rules NOT evaluated` : why);
     if (severe) askUnscreened(agent, why);
     return process.exit(0);
   };
@@ -278,6 +325,16 @@ export async function cmdToolGuard(flags) {
   if (!strict && breakerOpen()) onUnreachable('the guard is in its backoff window after an earlier failure');
 
   const flagged = local.verdict === 'FLAG';
+  const post = postContentField(tool, input, normalized);
+  /**
+   * ⚠ A SELF-TEST CANARY CARRIES NO LEDGER. The envelope is ACKNOWLEDGED the
+   * moment the server answers, and a canary is answered by the simulator, which
+   * records nothing - so sending it would retire a real fail-open window that
+   * nobody ever stored. The self-test proves the path; it must not consume the
+   * evidence of an outage on the way.
+   */
+  const selftest = selftestField();
+  const startedAt = Date.now();
   const decision = await requestServerDecision({
     url,
     apiKey,
@@ -287,10 +344,25 @@ export async function cmdToolGuard(flags) {
     onUnreachable,
     body: {
       ...buildGuardBody(normalized, agent, flagged ? 'FLAG' : undefined, flagged ? local.top?.label : undefined),
-      guard_ledger: sendLedger(),
+      ...post,
+      ...selftest,
+      ...(selftest.selftest ? {} : { guard_ledger: sendLedger() }),
     },
   });
 
+  recordSelftest({
+    stage: 'answered',
+    tool,
+    latencyMs: Date.now() - startedAt,
+    postContent: (post.post_content ?? []).map((p) => p.path),
+    decision: decision?.decision ?? null,
+    simulated: decision?.simulated === true,
+    hold: !!decision?.hold,
+    reason: typeof decision?.reason === 'string' ? decision.reason.slice(0, 400) : null,
+    outcome: decision?.selftest ?? null,
+  });
+
+  if (decision && typeof decision === 'object') rememberSubjectTypes(decision.subjectTypes, { url });
   enforceServerDecision(agent, decision);
   process.exit(0);
 }

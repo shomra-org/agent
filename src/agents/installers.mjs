@@ -4,6 +4,7 @@ import path from 'node:path';
 import { readJsonFile } from '../core/json-file.mjs';
 import { LLM_PROXY_BASE, hookCommand } from './hook-command.mjs';
 import { hasFlatHook, hasGroupedHook } from './hook-files.mjs';
+import { matcherFor } from './vendor-tools.mjs';
 
 export const AGENT_LABELS = {
   claude: 'Claude Code',
@@ -18,6 +19,49 @@ export const AGENT_LABELS = {
 
 export const AGENT_KEYS = Object.keys(AGENT_LABELS);
 
+/**
+ * ⚠ THE MATCHER DECIDES WHETHER THE HOOK RUNS AT ALL, and a tool it does not
+ * name is never screened - not locally, not by the server. Claude Code's own
+ * `PowerShell` tool (the shell on Windows) was missing, so every `npm install`
+ * and `docker run` an agent ran there reached no hook. Codex sends shell calls
+ * as `Bash` and edits as `apply_patch` (`Edit|Write` alias to it, per the Codex
+ * hooks docs); `apply_patch` and the older shell names are named explicitly so
+ * the matcher does not rest on an alias.
+ *
+ * ⚠ DERIVED FROM `vendor-tools.mjs`, which is the ONE list of what each vendor
+ * puts in front of the hook - the same list `shomra selftest` reads to say which
+ * names an installed matcher is missing. Two copies is how `PowerShell` went
+ * missing in the first place.
+ */
+export const TOOL_GUARD_MATCHERS = {
+  claude: matcherFor('claude'),
+  codex: matcherFor('codex'),
+  cline: matcherFor('cline'),
+};
+
+/**
+ * ⚠ AN UPGRADE MUST WIDEN AN EXISTING INSTALL, not only a fresh one. The
+ * installer skipped any settings file that already had a Shomra tool-guard
+ * group, so a machine installed before a name was added kept the old matcher
+ * forever. Every missing required name is appended to the Shomra group's
+ * matcher; names the user added are kept, and a match-all matcher is left alone.
+ */
+export function widenToolGuardMatcher(list, required) {
+  if (!Array.isArray(list)) return false;
+  let changed = false;
+  for (const g of list) {
+    if (!Array.isArray(g?.hooks) || !g.hooks.some((h) => /\btool-guard\b/.test(String(h?.command || '')) && /shomra/i.test(String(h?.command || '')))) continue;
+    const cur = typeof g.matcher === 'string' ? g.matcher : '';
+    if (!cur || cur === '*' || cur === '.*') continue;
+    const have = new Set(cur.split('|').map((s) => s.trim()));
+    const missing = required.split('|').filter((n) => !have.has(n));
+    if (!missing.length) continue;
+    g.matcher = [...cur.split('|').map((s) => s.trim()).filter(Boolean), ...missing].join('|');
+    changed = true;
+  }
+  return changed;
+}
+
 export const AGENT_INSTALLERS = {
   claude(global) {
     const portable = !global;
@@ -29,9 +73,9 @@ export const AGENT_INSTALLERS = {
     const post = (settings.hooks.PostToolUse = settings.hooks.PostToolUse || []);
     let changed = false;
     if (!hasGroupedHook(pre, 'tool-guard')) {
-      pre.push({ matcher: 'Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*', hooks: [{ type: 'command', command: hookCommand('tool-guard --agent claude', { portable }) }] });
+      pre.push({ matcher: TOOL_GUARD_MATCHERS.claude, hooks: [{ type: 'command', command: hookCommand('tool-guard --agent claude', { portable }) }] });
       changed = true;
-    }
+    } else if (widenToolGuardMatcher(pre, TOOL_GUARD_MATCHERS.claude)) changed = true;
     if (!hasGroupedHook(post, 'result-guard')) {
       post.push({ matcher: 'WebFetch|WebSearch|Read|NotebookRead|mcp__.*', hooks: [{ type: 'command', command: hookCommand('result-guard --agent claude', { portable }) }] });
       changed = true;
@@ -69,9 +113,9 @@ export const AGENT_INSTALLERS = {
     const post = (settings.PostToolUse = settings.PostToolUse || []);
     let changed = false;
     if (!hasGroupedHook(pre, 'tool-guard')) {
-      pre.push({ matcher: 'Bash|Write|Edit|mcp__.*', hooks: [{ type: 'command', command: hookCommand('tool-guard --agent codex', { portable }) }] });
+      pre.push({ matcher: TOOL_GUARD_MATCHERS.codex, hooks: [{ type: 'command', command: hookCommand('tool-guard --agent codex', { portable }) }] });
       changed = true;
-    }
+    } else if (widenToolGuardMatcher(pre, TOOL_GUARD_MATCHERS.codex)) changed = true;
     if (!hasGroupedHook(post, 'result-guard')) {
       post.push({ matcher: 'WebFetch|WebSearch|Read|mcp__.*', hooks: [{ type: 'command', command: hookCommand('result-guard --agent codex', { portable }) }] });
       changed = true;
@@ -184,9 +228,9 @@ export const AGENT_INSTALLERS = {
     const post = (settings.hooks.PostToolUse = settings.hooks.PostToolUse || []);
     let changed = false;
     if (!hasGroupedHook(pre, 'tool-guard')) {
-      pre.push({ matcher: 'execute_command|write_to_file|replace_in_file|new_rule|use_mcp_tool', hooks: [{ type: 'command', command: hookCommand('tool-guard --agent cline', { portable }) }] });
+      pre.push({ matcher: TOOL_GUARD_MATCHERS.cline, hooks: [{ type: 'command', command: hookCommand('tool-guard --agent cline', { portable }) }] });
       changed = true;
-    }
+    } else if (widenToolGuardMatcher(pre, TOOL_GUARD_MATCHERS.cline)) changed = true;
     if (!hasGroupedHook(post, 'result-guard')) {
       post.push({ matcher: 'read_file|web_fetch|use_mcp_tool', hooks: [{ type: 'command', command: hookCommand('result-guard --agent cline', { portable }) }] });
       changed = true;

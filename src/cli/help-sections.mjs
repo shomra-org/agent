@@ -24,17 +24,24 @@ const COMMANDS = () => `${bold('COMMANDS')}
   ${cyan('fix')}           Remediate an artifact in place (AI)    ${dim('<file> [--apply] [--kind …] [--json]')}
   ${cyan('why')}           Explain a finding + false-positive read ${dim('<file> [--kind …] [--json]')}
   ${cyan('gate')}          Vet ONE AI artifact before install     ${dim('<file> [--kind …] [--strict] [--json]  ·  --all for a whole repo (CI)')}
-  ${cyan('scan')}          Discover AI tooling on this machine    ${dim('[--report] [--json] [--path <dir>]')}
-  ${cyan('report')}        Discover + send inventory to your Shomra org ${dim('(alias: scan --report) [--json]')}
+  ${cyan('scan')}          Discover AI tooling on this machine    ${dim('[--report] [--json] [--path <dir>] [--all-users]')}
+  ${cyan('report')}        Discover + send inventory to your Shomra org ${dim('(alias: scan --report) [--json] [--all-users]')}
+                ${dim('--all-users (as root/SYSTEM, e.g. from an MDM) walks every OS account home into ONE report.')}
   ${cyan('status')}        Show config, enrollment + firewall health
   ${cyan('run')}           ${bold('Run a whole assurance playbook')} ${dim('<id> [--input k=v]… [--project <id>] [--json]  ·  --list for the catalog')}
                 ${dim('scan → red-team → harden → compliance → gate, as one command. Exits')}
                 ${dim('non-zero when a gate holds, so a pipeline can block the release.')}
 
   ${dim('Setup - run once per machine / repo')}
-  ${cyan('init')}          Configure + enroll this machine       ${dim('--key shm_live_… [--url <backend>]')}
+  ${cyan('init')}          Configure + enroll this machine       ${dim('--key shm_live_… [--url <backend>]  ·  --machine for a root-only machine-wide config')}
+  ${cyan('schedule')}      Re-report on a timer (launchd / Task Scheduler / systemd / cron) ${dim('install [--every 6h] [--all-users] · remove · status')}
   ${cyan('protect')}       Wire the runtime firewall for every coding agent ${dim('[--project] [--force]')}
   ${cyan('install-hook')}  Wire the runtime firewall into ONE agent ${dim('[--agent claude|cursor|windsurf|gemini|codex|copilot|cline|aider|all] [--global]')}
+  ${cyan('selftest')}      ${bold('Prove the firewall is really in path')} ${dim('[--agent <name>|all] [--json] [--strict]')}
+                ${dim('Reads each installed agent\'s own settings, then drives its REAL hook with')}
+                ${dim('inert canaries in that vendor\'s wire shape - a shell install, a Dockerfile')}
+                ${dim('write, a manifest edit, an MCP call - and reports every tool name the')}
+                ${dim('matcher leaves uncovered. Exits non-zero when a call reaches no screen.')}
   ${cyan('provenance')}    Which changed files an AI agent wrote   ${dim('[--staged | --base main] [--trailer] [--fail-on-blocked] [--json]')}
   ${cyan('install-precommit')} Gate staged AI artifacts on git commit ${dim('[dir] [--force]  ·  --pre-receive for the un-skippable server-side hook')}
   ${cyan('doctor')}        ${bold('Am I safe?')} Posture of this machine's AI setup ${dim('[--json]')}
@@ -70,11 +77,12 @@ const COMMANDS = () => `${bold('COMMANDS')}
   ${cyan('new agent')}     Scaffold a whole agent project that starts compliant ${dim('[name] [--framework vercel-ai]')}
   ${cyan('mcp add')}       Vet an MCP server, then add it to a config ${dim('<name> <command…>|--url <url> [--config <f>] [--force]')}
   ${cyan('mcp list')}      List the MCP servers in a config       ${dim('[--config <f>] [--json]')}
+  ${cyan('mcp guard')}     Route local (stdio) MCP servers through Shomra ${dim('[--screen backend|local] [--config <f>] [--uninstall]')}
   ${cyan('mcp serve')}     Run Shomra AS an MCP server so agents call its checks ${dim('(review_change/rules/check/scan_models/fix/explain)')}
 
   ${dim('Governance & advanced')}  ${dim('→')} ${bold('shomra admin')} ${dim('for the full list')}
   ${cyan('admin')}         Deep scans, red-team, hardening, agent identity, LLM proxy
-                ${dim('scan-zip · model-scan · memory-scan · redteam · campaign · harden · agent-identity · llm-proxy')}
+                ${dim('scan-zip · model-scan · memory-scan · redteam · campaign · harden · agent-identity · llm-proxy · mdm-script')}
 
   ${dim('(internal hook handlers, invoked by install-hook - not run by hand: tool-guard, result-guard, prompt-guard, plan-guard, session-guard)')}
 `;

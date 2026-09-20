@@ -8,26 +8,28 @@ import { discoverMcpServers } from './mcp-servers.mjs';
 import { discoverDotenvKeys, discoverModelKeys } from './model-keys.mjs';
 import { discoverRulesFiles } from './rules-files.mjs';
 import { discoverVectorStores } from './vector-stores.mjs';
+import { userDirs } from './platform.mjs';
 import { resolveRoots, walkWorkspace } from './workspace.mjs';
 
 export function discoverAll(roots = [process.cwd()], opts = {}) {
-  const { autoExpand = true } = opts;
-  const scanRoots = resolveRoots(roots, autoExpand);
+  const { autoExpand = true, home } = opts;
+  const own = userDirs(home).own;
+  const scanRoots = resolveRoots(roots, autoExpand, home);
   const files = walkWorkspace(scanRoots);
   const all = [
-    ...discoverMcpServers(scanRoots, files),
+    ...discoverMcpServers(scanRoots, files, { home }),
     ...discoverRulesFiles(scanRoots, files),
     ...discoverAiDependencies(scanRoots, files),
     ...discoverAiUsageInCode(scanRoots, files),
     ...discoverMcpClients(scanRoots, files),
     ...discoverVectorStores(scanRoots, files),
     ...discoverDotenvKeys(scanRoots, files),
-    ...discoverAiTools(),
-    ...discoverCodingAgents(scanRoots),
-    ...discoverModelKeys(),
+    ...discoverAiTools({ home }),
+    ...discoverCodingAgents(scanRoots, { home }),
+    ...(own ? discoverModelKeys() : []),
     // ⚠ What this HOST is logged into - the reach an agent with a shell
     // inherits and no agent policy granted. See `cloud-clis.mjs`.
-    ...discoverCloudClis(),
+    ...discoverCloudClis({ home }),
   ];
 
   const clamped = all.map(clampAsset);

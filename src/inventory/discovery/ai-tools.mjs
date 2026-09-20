@@ -1,9 +1,10 @@
 import path from 'node:path';
 import { firstExisting } from './fs-read.mjs';
 import { discoverLocalRuntimes } from './local-runtimes.mjs';
-import { APPDATA, HOME, LOCALAPPDATA, vscodeUserDir } from './platform.mjs';
+import { userDirs } from './platform.mjs';
 
-export function discoverAiTools() {
+export function discoverAiTools(opts = {}) {
+  const { HOME, APPDATA, LOCALAPPDATA, vscodeUserDir } = userDirs(opts.home);
   const checks = [
     { vendor: 'cursor', name: 'Cursor', probe: [path.join(HOME, '.cursor')] },
     { vendor: 'claude', name: 'Claude Desktop', probe: [path.join(APPDATA, 'Claude'), path.join(HOME, 'Library', 'Application Support', 'Claude'), path.join(HOME, '.config', 'Claude')] },
@@ -19,5 +20,5 @@ export function discoverAiTools() {
     const at = firstExisting(c.probe);
     if (at) assets.push({ type: 'AI_TOOL', name: c.name, identifier: at, vendor: c.vendor, metadata: { category: 'assistant', detectedAt: at } });
   }
-  return [...assets, ...discoverLocalRuntimes()];
+  return [...assets, ...discoverLocalRuntimes(opts)];
 }

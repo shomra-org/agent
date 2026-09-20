@@ -4,6 +4,7 @@ const BOOLEAN_FLAGS = new Set([
   'no-suppress', 'no-baseline', 'no-policy', 'no-index', 'adaptive', 'offline',
   'fail-on-regression', 'fail-on-blocked', 'write', 'yes', 'stdin', 'quiet', 'help',
   'check', 'checklist', 'pre-receive', 'uninstall', 'save', 'list', 'machine',
+  'all-users',
 ]);
 
 const VALUE_FLAGS = new Set([
@@ -17,6 +18,10 @@ const VALUE_FLAGS = new Set([
   'subject', 'title', 'note', 'actor',
 
   'input',
+
+  'screen',
+
+  'every', 'os',
 ]);
 
 export const KNOWN_FLAGS = new Set([...BOOLEAN_FLAGS, ...VALUE_FLAGS]);

@@ -101,14 +101,8 @@ export function scanChatTemplate(
     );
   }
 
-  /*
-   * ⚠ Injection signals are read over what the template EMITS - literal text and
-   * the string literals inside `{{ }}` - not over its Jinja code. gpt-oss's
-   * harmony template renders tool schemas with code that names parameters and
-   * conversations, and the prose rules read that code as an instruction.
-   */
+
   const emitted = text
-    // `raise_exception("…")` text is an error for the CALLER, never part of the prompt (gpt-oss explains its channels there)
     .replace(/raise_exception\(\s*(["'])(?:(?!\1)[^\\]|\\.)*\1\s*\)/g, ' ')
     .replace(/\{#[\s\S]*?#\}/g, ' ')
     .replace(/\{%[\s\S]*?%\}/g, ' ')
@@ -146,13 +140,7 @@ export function scanChatTemplate(
   return out;
 }
 
-/*
- * ⚠ Membership tests on message content are ORDINARY in reasoning templates:
- * `{% if '</think>' in content %}` strips the thinking block, `'<tool_call>' in
- * content` routes tool output. A trigger is a literal that is PROSE, not a
- * token-shaped marker - and it only counts when the branch it opens emits a
- * URL or a literal string the template was not given.
- */
+
 const TRIGGER_RE = /\{%-?\s*(?:el)?if\s+(["'])((?:(?!\1).){3,120})\1\s+in\s+([\w.[\]'"]+)/g;
 const TOKEN_MARKER_RE = /^(?:<\/?[\w|:.-]{1,40}>|<\|[^|]{1,40}\|>|\[\/?[A-Z_]{1,24}\]|[\s\n]*|[#*`>\-\s]{1,6}|```\w*)$/;
 const URL_LITERAL_RE = /https?:\/\/[^\s'"{}<>|]+/i;
@@ -167,11 +155,8 @@ function templateBackdoor(text        )                                         
     const block = text.slice(start, end === -1 ? Math.min(text.length, start + 1500) : end);
     const body = block.slice(m[0].length);
     const url = URL_LITERAL_RE.exec(body)?.[0] ?? null;
-    // ⚠ a single-token literal is a MODE FLAG (`/no_think`, `/system_override` in SmolLM3) - documented behaviour
-    // that emits the vendor's own mode text. Only a PHRASE trigger, or a flag whose branch writes a URL, is a backdoor.
     const phrase = /\s/.test(literal.trim()) && !/^\//.test(literal.trim());
     if (!phrase && !url) continue;
-    // a string literal of sentence length emitted inside the branch
     const emitted = [...body.matchAll(/\{\{-?\s*(["'])((?:(?!\1).){20,})\1/g)].map((x) => x[2]).find((s) => s.trim().split(/\s+/).length >= 4)
       ?? body.replace(/\{[{%#][\s\S]*?[}%#]\}/g, ' ').split(/\n/).map((l) => l.trim()).find((l) => l.split(/\s+/).length >= 6) ?? null;
     if (url || emitted) return { trigger: literal, url, block };

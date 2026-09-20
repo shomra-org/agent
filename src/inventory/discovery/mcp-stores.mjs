@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { extensionBundleServer, normalizeServerEntry, readMcpServers } from '../../detect/signals/mcp-config.mjs';
-import { APPDATA, HOME, LOCALAPPDATA, PLAT } from './platform.mjs';
+import { PLAT, userDirs } from './platform.mjs';
 
 const require = createRequire(import.meta.url);
 const MAX_DB_BYTES = 256 * 1024 * 1024;
@@ -43,7 +43,8 @@ export function serversInValue(value, fallbackName) {
 
 /* ─── Warp ─────────────────────────────────────────────────────────────── */
 
-export function warpDatabases() {
+export function warpDatabases(home) {
+  const { HOME, LOCALAPPDATA } = userDirs(home);
   const out = [];
   if (PLAT === 'darwin') {
     const group = path.join(HOME, 'Library', 'Group Containers');
@@ -109,7 +110,8 @@ export function readSqliteMcpServers(file) {
 
 /* ─── JetBrains ────────────────────────────────────────────────────────── */
 
-export function jetbrainsOptionFiles() {
+export function jetbrainsOptionFiles(home) {
+  const { HOME, APPDATA } = userDirs(home);
   const roots = PLAT === 'win32' ? [path.join(APPDATA, 'JetBrains')] : PLAT === 'darwin' ? [path.join(HOME, 'Library', 'Application Support', 'JetBrains')] : [path.join(HOME, '.config', 'JetBrains')];
   const out = [];
   for (const root of roots) {
@@ -166,7 +168,8 @@ export function readJetbrainsMcpServers(file) {
 
 /* ─── Claude Desktop extensions ────────────────────────────────────────── */
 
-function claudeDataDir() {
+export function claudeDataDir(home) {
+  const { HOME, APPDATA } = userDirs(home);
   if (PLAT === 'darwin') return path.join(HOME, 'Library', 'Application Support', 'Claude');
   if (PLAT === 'win32') return path.join(APPDATA, 'Claude');
   return path.join(HOME, '.config', 'Claude');

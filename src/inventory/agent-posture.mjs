@@ -1,13 +1,12 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { emptyGrant, extractGrant, grantIsEmpty, parseLooseToml, parseLooseYaml, stripJsonc } from './grant-extract.mjs';
 import { readMcpServers } from '../detect/signals/mcp-config.mjs';
 import { CURSOR_APP_USER_KEY, INTERPRETERS, readStateKeys } from './vscode-state.mjs';
 import { projectRoots } from './project-roots.mjs';
+import { userDirs } from './discovery/platform.mjs';
 
-const HOME = os.homedir();
 const PLAT = process.platform;
 const MAX_SETTINGS_BYTES = 512 * 1024;
 
@@ -219,19 +218,12 @@ export const VENDOR_POSTURE = {
   },
 };
 
-function vscodeUserDir(variant) {
-  if (PLAT === 'win32') return path.join(process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming'), variant, 'User');
-  if (PLAT === 'darwin') return path.join(HOME, 'Library', 'Application Support', variant, 'User');
-  return path.join(HOME, '.config', variant, 'User');
-}
-
-const APPDATA = process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming');
-
 function systemDir(win, mac, linux) {
   return PLAT === 'win32' ? win : PLAT === 'darwin' ? mac : linux;
 }
 
-function resolveBase(base, cwd) {
+function resolveBase(base, cwd, home) {
+  const { HOME, APPDATA, vscodeUserDir } = userDirs(home);
   switch (base) {
     case 'home': return HOME;
     case 'cwd': return cwd;
@@ -252,8 +244,8 @@ function resolveBase(base, cwd) {
 
 const MAX_DIR_FILES = 20;
 
-function expandSource(src, cwd) {
-  const target = path.join(resolveBase(src.base, cwd), ...src.rel);
+function expandSource(src, cwd, home) {
+  const target = path.join(resolveBase(src.base, cwd, home), ...src.rel);
   if (!src.dir) return [target];
   try {
     return fs.readdirSync(target)
@@ -309,14 +301,14 @@ function collectMcpServers(json) {
   }));
 }
 
-function readSource(src, cwd) {
+function readSource(src, cwd, home) {
   if (src.stateDb) {
-    const file = path.join(vscodeUserDir(src.stateDb), 'globalStorage', 'state.vscdb');
+    const file = path.join(userDirs(home).vscodeUserDir(src.stateDb), 'globalStorage', 'state.vscdb');
     const res = readStateKeys(file, src.dbKeys);
     const docs = res.state === 'read' ? res.values.map((v) => INTERPRETERS[src.interpret](v.json)) : [];
     return [{ path: `${file}#${src.dbKeys.join('|')}`, res, docs }];
   }
-  return expandSource(src, cwd).map((file) => {
+  return expandSource(src, cwd, home).map((file) => {
     const res = readJsonc(file, src.maxBytes);
     const raw = res.state === 'read' ? pickKeys(res.json ?? {}, src.keys) : null;
     const doc = raw && src.interpret ? INTERPRETERS[src.interpret](raw) : raw;
@@ -324,7 +316,7 @@ function readSource(src, cwd) {
   });
 }
 
-export function readVendorPosture(vendor, cwd = process.cwd(), roots = null) {
+export function readVendorPosture(vendor, cwd = process.cwd(), roots = null, opts = {}) {
   const def = VENDOR_POSTURE[vendor];
   if (!def) return null;
 
@@ -338,7 +330,7 @@ export function readVendorPosture(vendor, cwd = process.cwd(), roots = null) {
   for (const src of def.sources) {
     const bases = src.base === 'cwd' ? [cwd, ...extraRoots] : [cwd];
     for (const base of bases) {
-      for (const { path: file, res, docs } of readSource(src, base)) {
+      for (const { path: file, res, docs } of readSource(src, base, opts.home)) {
         const primary = base === cwd;
         if (primary || res.state !== 'absent') sources.push({ path: file, scope: src.scope, state: res.state, reason: res.reason ?? null });
         if (res.state !== 'read') continue;

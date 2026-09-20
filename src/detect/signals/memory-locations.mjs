@@ -67,6 +67,10 @@ export const MEMORY_SECTION_HEADINGS                                            
   { vendor: 'Qwen Code', basename: /^qwen(\.local)?\.md$/, heading: /^##\s+qwen added memories\s*$/im },
 ];
 
+// ⚠ NOT DEAD CODE. Nothing in the backend reads the two tables below, but they
+// are mirrored into Shomra.Agent (scripts/mirror-memory.mjs) where `shomra
+// memory-scan` walks MACHINE_MEMORY_ROOTS and prints SERVER_SIDE_MEMORY. An
+// unused-export sweep removed them once and the mirror bench caught it.
 export const SERVER_SIDE_MEMORY                                     = [
   { vendor: 'ChatGPT', note: 'Saved memories live on OpenAI servers; nothing on disk to read.' },
   { vendor: 'GitHub Copilot Memory', note: 'Repository facts and preferences live on GitHub; only the VS Code memory tool is local.' },
@@ -133,10 +137,6 @@ export function classifyMemoryPath(p        )                         {
     loadCap: loc.loadCap ?? null,
     claudeSchema: !!loc.claudeSchema,
   };
-}
-
-export function isMemoryStorePath(p        )          {
-  return classifyMemoryPath(p) !== null;
 }
 
 export function memorySectionFor(p        )                                             {

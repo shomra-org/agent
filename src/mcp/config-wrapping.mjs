@@ -17,12 +17,27 @@ function skipReason(entry) {
   return null;
 }
 
-export function wrapMcpConfig(config, selfPath, execPath) {
+/**
+ * The screening flag inside a wrapped launch line, set or replaced.
+ * ⚠ It sits BEFORE `--`: everything after it is the real server's command.
+ */
+function withScreen(args, screen) {
+  const separator = args.indexOf('--');
+  const head = separator === -1 ? args.slice() : args.slice(0, separator);
+  const tail = separator === -1 ? [] : args.slice(separator);
+  const at = head.indexOf('--screen');
+  if (at !== -1) head.splice(at, 2);
+  if (screen) head.push('--screen', screen);
+  return [...head, ...tail];
+}
+
+export function wrapMcpConfig(config, selfPath, execPath, opts = {}) {
   const servers = serversOf(config);
-  if (!servers) return { wrapped: [], skipped: [] };
+  if (!servers) return { wrapped: [], skipped: [], updated: [] };
 
   const wrapped = [];
   const skipped = [];
+  const updated = [];
   for (const [name, entry] of Object.entries(servers)) {
     if (!entry || typeof entry !== 'object') continue;
     const reason = skipReason(entry);
@@ -31,17 +46,26 @@ export function wrapMcpConfig(config, selfPath, execPath) {
       continue;
     }
     if (isShimmed(entry, selfPath)) {
+      // Re-running with --screen changes the mode of an existing guard in place.
+      if (opts.screen) {
+        const next = withScreen(entry.args ?? [], opts.screen);
+        if (JSON.stringify(next) !== JSON.stringify(entry.args ?? [])) {
+          servers[name] = { ...entry, args: next };
+          updated.push(name);
+          continue;
+        }
+      }
       skipped.push({ name, why: 'already guarded' });
       continue;
     }
     servers[name] = {
       ...entry,
       command: execPath,
-      args: [selfPath, 'mcp-guard', '--name', name, '--', entry.command, ...(entry.args ?? [])],
+      args: withScreen([selfPath, 'mcp-guard', '--name', name, '--', entry.command, ...(entry.args ?? [])], opts.screen),
     };
     wrapped.push(name);
   }
-  return { wrapped, skipped };
+  return { wrapped, skipped, updated };
 }
 
 export function unwrapMcpConfig(config, selfPath) {

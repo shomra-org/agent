@@ -1,5 +1,7 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { artifactKindFor } from './artifact-paths.mjs';
+import { preclassifySubjects, shellWriteTargets, subjectEscalation } from './subject-preclassify.mjs';
 
 /**
  *  WHAT COUNTS AS A WRITE, AND IT WAS TEN NAMES SHORT.
@@ -24,9 +26,35 @@ export const WRITE_TOOLS = new Set([
 
   'write_file', 'replace', 'apply_patch', 'apply_diff', 'edit_file', 'edit_notebook',
   'search_and_replace', 'insert_content', 'create_text_file', 'str_replace',
+
+  // ⚠ Copilot CLI (`edit` / `create`) and VS Code's Copilot agent tools. They
+  // were not writes, so a Dockerfile or package.json they changed stayed LOCAL.
+  'edit', 'create', 'replace_string_in_file', 'insert_edit_into_file',
 ]);
 
-const SHELL_TOOLS_RE = /^(bash|shell|sh|run_command|run_terminal_cmd|execute_command|terminal|exec|run_shell_command)$/i;
+/**
+ * ⚠ THE SHELL TOOL OF EVERY VENDOR. Claude Code's own `PowerShell`, Codex
+ * `local_shell` / `exec_command` / `container.exec`, Copilot
+ * `run_in_terminal`, Continue `run_terminal_command`, Goose
+ * `developer__shell`, OpenHands `execute_bash` and Kiro `executeBash` were not
+ * shell tools here, so their commands were never read for an install, an
+ * egress or a redirect into an agent artifact. Mirrored on the server
+ * (`tool-guard-grading.ts` SHELL_TOOL_NAMES); the backend's
+ * `test/gate/subject-wiring-bench` fails when the two lists disagree.
+ */
+export const SHELL_TOOL_NAMES = [
+  'bash', 'shell', 'sh', 'zsh', 'run_command', 'run_terminal_cmd', 'execute_command', 'terminal', 'exec', 'run_shell_command',
+  'powershell', 'pwsh', 'local_shell', 'exec_command', 'container.exec', 'run_in_terminal', 'run_terminal_command',
+  'builtin_run_terminal_command', 'developer__shell', 'execute_bash', 'executebash',
+];
+
+export const SHELL_TOOLS_RE = new RegExp(`^(?:${SHELL_TOOL_NAMES.map((n) => n.replace(/[.]/g, '\\.')).join('|')})$`, 'i');
+
+export { argvCommand, heredocPatch, patchTextOf, shellCommandOf } from './command-text.mjs';
+import { patchTextOf, shellCommandOf } from './command-text.mjs';
+
+/** An MCP tool whose NAME says it runs a process - the server's `mcpExecCommand` reads the same leaves. */
+const MCP_EXEC_LEAF = /(?:^|_)(?:exec|execute|run|command|process|shell|terminal|bash|spawn|powershell|cmd)(?:_|$)/i;
 
 const EGRESS_TOOL_RE = /fetch|web|http|browser|request|download|curl|url|open/i;
 
@@ -43,7 +71,7 @@ const EGRESS_CMD_RE = /\b(curl|wget|nc|ncat|http|https|invoke-restmethod|invoke-
  * decides what the write is. A false positive here costs one guard call.
  */
 const REDIRECT_RE = /(?:>>?|\btee\b(?:\s+-\S+)*)\s*("[^"]+"|'[^']+'|[^\s;|&()<>]+)/g;
-const COPY_VERB_RE = /\b(?:cp|mv|install|rsync|ln|sed|perl|python3?|tee|curl|wget)\b/;
+const COPY_VERB_RE = /\b(?:cp|mv|install|rsync|ln|sed|perl|python3?|tee|curl|wget|set-content|add-content|out-file|new-item|copy-item|move-item)\b/i;
 
 export function shellWritePaths(cmd) {
   const out = [];
@@ -74,8 +102,11 @@ export function guardText(tool, input) {
   if (typeof input.command === 'string') parts.push(input.command);
   if (typeof input.cmd === 'string') parts.push(input.cmd);
   if (typeof input.script === 'string') parts.push(input.script);
+  if (Array.isArray(input.command) || Array.isArray(input.argv)) parts.push(shellCommandOf(input));
   if (typeof input.content === 'string') parts.push(input.content);
   if (typeof input.new_string === 'string') parts.push(input.new_string);
+  if (typeof input.newString === 'string') parts.push(input.newString);
+  if (typeof input.code === 'string') parts.push(input.code);
   if (typeof input.new_source === 'string') parts.push(input.new_source);
 
   /**
@@ -98,7 +129,7 @@ export function guardText(tool, input) {
 
 export function guardTargetPath(norm) {
   const i = norm.tool_input || {};
-  const p = i.file_path ?? i.path ?? i.notebook_path ?? i.filename ?? i.target_file ?? i.file ?? null;
+  const p = i.file_path ?? i.path ?? i.filePath ?? i.notebook_path ?? i.filename ?? i.target_file ?? i.file ?? null;
   return typeof p === 'string' && p.trim() ? p : null;
 }
 
@@ -110,7 +141,7 @@ export function guardTargetPath(norm) {
 export function guardTouchedPaths(tool, input = {}) {
   const out = [];
   const push = (v) => { if (typeof v === 'string' && v.trim()) out.push(v.trim()); };
-  push(input.file_path); push(input.path); push(input.notebook_path); push(input.filename);
+  push(input.file_path); push(input.path); push(input.filePath); push(input.notebook_path); push(input.filename);
   push(input.target_file); push(input.file); push(input.destination); push(input.dest);
   for (const key of ['paths', 'files', 'file_paths', 'targets']) {
     if (Array.isArray(input[key])) for (const v of input[key]) push(typeof v === 'string' ? v : v?.path);
@@ -122,13 +153,14 @@ export function guardTouchedPaths(tool, input = {}) {
    * path argument at all - the paths are inside the patch text, so a write to
    * `.claude/settings.json` through it looked pathless.
    */
-  const patch = typeof input.patch === 'string' ? input.patch : typeof input.diff === 'string' ? input.diff : '';
+  const patch = patchTextOf(tool, input);
   if (patch) {
     for (const m of patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/gm)) push(m[1]);
     for (const m of patch.matchAll(/^(?:\+\+\+|---)\s+(?:[ab]\/)?(\S+)/gm)) push(m[1]);
   }
-  if (typeof input.command === 'string' || typeof input.cmd === 'string') {
-    for (const p of shellWritePaths(input.command ?? input.cmd)) push(p);
+  const command = shellCommandOf(input);
+  if (command) {
+    for (const p of shellWritePaths(command)) push(p);
   }
 
   /**
@@ -150,7 +182,7 @@ export function guardTouchedPaths(tool, input = {}) {
   return [...new Set([...out, ...resolved])].slice(0, 60);
 }
 
-export function guardNeedsServer(tool, input, hasIdentity) {
+export function guardNeedsServer(tool, input, hasIdentity, opts = {}) {
   if (hasIdentity) return true;
 
   /**
@@ -190,19 +222,86 @@ export function guardNeedsServer(tool, input, hasIdentity) {
    */
 
   if (WRITE_TOOLS.has(tool)) {
-    const target = String(input.file_path ?? input.path ?? input.notebook_path ?? '').replace(/\\/g, '/');
+    const target = String(input.file_path ?? input.path ?? input.filePath ?? input.notebook_path ?? '').replace(/\\/g, '/');
     if (artifactKindFor(target)) return true;
   }
   if (tool && tool.startsWith('mcp__')) return true;
   if (EGRESS_TOOL_RE.test(tool || '')) return true;
   if (SHELL_TOOLS_RE.test(tool || '')) {
-    const cmd = String(input.command ?? input.cmd ?? input.script ?? '');
+    const cmd = shellCommandOf(input);
     if (EGRESS_CMD_RE.test(cmd)) return true;
     if (/\bmcp\s+add\b|claude\s+mcp\b|@modelcontextprotocol\b|\bmcp[-_]server\b/i.test(cmd)) return true;
   }
   const url = input?.url ?? input?.uri ?? input?.href ?? input?.endpoint;
   if (typeof url === 'string' && url) return true;
-  return false;
+
+  /**
+   * ⚠ AN ORG RULE MAY BE WAITING FOR THIS CALL. An install, an image pull, a
+   * `helm install`, a model pull, an extension install, a write of a manifest,
+   * Dockerfile, compose file, workflow or secret file - none is egress or an
+   * agent artifact, so every one was decided here, alone, and the org's
+   * `subject:` rules about them never saw a runtime call. Escalated when the org
+   * has a live runtime rule of a type this call could carry (`opts.subjectTypes`,
+   * learned from the server's answers); when that set is UNKNOWN every
+   * subject-bearing call is escalated - see `subject-preclassify.mjs`.
+   */
+  return subjectEscalation(callSubjectTypes(tool, input, { cwd: opts.cwd }), opts.subjectTypes);
+}
+
+const MCP_WRITE_LEAF = /(?:^|_)(?:write|create|edit|append|patch|put|save|upsert|move|copy|rename)(?:_|$)/i;
+
+/** An MCP leaf that feeds INPUT to a running process (desktop-commander `interact_with_process`). */
+const MCP_PROCESS_INPUT_LEAF = /(?:^|_)(?:interact_with_process|send_input|write_stdin|process_input)(?:_|$)/i;
+
+const HEAD_BYTES = 64 * 1024;
+
+/** ⚠ The head of the file an edit changes - so a fragment of a k8s manifest is still sniffed as one. Never throws. */
+function diskHead(p, cwd) {
+  try {
+    const abs = path.isAbsolute(p) ? p : path.resolve(cwd || process.cwd(), p);
+    const fd = fs.openSync(abs, 'r');
+    try {
+      const buf = Buffer.alloc(HEAD_BYTES);
+      const n = fs.readSync(fd, buf, 0, HEAD_BYTES, 0);
+      return buf.subarray(0, n).toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The subject types this call could carry - the command it runs and the files
+ * it writes, each with the text that decides a sniffed path (`.yaml`, `.py`).
+ * ⚠ A shell command's write paths are its REAL write positions
+ * (`shellWriteTargets`), not every path-shaped word: `python scripts/x.py`
+ * reads a script, it does not write one.
+ */
+export function callSubjectTypes(tool, input = {}, { cwd } = {}) {
+  const i = input ?? {};
+  const t = String(tool ?? '');
+  const shell = SHELL_TOOLS_RE.test(t);
+  const mcpLeaf = t.startsWith('mcp__') ? t.split('__').slice(2).join('__') : '';
+  const execs = shell || (!!mcpLeaf && MCP_EXEC_LEAF.test(mcpLeaf));
+  let command = execs ? shellCommandOf(i) : '';
+  if (!command && mcpLeaf && MCP_PROCESS_INPUT_LEAF.test(mcpLeaf) && typeof i.input === 'string') command = i.input;
+
+  const writes = [];
+  const patch = patchTextOf(t, i);
+  if (patch) {
+    for (const m of patch.matchAll(/^\*\*\* (?:Add|Update) File:\s*(.+)$|^\*\*\* Move to:\s*(.+)$|^\+\+\+\s+(?:[ab]\/)?(\S+)/gm)) {
+      const p = (m[1] ?? m[2] ?? m[3] ?? '').trim();
+      if (p && p !== '/dev/null') writes.push({ path: p, text: `${patch}\n${diskHead(p, cwd)}` });
+    }
+  }
+  if (command) for (const w of shellWriteTargets(command)) writes.push({ path: w.path, text: w.text ?? diskHead(w.path, cwd) });
+  if (WRITE_TOOLS.has(t) || (!!mcpLeaf && MCP_WRITE_LEAF.test(mcpLeaf))) {
+    const text = guardText(t, i);
+    for (const p of guardTouchedPaths(t, i)) writes.push({ path: p, text: `${text}\n${diskHead(p, cwd)}` });
+  }
+  return preclassifySubjects({ command, writes });
 }
 
 export const MODEL_WRITE_TOOLS = ['write', 'edit', 'multiedit', 'notebookedit', 'create_file', 'str_replace_editor', 'apply_patch', 'write_file'];

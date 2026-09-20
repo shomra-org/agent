@@ -5,13 +5,14 @@ import { classify, declaredName } from './classify.mjs';
 import { readText } from './file-read.mjs';
 import { canonicalHooks } from './hooks.mjs';
 import { bundleHookScripts } from './hook-scripts.mjs';
-import { HOME, MAX_ARTIFACTS, MAX_BUNDLED, MAX_DIRS, MAX_TOTAL_BYTES, TEXT_EXTS, extOf } from './limits.mjs';
+import { MAX_ARTIFACTS, MAX_BUNDLED, MAX_DIRS, MAX_TOTAL_BYTES, TEXT_EXTS, extOf } from './limits.mjs';
 import { extractInstructionImports } from '../../detect/signals/instruction-paths.mjs';
 import { CATALOGUE_DIR_RE, PLUGIN_PATH_RE, installedMarketplaces } from './marketplaces.mjs';
 import { MARKETPLACE_ROOT_RE, MAX_MANIFEST_BYTES, bundlePluginComponents, installedPluginManifests, manifestName, pluginRootOf } from './plugins.mjs';
 import { bundleExtensionSource } from './extensions.mjs';
 import { artifactRoots } from './roots.mjs';
 import { walkRoot } from './walk.mjs';
+import { userDirs } from '../discovery/platform.mjs';
 
 const MAX_NAME_LENGTH = 200;
 
@@ -122,11 +123,11 @@ function collectFromSite({ site, files, state, project }) {
   }
 }
 
-function collectInstalledPlugins({ sites, state, project }) {
+function collectInstalledPlugins({ sites, state, project, home }) {
   const { artifacts, capped, consumed, budget } = state;
   for (const site of sites) {
     if (site.vendor !== 'claude-code' || site.scope !== 'user') continue;
-    for (const { manifest, marketplace } of installedPluginManifests(site.dir)) {
+    for (const { manifest, marketplace } of installedPluginManifests(site.dir, home)) {
       if (consumed.has(manifest)) continue;
       if (artifacts.length >= MAX_ARTIFACTS) { capped.push({ reason: 'artifact-cap', path: manifest }); return; }
       const relativePath = relativeToSite(site, manifest);
@@ -149,13 +150,13 @@ const IMPORT_READABLE_RE = /\.(?:md|mdx|markdown|mdc|rst|txt)$/i;
 const IMPORT_SECRET_RE = /(?:^|[\\/])(?:\.env|\.ssh|\.aws|\.gnupg|\.netrc|\.npmrc)|id_(?:rsa|dsa|ecdsa|ed25519)|secret|credential|password|\.pem$|\.key$/i;
 const MAX_IMPORT_DEPTH = 5;
 
-function resolveImport(ref, fromFile) {
-  if (ref.startsWith('~/')) return path.join(HOME, ref.slice(2));
+function resolveImport(ref, fromFile, home) {
+  if (ref.startsWith('~/')) return path.join(userDirs(home).HOME, ref.slice(2));
   if (path.isAbsolute(ref)) return ref;
   return path.resolve(path.dirname(fromFile), ref);
 }
 
-function bundleRuleImports(state) {
+function bundleRuleImports(state, home) {
   const { capped, budget } = state;
   for (const { artifact, absolutePath } of state.rules) {
     const seen = new Set([absolutePath]);
@@ -165,7 +166,7 @@ function bundleRuleImports(state) {
       if (depth >= MAX_IMPORT_DEPTH) continue;
       for (const ref of extractInstructionImports(text)) {
         if (!IMPORT_READABLE_RE.test(ref) || IMPORT_SECRET_RE.test(ref)) continue;
-        const target = resolveImport(ref, file);
+        const target = resolveImport(ref, file, home);
         if (seen.has(target)) continue;
         seen.add(target);
         if (artifact.files.length >= MAX_BUNDLED) {
@@ -243,8 +244,9 @@ function availableCatalogue(availableBy) {
     .sort((a, b) => b.count - a.count);
 }
 
-export function discoverAgentArtifacts(cwd = process.cwd(), roots = null) {
-  const sites = roots || artifactRoots(cwd);
+export function discoverAgentArtifacts(cwd = process.cwd(), roots = null, opts = {}) {
+  const { home } = opts;
+  const sites = roots || (userDirs(home).own ? artifactRoots(cwd) : artifactRoots(cwd, home).filter((s) => s.scope === 'user' && !s.managed));
   const project = path.basename(path.resolve(cwd)) || null;
   const state = {
     budget: { dirs: MAX_DIRS, bytes: MAX_TOTAL_BYTES },
@@ -260,9 +262,9 @@ export function discoverAgentArtifacts(cwd = process.cwd(), roots = null) {
 
   const walked = walkSites(sites, state.budget);
   for (const { site, files } of walked) collectFromSite({ site, files, state, project });
-  collectInstalledPlugins({ sites, state, project });
+  collectInstalledPlugins({ sites, state, project, home });
   bundleSkillFiles({ skills: state.skills, walked, state });
-  bundleRuleImports(state);
+  bundleRuleImports(state, home);
   for (const { artifact, absolutePath, site } of state.hooks ?? []) {
     bundleHookScripts(artifact, absolutePath, {
       projectDir: site.scope === 'project' ? path.dirname(site.dir) : cwd,
@@ -272,6 +274,7 @@ export function discoverAgentArtifacts(cwd = process.cwd(), roots = null) {
       },
       budget: state.budget,
       capped: state.capped,
+      home,
     });
   }
   for (const { artifact, absolutePath, site } of state.extensions) {

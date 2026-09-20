@@ -2,10 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { readText } from './fs-read.mjs';
 import { redactEnv } from './model-keys.mjs';
-import { APPDATA, HOME, LOCALAPPDATA, PLAT, vscodeUserDir } from './platform.mjs';
+import { PLAT, userDirs } from './platform.mjs';
 import { walkWorkspace } from './workspace.mjs';
 import { parseConfigDoc, readMcpServers } from '../../detect/signals/mcp-config.mjs';
-import { jetbrainsOptionFiles, readClaudeExtensions, readJetbrainsMcpServers, readSqliteMcpServers, warpDatabases } from './mcp-stores.mjs';
+import { claudeDataDir, jetbrainsOptionFiles, readClaudeExtensions, readJetbrainsMcpServers, readSqliteMcpServers, warpDatabases } from './mcp-stores.mjs';
 
 export function vendorFromPath(file) {
   if (/[\\/]\.cursor[\\/]/.test(file)) return 'cursor';
@@ -20,14 +20,16 @@ export function vendorFromPath(file) {
   return 'project';
 }
 
-function appSupport(...rel) {
+function appSupport(home, ...rel) {
+  const { HOME, APPDATA } = userDirs(home);
   if (PLAT === 'darwin') return path.join(HOME, 'Library', 'Application Support', ...rel);
   if (PLAT === 'win32') return path.join(APPDATA, ...rel);
   return path.join(HOME, '.config', ...rel);
 }
 
-function claudeMsixConfigs() {
+function claudeMsixConfigs(home) {
   if (PLAT !== 'win32') return [];
+  const { LOCALAPPDATA } = userDirs(home);
   try {
     return fs.readdirSync(path.join(LOCALAPPDATA, 'Packages'))
       .filter((d) => /^(?:Claude|AnthropicPBC\.Claude)_/i.test(d))
@@ -44,10 +46,11 @@ function managedClaudeMcp() {
 }
 
 
-function globalMcpCandidates() {
+function globalMcpCandidates(home) {
+  const { HOME, APPDATA, LOCALAPPDATA, vscodeUserDir } = userDirs(home);
   const c = [];
-  c.push({ vendor: 'claude', file: appSupport('Claude', 'claude_desktop_config.json') });
-  for (const file of claudeMsixConfigs()) c.push({ vendor: 'claude', file });
+  c.push({ vendor: 'claude', file: appSupport(home, 'Claude', 'claude_desktop_config.json') });
+  for (const file of claudeMsixConfigs(home)) c.push({ vendor: 'claude', file });
   c.push({ vendor: 'claude-code', file: path.join(HOME, '.claude.json') }); // user + per-project (projects.*.mcpServers)
   c.push({ vendor: 'claude-code', file: managedClaudeMcp() });
   c.push({ vendor: 'cursor', file: path.join(HOME, '.cursor', 'mcp.json') });
@@ -67,8 +70,8 @@ function globalMcpCandidates() {
   c.push({ vendor: 'junie', file: path.join(HOME, '.junie', 'mcp', 'mcp.json') });
   c.push({ vendor: 'visualstudio', file: path.join(HOME, '.mcp.json') }); // Visual Studio's user-scope config
   c.push({ vendor: 'copilot', file: PLAT === 'win32' ? path.join(LOCALAPPDATA, 'github-copilot', 'intellij', 'mcp.json') : path.join(HOME, '.config', 'github-copilot', 'intellij', 'mcp.json') });
-  for (const file of warpDatabases()) c.push({ vendor: 'warp', file, store: 'sqlite' });
-  for (const file of jetbrainsOptionFiles()) c.push({ vendor: 'jetbrains', file, store: 'jetbrains-xml' });
+  for (const file of warpDatabases(home)) c.push({ vendor: 'warp', file, store: 'sqlite' });
+  for (const file of jetbrainsOptionFiles(home)) c.push({ vendor: 'jetbrains', file, store: 'jetbrains-xml' });
 
   const FORKS = [
     { variant: 'Code', vendor: 'vscode' },
@@ -119,10 +122,10 @@ export function unreadMcpStores() {
   return unreadStores.slice();
 }
 
-export function discoverMcpServers(roots = [process.cwd()], files = null) {
+export function discoverMcpServers(roots = [process.cwd()], files = null, opts = {}) {
   const walk = files || walkWorkspace(roots);
   const candidates = [
-    ...globalMcpCandidates(),
+    ...globalMcpCandidates(opts.home),
     ...projectMcpCandidates(roots),
     ...walk.mcp.map(({ file }) => ({ vendor: vendorFromPath(file), file })),
   ];
@@ -138,7 +141,7 @@ export function discoverMcpServers(roots = [process.cwd()], files = null) {
     const servers = readServers(file, store);
     if (servers) sources.push({ vendor, file, servers });
   }
-  for (const s of readClaudeExtensions()) sources.push({ vendor: 'claude', file: s.file, servers: [s] });
+  for (const s of readClaudeExtensions(claudeDataDir(opts.home))) sources.push({ vendor: 'claude', file: s.file, servers: [s] });
 
   for (const { vendor, file, servers } of sources) {
     for (const s of servers) {
