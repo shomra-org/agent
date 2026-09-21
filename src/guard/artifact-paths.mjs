@@ -44,7 +44,6 @@ export const ARTIFACT_PATHS                                               = [
   { re: /(^|\/)\.claude\/rules\/.+\.md$/i, kind: 'rules' },
   { re: /(^|\/)\.clinerules(?:\/[^/]+\.(?:md|txt))?$/i, kind: 'rules' },
   { re: /(^|\/)cline\/rules\/.+\.(?:md|txt)$/i, kind: 'rules' },
-
   { re: /(^|\/)\.(?:kilocode|roo|trae|junie|windsurf|augment|kiro|devin|amp|zed|goose|opencode|crush)\/memories(?:\/.+)?\.(?:md|mdc|txt)$/i, kind: 'agent-memory' },
   { re: /(^|\/)\.qwen\/team-memory\/.+\.(?:md|txt)$/i, kind: 'agent-memory' },
   { re: /(^|\/)\.(?:kilocode|roo|trae|junie|windsurf|augment|kiro|devin|amp|zed|goose|opencode|crush)\/(?:rules?|guidelines?|steering)(?:\/.+)?\.(?:md|mdc|txt)$/i, kind: 'rules' },
@@ -66,7 +65,6 @@ export const ARTIFACT_PATHS                                               = [
   { re: /(^|\/)crush\.json$/i, kind: 'agent-config' },
   { re: /(^|\/)goose\/config\.ya?ml$/i, kind: 'agent-config' },
   { re: /(^|\/)\.continue\/config\.(?:json|ya?ml)$/i, kind: 'agent-config' },
-
   { re: /(^|\/)\.aider\.conf\.ya?ml$/i, kind: 'agent-config' },
 
   { re: /(^|\/)(?:\.devcontainer\/)?devcontainer\.json$/i, kind: 'dev-environment' },

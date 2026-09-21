@@ -7,8 +7,6 @@ import { EXTENSION_MANIFEST_RE } from './extensions.mjs';
 
 export const COMMAND_PATH_RE = /(^|\/)commands?\/|(^|\/)\.[\w-]+\/prompts?\/|(^|\/)\.(?:windsurf|devin|clinerules)\/workflows\//;
 
-/* mirrors the server's detector - see instruction-pass.ts. Kept apart from
-   COMMAND_PATH_RE, whose `commands?/` arm would claim every commands/*.yaml. */
 export const SKILL_ENTRY_RE = /(^|\/)\.(?:claude|cursor|windsurf|codex|agents)\/skills\/.+\.(?:md|markdown)$/;
 export const WORKFLOW_COMMAND_RE = /(^|\/)\.(?:windsurf|devin|clinerules)\/workflows\/[^/]*\.(?:md|markdown|ya?ml)$/;
 export const CHATMODE_DIR_RE = /(^|\/)chatmodes?\//;
