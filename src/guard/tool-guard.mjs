@@ -6,7 +6,8 @@ import { isMemoryPath, reportMemoryWrite } from '../commands/memory-scan.mjs';
 import { breakerOpen, breakerReset, breakerTrip, guardTimeoutMs } from '../core/circuit-breaker.mjs';
 import { CONFIG_DIR } from '../core/config.mjs';
 import { makeLedgerStore } from './ledger.mjs';
-import { MAX_POST_CONTENT, memoryWritesFor, outOfBandChange, postEditContents, readLedger, recordLedger, sha256 } from './memory-write.mjs';
+import { MAX_POST_CONTENT, memoryWritesFor, postEditContents, recordLedger, sha256 } from './memory-write.mjs';
+import { memoryReportBase, reportOutOfBand } from './memory-report.mjs';
 import { readSubjectTypes, rememberSubjectTypes, subjectBearingPath, subjectEscalation } from './subject-preclassify.mjs';
 import { artifactKindFor } from './artifact-paths.mjs';
 import { gateMachine } from '../core/api-client.mjs';
@@ -109,35 +110,6 @@ function screenLocally(normalized, tool, input) {
 }
 
 const READ_TOOLS_RE = /^(read|read_file|view|open_file|cat)$/i;
-const OUT_OF_BAND = 'changed outside any agent write the Shomra hook observed';
-const FIRST_SIGHT = 'first observation of this store - baseline only, no write attributed';
-
-function memoryReportBase(filePath, normalized) {
-  const machine = gateMachine();
-  return {
-    path: path.resolve(filePath).split(path.sep).join('/'),
-    name: path.basename(String(filePath)),
-    machineId: machine.machineId,
-    hostname: machine.hostname,
-    actor: machine.username,
-    sessionId: normalized.session_id,
-  };
-}
-
-async function reportFirstSight(url, apiKey, filePath, current, normalized) {
-  if (current == null || readLedger(filePath)) return false;
-  await reportMemoryWrite(url, apiKey, { ...memoryReportBase(filePath, normalized), content: current, writer: 'SCAN', source: FIRST_SIGHT });
-  recordLedger(filePath, [sha256(current)]);
-  return true;
-}
-
-async function reportOutOfBand(url, apiKey, filePath, current, normalized) {
-  if (current == null) return;
-  if (await reportFirstSight(url, apiKey, filePath, current, normalized)) return;
-  if (!outOfBandChange(filePath, current)) return;
-  await reportMemoryWrite(url, apiKey, { ...memoryReportBase(filePath, normalized), content: current, writer: 'UNKNOWN', source: OUT_OF_BAND });
-  recordLedger(filePath, [sha256(current)]);
-}
 
 async function recordMemoryWrite({ url, apiKey, tool, input, normalized }) {
   if (breakerOpen()) return;
