@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { extOf } from './limits.mjs';
 import { SETTINGS_BASENAMES } from './marketplaces.mjs';
-import { isInstructionPath } from '../../detect/signals/instruction-paths.mjs';
+import { INSTRUCTION_BASENAMES, isInstructionPath } from '../../detect/signals/instruction-paths.mjs';
 import { PLUGIN_MANIFEST_RE } from './plugins.mjs';
 import { EXTENSION_MANIFEST_RE } from './extensions.mjs';
 
@@ -28,7 +28,9 @@ export function classify(rel, vendor) {
     if (vendor === 'copilot' && !/(^|\/)(prompts|chatmodes)\//.test(lower)) return null;
     return 'command';
   }
-  if (lower.split('/').length <= 5 && !/(^|\/)(extensions|plugins|marketplaces|node_modules|cache|projects)\//.test(lower) && isInstructionPath(lower)) return 'rules';
+  const conventionName = INSTRUCTION_BASENAMES.has(base);
+  const depthOk = conventionName || lower.split('/').length <= 5;
+  if (depthOk && !/(^|\/)(extensions|plugins|marketplaces|node_modules|cache|projects)\//.test(lower) && isInstructionPath(lower)) return 'rules';
   return null;
 }
 
