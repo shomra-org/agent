@@ -37,7 +37,6 @@ export const ARTIFACT_PATHS                                               = [
   { re: /(^|\/)\.augment-guidelines$/i, kind: 'rules' },
   { re: /(^|\/)global_rules\.md$/i, kind: 'rules' },
   { re: /(^|\/)\.rules$/i, kind: 'rules' },
-  { re: /(^|\/)\.aider\.conf\.ya?ml$/i, kind: 'rules' },
   { re: /(^|\/)\.github\/copilot-instructions\.md$/i, kind: 'rules' },
   { re: /(^|\/)\.github\/instructions\/.+\.md$/i, kind: 'rules' },
   { re: /(^|\/)\.copilot\/(?:copilot-instructions\.md|instructions\/.+\.md)$/i, kind: 'rules' },
@@ -45,11 +44,12 @@ export const ARTIFACT_PATHS                                               = [
   { re: /(^|\/)\.claude\/rules\/.+\.md$/i, kind: 'rules' },
   { re: /(^|\/)\.clinerules(?:\/[^/]+\.(?:md|txt))?$/i, kind: 'rules' },
   { re: /(^|\/)cline\/rules\/.+\.(?:md|txt)$/i, kind: 'rules' },
-  { re: /(^|\/)\.(?:kilocode|roo|trae|junie|windsurf|augment|kiro|devin|amp|zed|goose|opencode|crush)\/(?:rules?|guidelines?|steering|memories)(?:\/.+)?\.(?:md|mdc|txt)$/i, kind: 'rules' },
+  { re: /(^|\/)\.(?:kilocode|roo|trae|junie|windsurf|augment|kiro|devin|amp|zed|goose|opencode|crush)\/memories(?:\/.+)?\.(?:md|mdc|txt)$/i, kind: 'agent-memory' },
+  { re: /(^|\/)\.qwen\/team-memory\/.+\.(?:md|txt)$/i, kind: 'agent-memory' },
+  { re: /(^|\/)\.(?:kilocode|roo|trae|junie|windsurf|augment|kiro|devin|amp|zed|goose|opencode|crush)\/(?:rules?|guidelines?|steering)(?:\/.+)?\.(?:md|mdc|txt)$/i, kind: 'rules' },
   { re: /(^|\/)\.(?:roo|kilocode)\/rules-[\w-]+\/.+\.(?:md|mdc|txt)$/i, kind: 'rules' },
   { re: /(^|\/)\.continue\/rules\/.+\.(?:md|ya?ml)$/i, kind: 'rules' },
   { re: /(^|\/)\.amazonq\/rules\/.+\.md$/i, kind: 'rules' },
-  { re: /(^|\/)\.qwen\/team-memory\/.+\.(?:md|txt)$/i, kind: 'rules' },
   { re: /(^|\/)\.junie\/(?:playbook|guidelines)\.md$/i, kind: 'rules' },
   { re: /(^|\/)\.trae\/(?:rules\/)?(?:project|user)_rules\.md$/i, kind: 'rules' },
   { re: /(^|\/)\.claude\/output-styles\/.+\.md$/i, kind: 'rules' },
@@ -65,6 +65,7 @@ export const ARTIFACT_PATHS                                               = [
   { re: /(^|\/)crush\.json$/i, kind: 'agent-config' },
   { re: /(^|\/)goose\/config\.ya?ml$/i, kind: 'agent-config' },
   { re: /(^|\/)\.continue\/config\.(?:json|ya?ml)$/i, kind: 'agent-config' },
+  { re: /(^|\/)\.aider\.conf\.ya?ml$/i, kind: 'agent-config' },
 
   { re: /(^|\/)(?:\.devcontainer\/)?devcontainer\.json$/i, kind: 'dev-environment' },
   { re: /(^|\/)\.devcontainer\/[^/]+\/devcontainer\.json$/i, kind: 'dev-environment' },
@@ -75,7 +76,7 @@ export const ARTIFACT_PATHS                                               = [
 
 export const CONTENT_ONLY_KINDS                                  = [
   'automation', 'guardrail', 'tool-manifest', 'prompt-template',
-  'agent-memory', 'exec-script', 'env-secret-file', 'other-artifact',
+  'exec-script', 'env-secret-file', 'other-artifact',
 
   'workflow',
 ];

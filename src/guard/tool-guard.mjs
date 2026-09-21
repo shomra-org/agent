@@ -6,7 +6,8 @@ import { isMemoryPath, reportMemoryWrite } from '../commands/memory-scan.mjs';
 import { breakerOpen, breakerReset, breakerTrip, guardTimeoutMs } from '../core/circuit-breaker.mjs';
 import { CONFIG_DIR } from '../core/config.mjs';
 import { makeLedgerStore } from './ledger.mjs';
-import { MAX_POST_CONTENT, memoryWritesFor, outOfBandChange, postEditContents, recordLedger, sha256 } from './memory-write.mjs';
+import { MAX_POST_CONTENT, memoryWritesFor, postEditContents, recordLedger, sha256 } from './memory-write.mjs';
+import { memoryReportBase, reportOutOfBand } from './memory-report.mjs';
 import { readSubjectTypes, rememberSubjectTypes, subjectBearingPath, subjectEscalation } from './subject-preclassify.mjs';
 import { artifactKindFor } from './artifact-paths.mjs';
 import { gateMachine } from '../core/api-client.mjs';
@@ -109,25 +110,6 @@ function screenLocally(normalized, tool, input) {
 }
 
 const READ_TOOLS_RE = /^(read|read_file|view|open_file|cat)$/i;
-const OUT_OF_BAND = 'changed outside any agent write the Shomra hook observed';
-
-function memoryReportBase(filePath, normalized) {
-  const machine = gateMachine();
-  return {
-    path: path.resolve(filePath).split(path.sep).join('/'),
-    name: path.basename(String(filePath)),
-    machineId: machine.machineId,
-    hostname: machine.hostname,
-    actor: machine.username,
-    sessionId: normalized.session_id,
-  };
-}
-
-async function reportOutOfBand(url, apiKey, filePath, current, normalized) {
-  if (current == null || !outOfBandChange(filePath, current)) return;
-  await reportMemoryWrite(url, apiKey, { ...memoryReportBase(filePath, normalized), content: current, writer: 'UNKNOWN', source: OUT_OF_BAND });
-  recordLedger(filePath, [sha256(current)]);
-}
 
 async function recordMemoryWrite({ url, apiKey, tool, input, normalized }) {
   if (breakerOpen()) return;

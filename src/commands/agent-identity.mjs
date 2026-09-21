@@ -1,4 +1,5 @@
 import { api } from '../core/api-client.mjs';
+import { git } from '../core/git-exec.mjs';
 import { loadConfig, resolveSettings } from '../core/config.mjs';
 import { EXIT_USAGE, exitNotConfigured } from '../core/exit-codes.mjs';
 import { bold, cyan, dim, green, red } from '../core/terminal.mjs';
@@ -21,6 +22,8 @@ export async function cmdAgentIdentity(flags, positional) {
       name: flags.name ? String(flags.name) : undefined,
       slug: flags.slug ? String(flags.slug) : undefined,
       type: flags.type ? String(flags.type) : undefined,
+      ownerEmail: ownerEmail(flags),
+      projectId: flags.project ? String(flags.project) : undefined,
     });
   } catch (e) {
     console.error(`\n  ${red('✗')} ${e.message}\n`);
@@ -35,9 +38,31 @@ export async function cmdAgentIdentity(flags, positional) {
     console.log(`\n  ${bold('Credential')} ${dim('(shown once - store it securely):')}`);
     console.log(`    ${cyan(res.credential)}`);
   }
+  if (res.owner) {
+    console.log(`  ${dim('Owner:')} ${res.owner.email ?? res.owner.name}`);
+  } else {
+    console.log(`\n  ${red('!')} ${bold('No owner recorded.')} ${dim('Nobody is accountable for this identity.')}`);
+    console.log(dim(`    Re-run with --owner <email> (an active Shomra seat), or assign one in the dashboard.`));
+  }
+  if (res.handleShadow) {
+    console.log(`\n  ${red('!')} ${bold('Another identity already answers to this name.')}`);
+    console.log(dim(`    ${res.handleShadow.statement}`));
+    console.log(dim(`    ${res.handleShadow.remedy}`));
+  }
   console.log(`\n  Present this identity so every call is authorized as it:`);
   console.log(dim(`    export SHOMRA_AGENT=${res.slug}        # or use the credential above`));
   console.log(dim(`  Then set its least-privilege capabilities in the dashboard → Agent Identities.\n`));
+}
+
+export function ownerEmail(flags) {
+  if (flags && flags.owner) return String(flags.owner).trim() || undefined;
+  if (flags && flags['no-owner']) return undefined;
+  try {
+    const configured = git(['config', '--get', 'user.email'], { timeout: 2000 })?.trim();
+    return configured || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function resolveAgentIdentityHandle(flags) {

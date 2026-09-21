@@ -1,6 +1,8 @@
+import fs from 'node:fs';
 import { loadConfig, resolveSettings } from '../core/config.mjs';
 import { detectEnv, remoteRunner } from '../gate/environment.mjs';
 import { envFlag, resolveAgentFlag } from './options.mjs';
+import { baselineSessionContext } from './memory-report.mjs';
 
 const PROBE_TIMEOUT_MS = 1500;
 
@@ -48,6 +50,14 @@ async function reachable(url) {
  * So this runs first, says out loud what is and is not enforcing, and never
  * blocks: a session that refuses to start is a control nobody keeps installed.
  */
+function hookPayload() {
+  try {
+    return JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+  } catch {
+    return {};
+  }
+}
+
 export async function cmdSessionGuard(flags) {
   resolveAgentFlag(flags);
   if (envFlag('SHOMRA_SESSION_GUARD_OFF')) return process.exit(0);
@@ -55,8 +65,19 @@ export async function cmdSessionGuard(flags) {
   try {
     const env = detectEnv();
     const settings = resolveSettings(loadConfig());
-    const posture = sessionPosture(env, settings, settings.apiKey ? await reachable(settings.url) : null);
+    const up = settings.apiKey ? await reachable(settings.url) : null;
+    const posture = sessionPosture(env, settings, up);
     if (posture.message) process.stderr.write(`[shomra] ${posture.message}\n`);
+
+    if (up && !envFlag('SHOMRA_SESSION_MEMORY_OFF')) {
+      const payload = hookPayload();
+      await baselineSessionContext({
+        url: settings.url,
+        apiKey: settings.apiKey,
+        cwd: payload.cwd || process.cwd(),
+        sessionId: payload.session_id ?? null,
+      });
+    }
   } catch {
 
   }
