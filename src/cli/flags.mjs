@@ -4,7 +4,7 @@ const BOOLEAN_FLAGS = new Set([
   'no-suppress', 'no-baseline', 'no-policy', 'no-index', 'adaptive', 'offline',
   'fail-on-regression', 'fail-on-blocked', 'write', 'yes', 'stdin', 'quiet', 'help',
   'check', 'checklist', 'pre-receive', 'uninstall', 'save', 'list', 'machine',
-  'all-users',
+  'all-users', 'samples', 'fp',
 ]);
 
 const VALUE_FLAGS = new Set([

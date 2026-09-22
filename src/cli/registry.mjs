@@ -4,6 +4,7 @@ import { cmdBaseline, cmdCheck } from '../commands/check.mjs';
 import { cmdCorpus } from '../commands/corpus.mjs';
 import { cmdDesign } from '../commands/design.mjs';
 import { cmdDoctor } from '../commands/doctor.mjs';
+import { cmdFeedback } from '../commands/feedback.mjs';
 import { cmdFix } from '../commands/fix.mjs';
 import { cmdGate } from '../commands/gate.mjs';
 import { cmdInstallPrecommit } from '../commands/git-hooks.mjs';
@@ -30,6 +31,7 @@ import { cmdScan } from '../commands/scan.mjs';
 import { cmdSecrets } from '../commands/secrets.mjs';
 import { cmdSelftest } from '../commands/selftest.mjs';
 import { cmdStatus } from '../commands/status.mjs';
+import { cmdTelemetry } from '../commands/telemetry.mjs';
 import { cmdWhy } from '../commands/why.mjs';
 import { cmdPromptGuard } from '../guard/prompt-guard.mjs';
 import { cmdSessionGuard } from '../guard/session-guard.mjs';
@@ -81,6 +83,8 @@ export const COMMANDS = {
   mcp: (f, p) => cmdMcp(f, p),
   secrets: (f, p) => cmdSecrets(f, p),
   status: () => cmdStatus(),
+  telemetry: (f, p) => cmdTelemetry(f, p),
+  feedback: (f) => cmdFeedback(f),
 };
 
 export const ADMIN_VERBS = new Set([

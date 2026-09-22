@@ -7,19 +7,29 @@ import { CONFIG_FILE, loadConfig, resolveSettings } from '../core/config.mjs';
 import { bold, cyan, dim, gray, green, red, yellow } from '../core/terminal.mjs';
 import { VERSION } from '../core/version.mjs';
 import { envFlag } from '../guard/options.mjs';
+import { telemetryState } from '../telemetry/consent.mjs';
+
+function telemetryLine(state) {
+  if (state.enabled) return `${green('on')} ${dim(`(${state.level}) - anonymous verdicts, rule names & redacted command shapes · shomra telemetry show · off: shomra telemetry off`)}`;
+  if (state.pending) return `${yellow('waiting')} ${dim('- the notice has not been shown; nothing is collected yet')}`;
+  return `${dim('off')} ${dim('- ' + state.reason)}`;
+}
 
 export function cmdStatus() {
   const cfg = loadConfig();
   const { apiKey, url } = resolveSettings(cfg);
   const enrolled = !!apiKey;
+  const telemetry = telemetryState({ cfg, enrolled });
   console.log(bold(cyan('\n  Shomra agent')) + dim(` v${VERSION}`));
 
   if (enrolled) {
     console.log(`  ${dim('Mode     ')} ${green('● Enrolled')} ${dim(`(${keyScope(apiKey)} key)`)} - org policy, platform AI & dashboard telemetry active`);
   } else {
-    console.log(`  ${dim('Mode     ')} ${cyan('● Local')} ${dim('- on-machine analysis only; nothing leaves this machine')}`);
+    const leaves = telemetry.enabled ? 'only anonymous telemetry leaves this machine' : 'nothing leaves this machine';
+    console.log(`  ${dim('Mode     ')} ${cyan('● Local')} ${dim(`- on-machine analysis; ${leaves}`)}`);
     console.log(`  ${dim('         ')} ${dim('Run')} ${bold('shomra init --key shm_…')} ${dim('to add org policy, AI fixes, deep scans & the dashboard.')}`);
   }
+  console.log(`  ${dim('Telemetry')} ${telemetryLine(telemetry)}`);
   console.log(`  ${dim('Backend  ')} ${url || dim('none (local mode - set with shomra init --url)')}`);
   console.log(`  ${dim('API key  ')} ${apiKey ? green(apiKey.slice(0, 14) + '…') : dim('none (local mode)')}`);
   console.log(`  ${dim('Machine  ')} ${os.hostname()} ${dim('(' + (cfg.machineId || 'unenrolled') + ')')}`);

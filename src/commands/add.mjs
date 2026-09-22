@@ -8,6 +8,7 @@ import { AI_USAGE_CATEGORY_LABEL, KNOWN_AI_PACKAGES } from '../detect/ai-usage.m
 import { localGate } from '../detect/guard-signals.mjs';
 import { collectLocalSast, mergeSastIntoResult } from '../gate/sast.mjs';
 import { MODEL_SEV_RANK, modelFixPlan, modelLookup, printAlternatives } from '../models/lookup.mjs';
+import { recordAcquisition } from '../telemetry/record.mjs';
 import { cmdMcp } from './mcp.mjs';
 
 const ADD_KINDS = ['mcp', 'skill', 'model', 'package'];
@@ -30,7 +31,13 @@ export async function cmdAdd(flags, positional) {
   return addPackage(flags, positional.slice(1));
 }
 
+function addFindings(extra) {
+  if (Array.isArray(extra.findings)) return extra.findings;
+  return (extra.nearMatches ?? []).map((m) => ({ title: `Possible typosquat of ${m.name} (${m.ecosystem})`, severity: 'CRITICAL' }));
+}
+
 function finishAdd(kind, ref, verdict, lines, flags, extra = {}) {
+  recordAcquisition(kind, verdict, addFindings(extra), !!flags.force);
   if (flags.json) {
     console.log(JSON.stringify({ kind, ref, verdict, accepted: verdict !== 'BLOCK' || !!flags.force, ...extra }, null, 2));
   } else {

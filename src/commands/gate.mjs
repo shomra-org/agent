@@ -13,6 +13,8 @@ import { toSarif } from '../gate/sarif.mjs';
 import { collectLocalSast, mergeSastIntoResult } from '../gate/sast.mjs';
 import { withMcpAdvisories } from '../gate/advisories.mjs';
 import { readZipEntry } from '../core/zip-lite.mjs';
+import { gateRule } from '../telemetry/events.mjs';
+import { recordVerdict } from '../telemetry/record.mjs';
 
 const GATE_USAGE = 'shomra gate <file> [--kind mcp|skill|command|subagent|hook|rules|agent-card|memory|plugin|tool-manifest|extension|workflow|guardrail|framework] [--name x] [--strict] [--json]';
 
@@ -121,6 +123,7 @@ export async function cmdGate(flags, positional) {
   }
   const base = serverVerdict || localAsGateResult(shownLocal, name, kind);
   const result = mergeSastIntoResult(base, collectLocalSast({ fullPath: fullTarget, relPath, kind, content }));
+  recordVerdict({ channel: 'gate', kind: kind ?? result.kind ?? 'auto', verdict: result.decision, findings: result.findings, rule: gateRule, decidedBy: serverVerdict ? 'server' : 'local' });
   printGateResult(result, serverVerdict ? 'server' : 'local', flags);
 
   if (result.decision === 'BLOCK') process.exitCode = 1;

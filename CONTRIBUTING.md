@@ -14,6 +14,10 @@ runtime firewall all run these same analyzers on-machine.
 - **Local-first.** Detection must work fully offline. Network calls (to a Shomra
   backend) are strictly optional enrichment and must degrade gracefully when the
   backend is absent, slow, or down - never hang or fail closed by default.
+- **Telemetry carries shapes, never input.** Anything added under
+  `src/telemetry/` must be a placeholder shape or a value from Shomra's own
+  vocabulary - never a raw command, path, host, prompt or file. It must never
+  delay or change a verdict. `tests/telemetry.test.mjs` pins both.
 - **Low false positives.** A noisy scanner gets turned off. New rules must be
   justified against real attack patterns and must not fire on benign code.
 

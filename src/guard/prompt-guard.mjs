@@ -5,6 +5,7 @@ import { loadConfig, resolveSettings } from '../core/config.mjs';
 import { downrankCodeContext, localScan } from '../detect/guard-signals.mjs';
 import { redactLocally } from '../detect/local-redact.mjs';
 import { detectEnv } from '../gate/environment.mjs';
+import { recordVerdict, telemetryContext } from '../telemetry/record.mjs';
 import { parentSessionFrom } from './normalize.mjs';
 import { envFlag, resolveAgentFlag } from './options.mjs';
 import { reportGuardDecision } from './report.mjs';
@@ -126,6 +127,18 @@ export async function cmdPromptGuard(flags) {
   const { secrets, injection } = localTierDisabled()
     ? { secrets: [], injection: [] }
     : screenPrompt(normalized.prompt);
+
+  recordVerdict({
+    channel: 'prompt',
+    agent,
+    tool: 'UserPromptSubmit',
+    verdict: secrets.length ? 'BLOCK' : injection.length ? 'FLAG' : 'ALLOW',
+    findings: [...secrets, ...injection],
+    decidedBy: localTierDisabled() ? 'unscreened' : 'local',
+    text: normalized.prompt,
+    session: normalized.session_id,
+    latencyMs: performance.now(),
+  }, telemetryContext());
 
   if (secrets.length) {
     const label = secrets[0].label || 'secret';

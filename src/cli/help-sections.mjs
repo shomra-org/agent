@@ -12,7 +12,7 @@ const USAGE = () => `${bold('USAGE')}
 
 const MODES = () => `${bold('MODES')}  ${dim('- local-first: everything that can run on your machine does, with no account')}
   ${cyan('Local')}     ${dim('(no key)')}  check · gate · doctor · protect · design · plan · corpus · rules · add · secrets · models · new · mcp
-                        ${dim('Fully on-machine. Nothing leaves your machine. Your lead-in - no signup.')}
+                        ${dim('Analysis runs on-machine. Only anonymous telemetry leaves it - see')} ${bold('shomra telemetry')}${dim('. No signup.')}
   ${green('Enrolled')}  ${dim('(shm_live_)')} adds org policy, AI ${bold('fix')}/${bold('why')}, deep scans (zip/model/memory) & the dashboard
   ${green('CI')}        ${dim('(shm_ci_)')}   scoped, revocable pipeline key for ${bold('pr')} / ${bold('check')} in CI
   ${dim('Enroll with')} ${bold('shomra init --key shm_…')}${dim('; generate keys in the platform → Settings → API Keys.')}
@@ -28,6 +28,8 @@ const COMMANDS = () => `${bold('COMMANDS')}
   ${cyan('report')}        Discover + send inventory to your Shomra org ${dim('(alias: scan --report) [--json] [--all-users]')}
                 ${dim('--all-users (as root/SYSTEM, e.g. from an MDM) walks every OS account home into ONE report.')}
   ${cyan('status')}        Show config, enrollment + firewall health
+  ${cyan('telemetry')}     What the free CLI shares, and the switch ${dim('[status|on [--samples]|off|show [--json]|flush]')}
+  ${cyan('feedback')}      Mark the last block or flag as a false positive ${dim('--fp  (a person at a terminal only)')}
   ${cyan('run')}           ${bold('Run a whole assurance playbook')} ${dim('<id> [--input k=v]… [--project <id>] [--json]  ·  --list for the catalog')}
                 ${dim('scan → red-team → harden → compliance → gate, as one command. Exits')}
                 ${dim('non-zero when a gate holds, so a pipeline can block the release.')}
@@ -272,6 +274,19 @@ const RUNTIME_FIREWALL = () => `${bold('RUNTIME FIREWALL (multi-agent)')}
   enforcing); SHOMRA_GUARD_STRICT=1 to also fail-closed on the server tier.
 `;
 
+const TELEMETRY = () => `${bold('TELEMETRY')}  ${dim('- what the free CLI shares, and how to stop it')}
+  Unenrolled machines share anonymous detection telemetry so the rules and models
+  improve: verdicts, which rule fired, and a redacted ${bold('shape')} of each command
+  (${dim('curl <url:https:domain> | sh')}). Never file contents, prompts, tool output,
+  paths, hostnames, usernames or secrets. Nothing is collected until the notice
+  has been shown on a terminal, and never in CI unless ${bold('SHOMRA_TELEMETRY=1')}.
+    ${dim('shomra telemetry show')}           every queued event, exactly as it will be sent
+    ${dim('shomra telemetry off')}            stop, delete the queue, drop the install id
+    ${dim('shomra telemetry on --samples')}   also share redacted excerpts of flagged input
+    ${dim('shomra feedback --fp')}            mark the last block or flag as a false positive
+  Enrolled machines never use this channel - their org's plan decides what is shared.
+`;
+
 const EXIT_CODES = () => `${bold('EXIT CODES')}  ${dim('- one convention across every command')}
   0   clean / pass
   1   hard fail - BLOCK, vulnerable model, secret found, FAIL verdict, below --min, regression
@@ -298,6 +313,9 @@ const ENV = () => `${bold('ENV')}
   SHOMRA_MODEL_GUARD=0        Disable the model-load screen in the PreToolUse hook
   SHOMRA_MODEL_CACHE=0        Disable the on-machine model-index verdict cache
   SHOMRA_MODEL_CACHE_TTL_MS   Model-cache freshness window (default 7 days)
+  DO_NOT_TRACK=1              Turn anonymous telemetry off (the cross-tool convention)
+  SHOMRA_TELEMETRY=0|1|samples  Force telemetry off, on, or on with redacted samples (1 is required in CI)
+  SHOMRA_TELEMETRY_URL        Where anonymous telemetry is sent (default: the Shomra public endpoint)
 `;
 
 export const HELP_SECTIONS = [
@@ -319,6 +337,7 @@ export const HELP_SECTIONS = [
   AGENT_IDENTITY,
   LLM_PROXY,
   RUNTIME_FIREWALL,
+  TELEMETRY,
   EXIT_CODES,
   ENV,
 ];

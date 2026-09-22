@@ -4,6 +4,8 @@ import { api, gateMachine } from '../core/api-client.mjs';
 import { clampInt } from '../core/numbers.mjs';
 import { SEV_COLOR, bold, dim, gray, green, red, yellow } from '../core/terminal.mjs';
 import { localGate } from '../detect/guard-signals.mjs';
+import { gateRule } from '../telemetry/events.mjs';
+import { recordLabel, recordVerdict, telemetryContext } from '../telemetry/record.mjs';
 import { applyRepoPolicy, loadRepoPolicy } from './repo-policy.mjs';
 import { localAsGateResult } from './result.mjs';
 import { collectLocalSast, mergeSastIntoResult } from './sast.mjs';
@@ -104,6 +106,21 @@ function printResult(result, artifact, source) {
   if (remaining > 0) console.log(`      ${dim(`… and ${remaining} more (run with --json for all)`)}`);
 }
 
+const SUPPRESSION_LABEL = { 'ignored (.shomraignore)': 'suppressed', baseline: 'baseline', inline: 'inline', 'policy allow': 'policy-allow' };
+
+function recordGateTelemetry(tctx, result, artifact) {
+  recordVerdict({ channel: 'gate', kind: artifact.kind, verdict: result.decision, findings: result.findings, rule: gateRule, decidedBy: result.source }, tctx);
+  const byLabel = new Map();
+  for (const f of result.suppressedFindings ?? []) {
+    const label = SUPPRESSION_LABEL[f.suppressedBy] ?? 'suppressed';
+    byLabel.set(label, [...(byLabel.get(label) ?? []), f]);
+  }
+  for (const [label, findings] of byLabel) {
+    const keys = findings.map((f) => gateRule(f).k).sort().join(',');
+    recordLabel({ channel: 'gate', label, kind: artifact.kind, findings, rule: gateRule, dedupe: `${tctx.salt ?? ''}|${artifact.rel}|${label}|${keys}` }, tctx);
+  }
+}
+
 function resolveSuppression(flags, root) {
   const enabled = !flags['no-suppress'];
   return {
@@ -136,6 +153,7 @@ export async function gateArtifactList(artifacts, { apiKey, url, env, flags, roo
   let blocked = 0;
   let flagged = 0;
   let suppressed = 0;
+  const tctx = telemetryContext();
 
   prepared.forEach(({ artifact, local, sast }, index) => {
     const serverVerdict = verdicts[index];
@@ -150,6 +168,7 @@ export async function gateArtifactList(artifacts, { apiKey, url, env, flags, roo
     const result = applyRepoPolicy(withSuppressions, policy);
 
     suppressed += result.suppressedCount || 0;
+    recordGateTelemetry(tctx, result, artifact);
     results.push(result);
     if (result.decision === 'BLOCK') blocked += 1;
     else if (result.decision === 'FLAG') flagged += 1;

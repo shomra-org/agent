@@ -1,10 +1,23 @@
+import { loadConfig } from '../core/config.mjs';
 import { EXIT_USAGE } from '../core/exit-codes.mjs';
 import { bold, dim, red } from '../core/terminal.mjs';
 import { VERSION } from '../core/version.mjs';
+import { maybeShowNotice } from '../telemetry/notice.mjs';
 import { KNOWN_FLAGS, parseFlags } from './flags.mjs';
 import { cmdAdminHelp, cmdHelp } from './help.mjs';
 import { ADMIN_VERBS, COMMANDS } from './registry.mjs';
 import { didYouMean } from './suggestions.mjs';
+
+const NO_NOTICE = new Set(['telemetry', 'feedback', 'mcp-guard', 'llm-proxy']);
+
+function noticeOnce(command) {
+  if (NO_NOTICE.has(command)) return;
+  try {
+    maybeShowNotice({ cfg: loadConfig() });
+  } catch {
+    return;
+  }
+}
 
 export async function main() {
   const [, , command, ...rest] = process.argv;
@@ -41,6 +54,7 @@ export async function main() {
       console.error(dim('Run `shomra admin` for the list.'));
       process.exit(EXIT_USAGE);
     }
+    noticeOnce(sub);
     return fn(flags, positional.slice(1));
   }
 
@@ -51,5 +65,6 @@ export async function main() {
     console.error(dim('Run `shomra help` for the full command list.'));
     process.exit(EXIT_USAGE);
   }
+  if (!guardCmd) noticeOnce(command);
   return fn(flags, positional);
 }
