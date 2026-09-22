@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { gateMachine } from '../core/api-client.mjs';
 import { breakerOpen, breakerReset, breakerTrip, guardTimeoutMs } from '../core/circuit-breaker.mjs';
 import { detectEnv } from '../gate/environment.mjs';
+import { keyedFetch } from '../core/keyed-fetch.mjs';
 
 /**
  * WHERE THE SHIM JUDGES A TOOL CALL AND ITS RESULT.
@@ -60,7 +61,7 @@ async function post(settings, route, body, agentId) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), guardTimeoutMs());
   try {
-    const response = await fetch(`${settings.url}${route}`, {
+    const response = await keyedFetch(`${settings.url}${route}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

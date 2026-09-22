@@ -10,6 +10,7 @@ import { SEV_COLOR, VERDICT_COLOR, bold, cyan, dim, gray, green, red, yellow } f
 import { isInstructionPath } from '../detect/signals/instruction-paths.mjs';
 import { MACHINE_MEMORY_ROOTS, SERVER_SIDE_MEMORY, classifyMemoryPath, sniffMemoryJsonl } from '../detect/signals/memory-locations.mjs';
 import { outOfBandChange, recordLedger, sha256 } from '../guard/memory-write.mjs';
+import { keyedFetch } from '../core/keyed-fetch.mjs';
 
 export function memoryLocation(p) {
   return classifyMemoryPath(String(p || '').split(path.sep).join('/'));
@@ -114,7 +115,7 @@ export async function reportMemoryWrite(url, apiKey, body) {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), guardTimeoutMs());
-    await fetch(`${url}/memory/ingest`, {
+    await keyedFetch(`${url}/memory/ingest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Shomra-Key': apiKey, Connection: 'close' },
       body: JSON.stringify(body),

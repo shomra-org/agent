@@ -37,6 +37,7 @@ export async function cmdAgentIdentity(flags, positional) {
   if (res.credential) {
     console.log(`\n  ${bold('Credential')} ${dim('(shown once - store it securely):')}`);
     console.log(`    ${cyan(res.credential)}`);
+    if (res.credentialLifetime?.statement) console.log(dim(`    ${res.credentialLifetime.statement}`));
   }
   if (res.owner) {
     console.log(`  ${dim('Owner:')} ${res.owner.email ?? res.owner.name}`);
@@ -50,7 +51,12 @@ export async function cmdAgentIdentity(flags, positional) {
     console.log(dim(`    ${res.handleShadow.remedy}`));
   }
   console.log(`\n  Present this identity so every call is authorized as it:`);
-  console.log(dim(`    export SHOMRA_AGENT=${res.slug}        # or use the credential above`));
+  if (res.credential) {
+    console.log(dim(`    export SHOMRA_AGENT="<the credential above>"`));
+  } else {
+    console.log(dim(`    Issue a credential in the dashboard → Agent Identities, then export SHOMRA_AGENT="<shm_agt_…>"`));
+  }
+  console.log(dim(`    The credential proves who is calling. The handle (${res.slug}) is only a name anyone can type.`));
   console.log(dim(`  Then set its least-privilege capabilities in the dashboard → Agent Identities.\n`));
 }
 

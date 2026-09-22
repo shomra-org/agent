@@ -2,6 +2,7 @@ import { gateMachine } from '../core/api-client.mjs';
 import { breakerOpen, breakerReset, breakerTrip, guardTimeoutMs } from '../core/circuit-breaker.mjs';
 import { detectEnv } from '../gate/environment.mjs';
 import { resolveCommand } from './command-resolve.mjs';
+import { keyedFetch } from '../core/keyed-fetch.mjs';
 
 export function buildGuardBody(norm, agent, clientDecision, clientReason) {
   const command = norm.tool_input?.command ?? norm.tool_input?.cmd ?? norm.tool_input?.script;
@@ -25,7 +26,7 @@ export async function reportGuardDecision(url, apiKey, agentId, body) {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), Math.min(guardTimeoutMs(), 1000));
-    await fetch(`${url}/gate/tool-call`, {
+    await keyedFetch(`${url}/gate/tool-call`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Shomra-Key': apiKey, ...(agentId ? { 'X-Shomra-Agent': agentId } : {}), Connection: 'close' },
       body: JSON.stringify(body),

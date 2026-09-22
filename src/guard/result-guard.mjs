@@ -9,6 +9,7 @@ import { emitResultBlock } from './emit.mjs';
 import { guardPathAllowlisted } from './ignore.mjs';
 import { normalizeGuardInput } from './normalize.mjs';
 import { envFlag, resolveAgentFlag } from './options.mjs';
+import { keyedFetch } from '../core/keyed-fetch.mjs';
 
 function readHookPayload() {
   try {
@@ -78,7 +79,7 @@ async function requestServerDecision({ url, apiKey, body, agent, strict }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), guardTimeoutMs());
   try {
-    const response = await fetch(`${url}/gate/tool-result`, {
+    const response = await keyedFetch(`${url}/gate/tool-result`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Shomra-Key': apiKey, Connection: 'close' },
       body: JSON.stringify(body),

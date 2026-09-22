@@ -13,12 +13,18 @@ export function breakerCooldownMs() {
   return clampInt(process.env.SHOMRA_GUARD_BREAKER_MS, 30000, 0, 600000);
 }
 
+export function breakerWindowOpen(at, now, cooldown) {
+  if (!(cooldown > 0) || typeof at !== 'number' || !Number.isFinite(at)) return false;
+  const age = now - at;
+  return age >= 0 && age < cooldown;
+}
+
 export function breakerOpen() {
   const cooldown = breakerCooldownMs();
   if (cooldown === 0) return false;
   try {
     const { at } = JSON.parse(fs.readFileSync(BREAKER_FILE, 'utf8'));
-    return typeof at === 'number' && Date.now() - at < cooldown;
+    return breakerWindowOpen(at, Date.now(), cooldown);
   } catch {
     return false;
   }
@@ -26,8 +32,8 @@ export function breakerOpen() {
 
 export function breakerTrip() {
   try {
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
-    fs.writeFileSync(BREAKER_FILE, JSON.stringify({ at: Date.now() }));
+    fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(BREAKER_FILE, JSON.stringify({ at: Date.now() }), { mode: 0o600 });
   } catch {
 
   }

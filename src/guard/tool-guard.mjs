@@ -22,6 +22,8 @@ import { normalizeGuardInput } from './normalize.mjs';
 import { envFlag, resolveAgentFlag } from './options.mjs';
 import { recordSelftest, selftestField } from './selftest-marker.mjs';
 import { buildGuardBody, reportGuardDecision } from './report.mjs';
+import { guardStateTamper, refuseOrAsk, tamperReason } from './self-protect.mjs';
+import { keyedFetch } from '../core/keyed-fetch.mjs';
 
 const ALLOW_VERDICT = { verdict: 'ALLOW', top: null, findings: [] };
 
@@ -158,7 +160,7 @@ async function requestServerDecision({ url, apiKey, agentId, body, agent, strict
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), guardTimeoutMs());
   try {
-    const response = await fetch(`${url}/gate/tool-call`, {
+    const response = await keyedFetch(`${url}/gate/tool-call`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -258,6 +260,14 @@ export async function cmdToolGuard(flags) {
     recordSelftest({ stage: 'local-block', tool, reason: local.top?.label ?? 'dangerous tool call' });
     await reportGuardDecision(url, apiKey, agentId, buildGuardBody(normalized, agent, 'BLOCK', local.top?.label));
     emitGuardDeny(agent, `Blocked on-machine by Shomra: ${local.top?.label || 'dangerous tool call'}.`);
+  }
+
+  const tamper = guardStateTamper(tool, input, { cwd: normalized.cwd });
+  if (tamper) {
+    const reason = tamperReason(tamper);
+    await reportGuardDecision(url, apiKey, agentId, buildGuardBody(normalized, agent, 'FLAG', 'Edits the Shomra guard’s own state'));
+    if (refuseOrAsk(agent, strict) === 'deny') emitGuardDeny(agent, `Blocked on-machine by Shomra: ${reason}`);
+    emitGuardAsk(agent, reason);
   }
 
   await screenModelLoad(agent, tool, input, url);

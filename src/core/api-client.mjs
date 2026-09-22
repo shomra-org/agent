@@ -4,6 +4,7 @@ import { readMachineSerial } from './machine-serial.mjs';
 import { clampInt } from './numbers.mjs';
 import { reportUsername } from './user-homes.mjs';
 import { VERSION } from './version.mjs';
+import { keyedFetch } from './keyed-fetch.mjs';
 
 export function gateMachine() {
   let machineId;
@@ -38,7 +39,7 @@ export async function api(url, key, route, body, opts = {}) {
   let res;
   try {
     const method = opts.method ?? 'POST';
-    res = await fetch(`${url}${route}`, {
+    res = await keyedFetch(`${url}${route}`, {
       method,
 
       headers: { 'Content-Type': 'application/json', 'X-Shomra-Key': key, Connection: 'close' },

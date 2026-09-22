@@ -8,6 +8,7 @@ import { detectEnv } from '../gate/environment.mjs';
 import { parentSessionFrom } from './normalize.mjs';
 import { envFlag, resolveAgentFlag } from './options.mjs';
 import { reportGuardDecision } from './report.mjs';
+import { keyedFetch } from '../core/keyed-fetch.mjs';
 
 export const PROMPT_HOOK_AGENTS = new Set(['claude', 'cursor']);
 
@@ -87,7 +88,7 @@ async function requestServerDecision({ url, apiKey, body, agent, strict, injecti
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), guardTimeoutMs());
   try {
-    const response = await fetch(`${url}/gate/tool-call`, {
+    const response = await keyedFetch(`${url}/gate/tool-call`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Shomra-Key': apiKey, Connection: 'close' },
       body: JSON.stringify(body),

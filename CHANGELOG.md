@@ -6,6 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security (agent runtime hardening)
+- **The org key never follows a redirect to another host.** Node's `fetch`
+  strips only `Authorization` on a cross-origin redirect, so `X-Shomra-Key` and
+  an `shm_agt_` credential in `X-Shomra-Agent` went wherever a 3xx pointed.
+  Every keyed call now goes through `keyedFetch`, which follows same-origin
+  redirects (and an https upgrade on the same host) and refuses the rest.
+- **A forged breaker can no longer switch the server tier off.** A breaker
+  stamped in the future used to hold the circuit open forever. Only a stamp in
+  the last cooldown window counts, and the file is written `0600`.
+- **The guard protects its own state.** A tool call that writes, moves or
+  deletes anything under `~/.shomra` (the key, the breaker, the ledger, the
+  cached subject types) asks a person first, is reported to the server, and is
+  refused outright under `SHOMRA_GUARD_STRICT` or on an agent that cannot ask.
+- **`llm-proxy` serves this machine only.** A non-loopback `Host` or `Origin`
+  is refused, which stops a web page reaching it through DNS rebinding. The
+  configured `SHOMRA_AGENT` now wins over an `x-shomra-agent` a local client
+  sends.
+- **`agent-identity register` recommends the credential**, not the bare handle,
+  and prints the credential's lifetime.
+
 ### Added (shift-left, batch 3)
 - **`shomra plan` + `shomra_review_plan` + `plan-guard`** - threat-model what an
   agent is ABOUT to build. `design` reads a document a human remembered to write;
