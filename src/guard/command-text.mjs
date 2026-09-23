@@ -7,6 +7,24 @@
  * both on the same inputs.
  */
 
+/**
+ * ⚠ THE SHELL TOOL OF EVERY VENDOR. Claude Code's own `PowerShell`, Codex
+ * `local_shell` / `exec_command` / `container.exec`, Copilot
+ * `run_in_terminal`, Continue `run_terminal_command`, Goose
+ * `developer__shell`, OpenHands `execute_bash` and Kiro `executeBash` were not
+ * shell tools here, so their commands were never read for an install, an
+ * egress or a redirect into an agent artifact. Mirrored on the server
+ * (`tool-guard-grading.ts` SHELL_TOOL_NAMES); the backend's
+ * `test/gate/subject-wiring-bench` fails when the two lists disagree.
+ */
+export const SHELL_TOOL_NAMES = [
+  'bash', 'shell', 'sh', 'zsh', 'run_command', 'run_terminal_cmd', 'execute_command', 'terminal', 'exec', 'run_shell_command',
+  'powershell', 'pwsh', 'local_shell', 'exec_command', 'container.exec', 'run_in_terminal', 'run_terminal_command',
+  'builtin_run_terminal_command', 'developer__shell', 'execute_bash', 'executebash',
+];
+
+export const SHELL_TOOLS_RE = new RegExp(`^(?:${SHELL_TOOL_NAMES.map((n) => n.replace(/[.]/g, '\\.')).join('|')})$`, 'i');
+
 const SHELL_BIN = /^(?:.*[\\/])?(?:(?:ba|z|da|k|fi|a)?sh|pwsh|powershell|cmd)(?:\.exe)?$/i;
 const POSIX_SCRIPT_FLAG = /^-[a-z]*c[a-z]*$/;
 const REST_SCRIPT_FLAG = /^(?:\/[ck]|-command|-c)$/i;

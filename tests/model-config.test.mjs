@@ -88,6 +88,9 @@ test('the generated mirrors are in sync with the platform sources', { skip: !BAC
     [path.join(formats, 'scanners', 'numpy-scan.ts'), 'model-formats/numpy-scan.mjs'],
     [path.join(formats, 'scanners', 'gguf-scan.ts'), 'model-formats/gguf-scan.mjs', 'transform'],
     [path.join(formats, 'scanners', 'safetensors-scan.ts'), 'model-formats/safetensors-scan.mjs'],
+    [path.join(formats, 'readers', 'protobuf-lite.ts'), 'model-formats/protobuf-lite.mjs'],
+    [path.join(formats, 'scanners', 'keras-scan.ts'), 'model-formats/keras-scan.mjs'],
+    [path.join(formats, 'scanners', 'onnx-scan.ts'), 'model-formats/onnx-scan.mjs'],
   ];
   const body = (s) => s.split('\n').filter((l) => !/^import |^export .* from '|^\/\/ |^const binaryFinding/.test(l)).join('\n').replace(/\s+/g, ' ').trim();
   for (const [ts, mjs, mode = 'strip'] of mirrors) {

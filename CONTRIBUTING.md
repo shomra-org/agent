@@ -26,11 +26,18 @@ runtime firewall all run these same analyzers on-machine.
   `DANGEROUS_SHELL` (here and in the backend's `signals.ts`) once the back
   office's rule health shows its hits are attacks, not installers. A blocking
   rule people override 2% of the time or more is recommended for demotion to ask.
+  A new spelling of a rule that already blocks (another encoding, flag order or
+  shell of the same attack) may skip shadow, as long as its test has both a
+  catch and a benign near-miss that stays quiet.
 - **A local model may only raise.** Anything under `src/local/` can add a note
   for the agent or propose a fix; it never blocks, never clears a finding, and a
   fix it writes is only offered when the deterministic re-scan is cleaner. Its
   model is pinned (every embedding carries a probe) and its template is vetted
   at setup, and a call that runs past its budget is no reading, never a pass.
+  Changing the reference samples in `src/local/exemplars.mjs` re-embeds them on
+  every machine after the upgrade, so add only ordinary text you wrote yourself,
+  keep zero held-out ordinary samples firing, and say in the PR what a real
+  embedding model scored before and after.
 
 ## Project layout
 
@@ -86,6 +93,9 @@ node --check shomra.mjs    # syntax check
 
 - Keep PRs focused; one rule family or one fix per PR.
 - Run the tests and `node --check` before pushing.
+- Every pull request runs the suite on Linux (Node 20, 22 and 24) and macOS, and
+  those gate the merge. Windows runs too but does not gate yet; if you break it,
+  say so in the PR.
 - Describe the attack the change defends against and the false-positive risk.
 - By contributing, you agree your contribution is licensed under
   [Apache-2.0](./LICENSE).

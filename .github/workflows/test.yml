@@ -1,0 +1,39 @@
+name: Test
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, node: 20, experimental: false, label: 'Linux · Node 20' }
+          - { os: ubuntu-latest, node: 22, experimental: false, label: 'Linux · Node 22' }
+          - { os: ubuntu-latest, node: 24, experimental: false, label: 'Linux · Node 24' }
+          - { os: macos-latest, node: 22, experimental: false, label: 'macOS · Node 22' }
+          - { os: windows-latest, node: 22, experimental: true, label: 'Windows · Node 22 (Non-Gating)' }
+    env:
+      SHOMRA_TELEMETRY: '0'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Test
+        run: npm test

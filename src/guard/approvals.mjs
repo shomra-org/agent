@@ -29,17 +29,36 @@ export function priorAsk(session, command, { file = ASKS_FILE, now = Date.now() 
   return readAsks(file).find((a) => a.key === key && now - Date.parse(a.at) < WINDOW_MS) ?? null;
 }
 
+function writeAsks(file, asks) {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ asks: asks.slice(-MAX_ENTRIES) }), { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
 export function recordAsk(session, command, { file = ASKS_FILE, now = Date.now() } = {}) {
   if (!session || !command) return;
   try {
     const key = askKey(session, command);
     const kept = readAsks(file).filter((a) => a.key !== key && now - Date.parse(a.at) < WINDOW_MS);
     kept.push({ key, at: new Date(now).toISOString() });
-    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ asks: kept.slice(-MAX_ENTRIES) }), { mode: 0o600 });
-    fs.renameSync(tmp, file);
+    writeAsks(file, kept);
   } catch {
+  }
+}
+
+export function markRan(session, command, { file = ASKS_FILE, now = Date.now() } = {}) {
+  if (!session || !command) return false;
+  try {
+    const key = askKey(session, command);
+    const asks = readAsks(file);
+    const hit = asks.find((a) => a.key === key && now - Date.parse(a.at) < WINDOW_MS);
+    if (!hit || hit.ranAt) return false;
+    hit.ranAt = new Date(now).toISOString();
+    writeAsks(file, asks);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -102,5 +121,7 @@ export function rememberedApproval(normalized, command, opts = {}) {
   const session = normalized?.session_id;
   const prior = priorAsk(session, command, opts);
   if (!prior) return false;
-  return ranAfterApproval(normalized?.transcript_path, command, Date.parse(prior.at) - 5000);
+  const since = Date.parse(prior.at) - 5000;
+  if (opts.agent !== 'claude' && prior.ranAt && Date.parse(prior.ranAt) >= since) return true;
+  return ranAfterApproval(normalized?.transcript_path, command, since);
 }

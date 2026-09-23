@@ -12,6 +12,7 @@ import {
   loadOrgAllows,
   readUserAllows,
   repoAllowStatus,
+  repoPathStatus,
   slugRule,
   trustRepoLines,
   writeUserAllows,
@@ -75,6 +76,7 @@ function list(cwd) {
   console.log(`  ${bold('This Repo')} ${dim('(.shomraignore)')}`);
   if (!repo.length) console.log(`    ${dim('none')}`);
   for (const a of repo) console.log(`    ${line(a)} ${a.trusted ? dim('· trusted on this machine') : yellow('· NOT trusted - ignored until you run shomra allow --trust-repo')}`);
+  for (const p of repoPathStatus(cwd)) console.log(`    ${bold('path')} ${p.glob} ${p.trusted ? dim('· not screened · trusted on this machine') : yellow('· NOT trusted - still screened until you run shomra allow --trust-repo')}`);
   console.log(`  ${bold('Your Org')} ${dim('(synced from the platform when enrolled)')}`);
   if (!org.length) console.log(`    ${dim('none')}`);
   for (const a of org) console.log(`    ${line(a)}${a.expiresAt ? dim(` · until ${a.expiresAt}`) : ''}`);
@@ -89,7 +91,7 @@ function rules() {
 
 function trustRepo(cwd, confirmed) {
   const catalog = ruleCatalog();
-  const pending = repoAllowStatus(cwd).filter((a) => !a.trusted);
+  const pending = [...repoAllowStatus(cwd), ...repoPathStatus(cwd)].filter((a) => !a.trusted);
   if (!pending.length) {
     console.log(`\n  ${green('✓')} ${dim('Nothing to review - every allow in this repo is already trusted, or it has none.')}\n`);
     return;
@@ -97,6 +99,10 @@ function trustRepo(cwd, confirmed) {
   const inert = (a) => !a.match && (catalog.get(a.rule)?.severity === 'CRITICAL' || a.rule === DESTRUCTIVE_RULE);
   console.log(`\n  ${bold("This repo's .shomraignore asks to allow:")}`);
   for (const a of pending) {
+    if (a.glob != null) {
+      console.log(`    ${bold('path')} ${a.glob} ${dim('· the firewall does not screen files matching this')}`);
+      continue;
+    }
     const known = catalog.get(a.rule);
     const what = known ? `${known.severity} · ${known.name}` : 'a rule this version does not know';
     const note = inert(a) ? yellow(' · has no --match, so it will never apply to a critical rule') : '';
@@ -107,7 +113,7 @@ function trustRepo(cwd, confirmed) {
     console.log(`  ${dim('To trust them on this machine:')} ${bold('shomra allow --trust-repo --yes')}\n`);
     return;
   }
-  trustRepoLines(cwd, pending);
+  trustRepoLines(cwd, pending.map((a) => (a.glob != null ? { glob: a.glob } : { rule: a.rule, match: a.match })));
   console.log(`\n  ${green('✓')} Trusted ${pending.length} allow${pending.length === 1 ? '' : 's'} for ${bold(cwd)} ${dim('- a changed line needs trusting again')}\n`);
 }
 

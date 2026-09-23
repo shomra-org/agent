@@ -37,7 +37,7 @@ export function emitResultBlock(agent, reason) {
 
 export function emitResultContext(agent, note) {
   const context = () => ({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: note } });
-  const bodies = { claude: context, codex: context, cline: context };
+  const bodies = { claude: context, codex: context, cline: context, gemini: () => ({ hookSpecificOutput: { hookEventName: 'AfterTool', additionalContext: note } }) };
   if (!bodies[agent]) {
     process.stderr.write(note + '\n');
     process.exit(0);

@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { scanLocalModelPath } from '../src/models/local-scan.mjs';
 
@@ -46,6 +47,54 @@ function safetensors(meta = { format: 'pt' }) {
   const header = Buffer.from(JSON.stringify({ __metadata__: meta, w: { dtype: 'F32', shape: [1], data_offsets: [0, 4] } }));
   return Buffer.concat([u64(header.length), header, Buffer.alloc(4)]);
 }
+
+function zip64(entries, { zeroLocalSizes = false, deflate = false } = {}) {
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  const method = deflate ? 8 : 0;
+  for (const [name, raw] of entries) {
+    const data = deflate ? zlib.deflateRawSync(raw) : raw;
+    const n = Buffer.from(name);
+    const localExtra = Buffer.concat([u16(1), u16(16), u64(zeroLocalSizes ? 0 : raw.length), u64(zeroLocalSizes ? 0 : data.length)]);
+    const local = Buffer.concat([u32(0x04034b50), u16(45), u16(zeroLocalSizes ? 8 : 0), u16(method), u16(0), u16(0), u32(0), u32(0xffffffff), u32(0xffffffff), u16(n.length), u16(localExtra.length), n, localExtra, data]);
+    const extra = Buffer.concat([u16(1), u16(24), u64(raw.length), u64(data.length), u64(offset)]);
+    centrals.push(Buffer.concat([u32(0x02014b50), u16(45), u16(45), u16(0), u16(method), u16(0), u16(0), u32(0), u32(0xffffffff), u32(0xffffffff), u16(n.length), u16(extra.length), u16(0), u16(0), u16(0), u32(0), u32(0xffffffff), n, extra]));
+    locals.push(local);
+    offset += local.length;
+  }
+  const cd = Buffer.concat(centrals);
+  const record = Buffer.concat([u32(0x06064b50), u64(44), u16(45), u16(45), u32(0), u32(0), u64(entries.length), u64(entries.length), u64(cd.length), u64(offset)]);
+  const locator = Buffer.concat([u32(0x07064b50), u32(0), u64(offset + cd.length), u32(1)]);
+  const eocd = Buffer.concat([u32(0x06054b50), u16(0), u16(0), u16(0xffff), u16(0xffff), u32(0xffffffff), u32(0xffffffff), u16(0)]);
+  return Buffer.concat([...locals, cd, record, locator, eocd]);
+}
+
+const vint = (n) => {
+  const out = [];
+  while (n > 127) {
+    out.push((n % 128) | 128);
+    n = Math.floor(n / 128);
+  }
+  out.push(n);
+  return Buffer.from(out);
+};
+const pbLen = (field, body) => {
+  const b = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  return Buffer.concat([vint(field * 8 + 2), vint(b.length), b]);
+};
+const pbInt = (field, v) => Buffer.concat([vint(field * 8), vint(v)]);
+
+function onnx({ weight = 16, escape = false, pyop = false } = {}) {
+  const node = pbLen(1, Buffer.concat([pbLen(1, 'x'), pbLen(2, 'y'), pbLen(4, pyop ? 'PyOp' : 'Relu'), ...(pyop ? [pbLen(7, 'ai.onnx.contrib')] : [])]));
+  const external = escape ? [pbLen(13, Buffer.concat([pbLen(1, 'location'), pbLen(2, '../outside/weights.bin')]))] : [];
+  const tensor = pbLen(5, Buffer.concat([pbInt(2, 1), pbLen(8, 'w'), pbLen(9, Buffer.alloc(weight, 7)), ...external]));
+  const graph = pbLen(7, Buffer.concat([node, pbLen(2, 'g'), tensor]));
+  const opset = pbLen(8, Buffer.concat([pbLen(1, pyop ? 'ai.onnx.contrib' : ''), pbInt(2, 17)]));
+  return Buffer.concat([pbInt(1, 8), pbLen(2, 'pytorch'), graph, opset, pbLen(14, Buffer.concat([pbLen(1, 'note'), pbLen(2, 'Exported for the demo app')]))]);
+}
+
+const kerasConfig = (layers) => Buffer.from(JSON.stringify({ class_name: 'Functional', config: { layers }, keras_version: '3.8.0', backend: 'tensorflow' }));
 
 function tmp(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -93,11 +142,82 @@ test('a clean folder passes, and a format this scan cannot read is a floor, neve
   const ok = scanLocalModelPath(clean);
   assert.equal(ok.verdict, 'PASS');
   assert.equal(ok.coverage, 'complete');
-  fs.writeFileSync(path.join(clean, 'head.h5'), Buffer.from([0x89, 0x48, 0x44, 0x46, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]));
+  fs.writeFileSync(path.join(clean, 'model.tflite'), Buffer.from('TFL3\0\0\0\0'));
+  const lite = scanLocalModelPath(clean);
+  assert.equal(lite.verdict, 'PASS', 'a format that cannot run code on load is noted, not a floor');
+  assert.ok(lite.findings.some((f) => f.severity === 'LOW' && /Not read on this machine: model\.tflite/.test(f.title)));
+  fs.writeFileSync(path.join(clean, 'head.h5'), Buffer.concat([Buffer.from([0x89, 0x48, 0x44, 0x46, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('\0\0keras_version\0\0')]));
   const floor = scanLocalModelPath(clean);
   assert.equal(floor.verdict, 'REVIEW');
   assert.equal(floor.coverage, 'floor');
-  assert.ok(floor.findings.some((f) => /Not read on this machine: head\.h5/.test(f.title)));
+  assert.ok(floor.findings.some((f) => /Partly read: head\.h5/.test(f.title)));
+  fs.rmSync(clean, { recursive: true, force: true });
+});
+
+test('Keras and ONNX are read on this machine, and a clean one passes', () => {
+  const dir = tmp('shomra-models-');
+  fs.writeFileSync(path.join(dir, 'lambda.keras'), storedZip([['config.json', kerasConfig([{ class_name: 'Lambda', config: {} }])], ['model.weights.h5', Buffer.alloc(4096)]]));
+  fs.writeFileSync(path.join(dir, 'dense.keras'), storedZip([['config.json', kerasConfig([{ class_name: 'Dense', config: { units: 4 } }])], ['model.weights.h5', Buffer.alloc(4096)]]));
+  fs.writeFileSync(path.join(dir, 'legacy.h5'), Buffer.concat([Buffer.from([0x89, 0x48, 0x44, 0x46, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64), Buffer.from(JSON.stringify({ class_name: 'Sequential', config: { layers: [{ class_name: 'Lambda', config: { function: ['4wEAAAAAAAAA'] } }] }, keras_version: '2.15.0' }))]));
+  fs.writeFileSync(path.join(dir, 'clean.onnx'), onnx());
+  fs.writeFileSync(path.join(dir, 'pyop.onnx'), onnx({ pyop: true }));
+  fs.writeFileSync(path.join(dir, 'escape.onnx'), onnx({ escape: true }));
+  const has = (r, re, file) => r.findings.some((f) => re.test(f.title) && f.file === file);
+  for (const wholeFileMax of [undefined, 1024]) {
+    const r = scanLocalModelPath(dir, wholeFileMax ? { wholeFileMax } : {});
+    assert.equal(r.verdict, 'FAIL', `wholeFileMax ${wholeFileMax}`);
+    assert.ok(has(r, /^Keras Lambda layer$/, 'lambda.keras'));
+    assert.ok(has(r, /Lambda layer with a serialized function/, 'legacy.h5'));
+    assert.ok(has(r, /Python callback op/, 'pyop.onnx'));
+    assert.ok(has(r, /external tensor points outside the model directory/, 'escape.onnx'));
+    assert.ok(!r.findings.some((f) => ['dense.keras', 'clean.onnx'].includes(f.file)), JSON.stringify(r.findings.filter((f) => ['dense.keras', 'clean.onnx'].includes(f.file))));
+    assert.equal(r.files.partial, 0);
+    assert.equal(r.formats.keras, 3);
+    assert.equal(r.formats.onnx, 3);
+  }
+  const clean = tmp('shomra-models-');
+  fs.copyFileSync(path.join(dir, 'dense.keras'), path.join(clean, 'dense.keras'));
+  fs.copyFileSync(path.join(dir, 'clean.onnx'), path.join(clean, 'clean.onnx'));
+  assert.equal(scanLocalModelPath(clean).verdict, 'PASS');
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(clean, { recursive: true, force: true });
+});
+
+test('a big ONNX export is walked without loading its weights', () => {
+  const dir = tmp('shomra-models-');
+  fs.writeFileSync(path.join(dir, 'big.onnx'), onnx({ weight: 200_000, escape: true }));
+  const r = scanLocalModelPath(dir, { wholeFileMax: 4096 });
+  assert.ok(r.findings.some((f) => /external tensor points outside/.test(f.title)));
+  assert.equal(r.files.partial, 0);
+  fs.writeFileSync(path.join(dir, 'big.onnx'), Buffer.concat([Buffer.from([0x08, 0x08, 0x3a, 0xff]), Buffer.alloc(10_000, 0xff)]));
+  const broken = scanLocalModelPath(dir, { wholeFileMax: 4096 });
+  assert.equal(broken.coverage, 'floor');
+  assert.ok(broken.findings.some((f) => /Partly read: big\.onnx/.test(f.title)));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a checkpoint too big to load whole is read through its zip directory, ZIP64 included', () => {
+  const dir = tmp('shomra-models-');
+  const evil = execPickle('subprocess', 'Popen', 'sh');
+  const entries = [['archive/data.pkl', evil], ['archive/data/0', Buffer.alloc(20_000)], ['archive/version', Buffer.from('3\n')]];
+  const cases = {
+    'pytorch_model.bin': storedZip(entries),
+    'zip64.pt': zip64(entries),
+    'hidden.pth': zip64(entries, { zeroLocalSizes: true }),
+    'deflated.ckpt': zip64(entries, { zeroLocalSizes: true, deflate: true }),
+  };
+  for (const [name, bytes] of Object.entries(cases)) fs.writeFileSync(path.join(dir, name), bytes);
+  for (const wholeFileMax of [undefined, 4096]) {
+    const r = scanLocalModelPath(dir, wholeFileMax ? { wholeFileMax } : {});
+    for (const name of Object.keys(cases)) assert.ok(r.findings.some((f) => /OS\/exec gadget/.test(f.title) && f.file === name), `${name} at wholeFileMax ${wholeFileMax}`);
+    assert.equal(r.verdict, 'FAIL');
+  }
+  const clean = tmp('shomra-models-');
+  fs.writeFileSync(path.join(clean, 'pytorch_model.bin'), storedZip([['archive/data.pkl', plainPickle()], ['archive/data/0', Buffer.alloc(20_000)]]));
+  const ok = scanLocalModelPath(clean, { wholeFileMax: 4096 });
+  assert.equal(ok.verdict, 'PASS', JSON.stringify(ok.findings));
+  assert.equal(ok.files.partial, 0);
+  fs.rmSync(dir, { recursive: true, force: true });
   fs.rmSync(clean, { recursive: true, force: true });
 });
 

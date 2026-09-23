@@ -1,9 +1,11 @@
 import fs from 'node:fs';
+import { loadConfig, resolveSettings } from '../core/config.mjs';
 import { EXIT_USAGE } from '../core/exit-codes.mjs';
 import { bold, cyan, dim, green, red, yellow } from '../core/terminal.mjs';
 import { INDEX_FILE, SETTINGS_FILE, STATE_FILE, localBudgetMs, localDisabled, localSettings, patchState, readState, writeJson } from '../local/config.mjs';
 import { ATTACK_EXEMPLARS, BENIGN_EXEMPLARS } from '../local/exemplars.mjs';
 import { buildIndex, loadIndex, removeIndex, saveIndex } from '../local/index.mjs';
+import { digestMatches, fetchOrgPolicy, samePin } from '../local/org-policy.mjs';
 import { detectRuntime, findRuntime, normalizeUrl, urlLocality } from '../local/runtime.mjs';
 import { indexProblem, screenWithLocalModel } from '../local/screen.mjs';
 import { terminalSafe } from '../local/assist.mjs';
@@ -35,6 +37,37 @@ function resolveName(models, wanted) {
   return models.find((m) => m.name === w)?.name ?? models.find((m) => m.name === `${w}:latest`)?.name ?? null;
 }
 
+async function orgPolicy() {
+  const { apiKey, url } = resolveSettings(loadConfig());
+  return fetchOrgPolicy({ url, apiKey });
+}
+
+function pickModel(rt, { flag, pin, required, role, fallback }) {
+  const asked = typeof flag === 'string' ? resolveName(rt.models, flag) : null;
+  if (typeof flag === 'string' && !asked) return { refused: `${bold(flag)} is not installed in this runtime` };
+  if (!pin) return { name: asked ?? fallback() };
+  const pinned = resolveName(rt.models, pin.model);
+  if (asked && asked !== pinned) {
+    if (required) return { refused: `your org requires ${bold(pin.model)} for ${role}, so ${bold(flag)} cannot be used on this machine` };
+    return { name: asked, note: `Using ${flag} instead of ${pin.model}, the model your org suggests for ${role}.` };
+  }
+  if (!pinned) {
+    if (required) return { refused: `your org requires ${bold(pin.model)} for ${role}, and it is not installed. Pull it: ${bold(`ollama pull ${pin.model}`)}` };
+    return { name: fallback(), note: `${pin.model}, the model your org suggests for ${role}, is not installed here - choosing another.` };
+  }
+  if (pin.digest) {
+    const have = rt.models.find((m) => m.name === pinned)?.digest ?? null;
+    if (!digestMatches(have, pin.digest)) {
+      const why = have
+        ? `the build of ${pin.model} on this machine is not the one your org pinned - pull it again (ollama pull ${pin.model}) or ask an admin to update the pin`
+        : `your org pins an exact build of ${pin.model}, and this runtime does not report builds - use Ollama for a pinned model`;
+      if (required) return { refused: why };
+      return { name: pinned, note: `${why[0].toUpperCase()}${why.slice(1)}. Using it anyway, since the pin is not required.` };
+    }
+  }
+  return { name: pinned };
+}
+
 function usage() {
   console.log(`
   ${bold('shomra local')} ${dim('- use a model running on this machine (Ollama, LM Studio, llama.cpp) - no account, nothing leaves the machine')}
@@ -46,6 +79,7 @@ function usage() {
       ${dim('--allow-remote       permit a runtime that is not on this machine or your private network')}
   ${bold('shomra local status')}                 ${dim('what is set up, whether it is reachable, and whether the pins still hold')}
   ${bold('shomra local test')} ${dim('<text> | --file <f>')}  ${dim('score a text the way the tool-result screen would')}
+  ${bold('shomra local reindex')}                ${dim('re-embed the reference samples with the pinned model (runs by itself after an upgrade)')}
   ${bold('shomra local off')}                    ${dim('forget the local model')}
 
   ${dim('What it does: tool results are also read by the embedding model (raise-only: it can add a warning')}
@@ -82,14 +116,28 @@ async function setup(flags) {
   const locality = urlLocality(rt.url);
   console.log(`  ${green('✓')} ${rt.kind === 'ollama' ? 'Ollama' : 'OpenAI-compatible runtime'} at ${bold(rt.url)} ${dim(`· ${rt.models.length} model${rt.models.length === 1 ? '' : 's'}${locality === 'loopback' ? '' : ` · ${locality} network - text is redacted before it is sent`}`)}`);
 
-  const embedName = flags.embed ? resolveName(rt.models, flags.embed) : byPreference(rt.models, EMBED_PREFERENCE, (n) => EMBED_RE.test(n));
+  const org = await orgPolicy();
+  const orgPin = org.policy;
+  if (org.state === 'unreadable') console.log(`  ${yellow('!')} ${dim("Could not read your org's local model policy - this machine chooses its own models.")}`);
+  if (orgPin) {
+    const named = [orgPin.embed && `${bold(orgPin.embed.model)} for the screen`, orgPin.chat && `${bold(orgPin.chat.model)} for fix/why`].filter(Boolean).join(' and ');
+    console.log(`  ${green('✓')} Your org pins ${named} ${dim(orgPin.required ? '· required' : '· as the default')}`);
+  }
+
+  const embedPick = pickModel(rt, { flag: flags.embed, pin: orgPin?.embed, required: orgPin?.required, role: 'the screen', fallback: () => byPreference(rt.models, EMBED_PREFERENCE, (n) => EMBED_RE.test(n)) });
+  if (embedPick.refused) fail(embedPick.refused);
+  if (embedPick.note) console.log(`  ${yellow('!')} ${dim(embedPick.note)}`);
+  const embedName = embedPick.name;
   if (!embedName) {
-    console.log(`\n  ${yellow('!')} ${flags.embed ? `${bold(String(flags.embed))} is not installed in this runtime.` : 'No embedding model is installed.'}`);
+    console.log(`\n  ${yellow('!')} No embedding model is installed.`);
     console.log(`  ${dim('Pull one:')} ${bold('ollama pull nomic-embed-text')} ${dim('(or all-minilm for the fastest screen), then run this again.')}\n`);
     process.exit(EXIT_USAGE);
   }
-  const judgeName = typeof flags.model === 'string' ? resolveName(rt.models, flags.model) : byPreference(rt.models, CHAT_PREFERENCE, (n) => !NOT_A_FIXER_RE.test(n));
-  if (typeof flags.model === 'string' && !judgeName) fail(`${bold(flags.model)} is not installed in this runtime`);
+  const judgePick = pickModel(rt, { flag: flags.model, pin: orgPin?.chat, required: orgPin?.required, role: 'fix/why', fallback: () => byPreference(rt.models, CHAT_PREFERENCE, (n) => !NOT_A_FIXER_RE.test(n)) });
+  if (judgePick.refused && typeof flags.model === 'string' && !orgPin?.chat) fail(judgePick.refused);
+  if (judgePick.refused) console.log(`  ${yellow('!')} ${dim(`fix/why stay off: ${judgePick.refused.replace(/\x1b\[[0-9;]*m/g, '')}.`)}`);
+  if (judgePick.note) console.log(`  ${yellow('!')} ${dim(judgePick.note)}`);
+  const judgeName = judgePick.refused ? null : judgePick.name;
 
   console.log(`\n  ${bold('Vetting')} ${dim('- a model whose template can execute code is refused')}`);
   const embedVet = await vetModel(rt, embedName);
@@ -126,6 +174,7 @@ async function setup(flags) {
     locality,
     embed: { model: embedName, digest: digestOf(embedName), templateRead: !!embedVet.read },
     judge: judge ? { model: judge, digest: digestOf(judge), templateRead: !!judgeVet?.read } : null,
+    org: orgPin ?? null,
     setupAt: new Date().toISOString(),
   };
   writeJson(SETTINGS_FILE, settings);
@@ -161,11 +210,15 @@ async function describe() {
     return now.digest === m.digest ? 'held' : 'changed';
   };
   const state = readState();
+  const org = await orgPolicy();
+  const orgPin = org.policy;
+  const orgState = org.state === 'unreadable' ? 'unreadable' : !orgPin ? (s.org ? 'lifted' : 'none') : !samePin(orgPin, s.org ?? null) ? 'changed' : 'held';
   return {
     setup: true,
+    org: { state: orgState, pin: orgPin ?? s.org ?? null },
     runtime: { kind: s.kind, url: s.url, locality: s.locality, reachable: !!rt },
-    screen: { model: s.embed.model, pin: pin(s.embed), templateRead: s.embed.templateRead, problem, calibration: index?.calibration ?? null, budgetMs: localBudgetMs(), disabled: localDisabled() },
-    judge: s.judge ? { model: s.judge.model, pin: pin(s.judge), templateRead: s.judge.templateRead } : null,
+    screen: { model: s.embed.model, digest: s.embed.digest ?? null, pin: pin(s.embed), templateRead: s.embed.templateRead, problem, calibration: index?.calibration ?? null, budgetMs: localBudgetMs(), disabled: localDisabled() },
+    judge: s.judge ? { model: s.judge.model, digest: s.judge.digest ?? null, pin: pin(s.judge), templateRead: s.judge.templateRead } : null,
     lastError: state.lastError ? { message: state.lastError, at: state.lastErrorAt ? new Date(state.lastErrorAt).toISOString() : null } : null,
     modelChangedAt: state.modelChangedAt ? new Date(state.modelChangedAt).toISOString() : null,
   };
@@ -173,8 +226,15 @@ async function describe() {
 
 const PROBLEM_TEXT = {
   'no-index': 'the reference index is missing - run shomra local setup',
-  'stale-index': 'the reference samples changed with this CLI version - run shomra local setup',
+  'stale-index': 'the reference samples changed with this CLI version - they re-embed by themselves after the next tool result, or run shomra local reindex',
   'not-discriminative': 'the embedding model did not separate attacks from ordinary text at setup',
+};
+
+const ORG_TEXT = {
+  held: green('· applied at setup'),
+  changed: yellow('· your org changed it since setup - run shomra local setup'),
+  lifted: dim('· your org no longer pins a model'),
+  unreadable: yellow("· could not read your org's current pin"),
 };
 
 const PIN_TEXT = {
@@ -201,6 +261,11 @@ async function status(flags) {
     console.log(`             ${dim(`caught ${Math.round(c.recall * c.attacks)} of ${c.attacks} held-out attacks · 0 of ${c.benign} ordinary samples fired · budget ${d.screen.budgetMs}ms`)}`);
   }
   console.log(`             ${on ? green('ON - raise-only on tool results') : yellow(`OFF - ${d.screen.disabled ? 'SHOMRA_LOCAL_OFF is set' : PROBLEM_TEXT[d.screen.problem] ?? 'the pinned model is not available'}`)}`);
+  if (d.org.pin) {
+    const p = d.org.pin;
+    const named = [p.embed && `${p.embed.model} for the screen`, p.chat && `${p.chat.model} for fix/why`].filter(Boolean).join(' and ');
+    console.log(`  Org Pin    ${named} ${dim(p.required ? '· required' : '· the default')} ${ORG_TEXT[d.org.state] ?? ''}`);
+  }
   console.log(`  Fix / Why  ${d.judge ? `${bold(d.judge.model)} ${dim('·')} ${PIN_TEXT[d.judge.pin] ?? ''}${d.judge.pin === 'changed' ? red(' - refused until you run shomra local setup') : ''}` : dim('no chat model set up')}`);
   if (d.lastError) console.log(`  ${yellow('Last error')} ${dim(`${terminalSafe(d.lastError.message, 160)} (${d.lastError.at})`)}`);
   if (d.modelChangedAt) console.log(`  ${red('Model changed')} ${dim(`answers stopped matching the pinned model at ${d.modelChangedAt} - run shomra local setup`)}`);
@@ -241,6 +306,24 @@ async function test(flags, rest) {
   console.log(`  ${reading.state === 'raised' ? red('Raised - the agent would be told to treat this as data.') : green('Quiet - nothing would be added.')}\n`);
 }
 
+const REINDEX_TEXT = {
+  'not-needed': 'the index already matches this CLI version',
+  'model-changed': 'the pinned model no longer answers - run shomra local setup',
+};
+
+async function reindexCommand(flags) {
+  const { reindex } = await import('../local/reindex.mjs');
+  let result;
+  try {
+    result = await reindex();
+  } catch (error) {
+    result = { ok: false, reason: terminalSafe(error.message, 160) };
+  }
+  if (flags.quiet) return;
+  if (result.ok) console.log(`\n  ${green('✓')} Reference samples re-embedded with the pinned model.\n`);
+  else console.log(`\n  ${dim(`Nothing re-embedded: ${REINDEX_TEXT[result.reason] ?? result.reason}.`)}\n`);
+}
+
 function off() {
   for (const f of [SETTINGS_FILE, STATE_FILE]) {
     try {
@@ -259,5 +342,6 @@ export async function cmdLocal(flags, positional = []) {
   if (sub === 'status') return status(flags);
   if (sub === 'test') return test(flags, rest);
   if (sub === 'off') return off();
-  return fail(`Unknown subcommand ${bold(sub)} ${dim('- setup, status, test or off')}`);
+  if (sub === 'reindex') return reindexCommand(flags);
+  return fail(`Unknown subcommand ${bold(sub)} ${dim('- setup, status, test, reindex or off')}`);
 }

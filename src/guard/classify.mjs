@@ -32,26 +32,8 @@ export const WRITE_TOOLS = new Set([
   'edit', 'create', 'replace_string_in_file', 'insert_edit_into_file',
 ]);
 
-/**
- * ⚠ THE SHELL TOOL OF EVERY VENDOR. Claude Code's own `PowerShell`, Codex
- * `local_shell` / `exec_command` / `container.exec`, Copilot
- * `run_in_terminal`, Continue `run_terminal_command`, Goose
- * `developer__shell`, OpenHands `execute_bash` and Kiro `executeBash` were not
- * shell tools here, so their commands were never read for an install, an
- * egress or a redirect into an agent artifact. Mirrored on the server
- * (`tool-guard-grading.ts` SHELL_TOOL_NAMES); the backend's
- * `test/gate/subject-wiring-bench` fails when the two lists disagree.
- */
-export const SHELL_TOOL_NAMES = [
-  'bash', 'shell', 'sh', 'zsh', 'run_command', 'run_terminal_cmd', 'execute_command', 'terminal', 'exec', 'run_shell_command',
-  'powershell', 'pwsh', 'local_shell', 'exec_command', 'container.exec', 'run_in_terminal', 'run_terminal_command',
-  'builtin_run_terminal_command', 'developer__shell', 'execute_bash', 'executebash',
-];
-
-export const SHELL_TOOLS_RE = new RegExp(`^(?:${SHELL_TOOL_NAMES.map((n) => n.replace(/[.]/g, '\\.')).join('|')})$`, 'i');
-
-export { argvCommand, heredocPatch, patchTextOf, shellCommandOf } from './command-text.mjs';
-import { patchTextOf, shellCommandOf } from './command-text.mjs';
+export { SHELL_TOOL_NAMES, SHELL_TOOLS_RE, argvCommand, heredocPatch, patchTextOf, shellCommandOf } from './command-text.mjs';
+import { SHELL_TOOLS_RE, patchTextOf, shellCommandOf } from './command-text.mjs';
 
 /** An MCP tool whose NAME says it runs a process - the server's `mcpExecCommand` reads the same leaves. */
 const MCP_EXEC_LEAF = /(?:^|_)(?:exec|execute|run|command|process|shell|terminal|bash|spawn|powershell|cmd)(?:_|$)/i;

@@ -60,7 +60,7 @@ shomra selftest --agent all            # prove the firewall is really in path on
 shomra rules --write                   # teach the agent what gets blocked, so it never writes it
 shomra mcp install                     # let the agent gate its own content BEFORE writing it
 shomra scan                            # discover AI tooling on this machine
-shomra model-scan ./models/my-model    # pickle / GGUF / safetensors checks on files here
+shomra model-scan ./models/my-model    # pickle, PyTorch, GGUF, safetensors, Keras and ONNX checks on files here
 shomra memory-scan                     # poisoned agent memory and rules files on this machine
 shomra status                          # config + firewall health
 shomra help                            # full command list
@@ -108,7 +108,9 @@ is deliberately narrow:
 - **It is pinned and vetted.** Every embedding request carries a fixed probe, so a
   swapped model is detected and not used. The chat model's digest is checked
   before each fix. A model whose template can reach the host (Jinja SSTI) is
-  refused at setup.
+  refused at setup. On a paid plan an admin can pin the model, and its exact
+  build, for every enrolled machine (Settings → Local Model); setup then uses it,
+  and refuses anything else when the pin is required.
 - **A local fix is only offered when it is better.** The fixed file is re-scanned
   on your machine. It is rejected if it is not cleaner, adds a finding, adds a
   host, adds control characters or deletes most of the file.
@@ -126,11 +128,18 @@ shomra allow --list                                          # what is allowed, 
 
 Allows are narrow by design. A standing allow on a critical rule needs `--match`,
 and they expire (30 days at most). An allow only works from a terminal, so an agent
-that was just blocked cannot allow itself. A repo's `.shomraignore` allows apply only
-once someone has trusted them on that machine (`shomra allow --trust-repo`), because a
-repo you clone could otherwise switch the firewall off for itself; a changed line needs
-trusting again. On a paid plan, admins can also set org-wide allows in Settings →
+that was just blocked cannot allow itself. A repo's `.shomraignore` rule allows and path
+patterns change what the firewall does only once someone has trusted them on that machine
+(`shomra allow --trust-repo`), because a repo you clone could otherwise switch the firewall
+off for itself; a changed line needs trusting again. `shomra check` still reads the file as
+is, since there it is the repo's own review policy. On a paid plan, admins can also set org-wide allows in Settings →
 Firewall Allows.
+
+Once you approve an ask and the command actually runs, the same command is not asked
+again in that session for 12 hours. Claude Code proves it ran from its transcript; Cursor,
+Codex, Cline, Gemini CLI and Copilot prove it through the after-tool hook, which records
+that the command ran and does not screen shell output. A denied ask proves nothing, so you
+are asked again.
 
 ### The install-time verbs (still here)
 

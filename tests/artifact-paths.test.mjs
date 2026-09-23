@@ -34,6 +34,11 @@ test('the generated artifact-path mirror is in sync with the server source', asy
     t.skip('Dragox.Backend not checked out');
     return;
   }
+  const { stripTypeScriptTypes } = await import('node:module');
+  if (typeof stripTypeScriptTypes !== 'function') {
+    t.skip('this Node has no stripTypeScriptTypes');
+    return;
+  }
   const { render } = await import(pathToUrl(path.join(BACKEND, 'scripts', 'mirror-artifact-paths.mjs')));
   assert.equal(
     fs.readFileSync(MIRROR, 'utf8'),

@@ -8,7 +8,7 @@ import { DESTRUCTIVE_RULE, allowHint, allowMatches, applyAllows, consumeOnce, lo
 import { recordAsk, rememberedApproval } from './approvals.mjs';
 import { MODEL_WRITE_TOOLS, SHELL_TOOLS_RE, WRITE_TOOLS, guardTargetPath, guardText, shellCommandOf } from './classify.mjs';
 import { emitGuardAsk, emitGuardDeny } from './emit.mjs';
-import { guardPathAllowlisted } from './ignore.mjs';
+import { guardPathAllowlisted, pathTrustHint, untrustedPathLine } from './ignore.mjs';
 import { normalizeGuardInput } from './normalize.mjs';
 import { envFlag, localTierDisabled, resolveAgentFlag } from './options.mjs';
 import { selfProtectionFindings } from './self-protect.mjs';
@@ -26,7 +26,7 @@ function unscreenedSevere(normalized, tool, input) {
   return classifyConsequence({
     tool,
     args: guardText(tool, input),
-    isShell: !WRITE_TOOLS.has(tool) && typeof input?.command === 'string',
+    isShell: !WRITE_TOOLS.has(tool) && (typeof input?.command === 'string' || Array.isArray(input?.command) || Array.isArray(input?.argv)),
   }) === 'severe';
 }
 
@@ -48,7 +48,7 @@ function confirmReason(finding) {
 }
 
 function askHuman(agent, normalized, command, reason, tctx, finding) {
-  if (command && rememberedApproval(normalized, command)) {
+  if (command && rememberedApproval(normalized, command, { agent })) {
     if (finding) recordLabel({ channel: 'tool', label: 'approved', findings: [finding], rule: runtimeRule, dedupe: `approved|${normalized.session_id}|${command}` }, tctx);
     return false;
   }
@@ -159,7 +159,8 @@ export async function cmdToolGuard(flags) {
       const { buildGuardBody, reportGuardDecision } = await import('./report.mjs');
       await reportGuardDecision(url, apiKey, agentId, buildGuardBody(normalized, agent, 'BLOCK', local.top?.label));
     }
-    emitGuardDeny(agent, `Blocked on-machine by Shomra: ${local.top?.label || 'dangerous tool call'}.${allowHint(ruleIdOf(local.top), commandText, { root: normalized.cwd || process.cwd(), severity: local.top?.severity })}`);
+    const pathHint = WRITE_TOOLS.has(tool) ? pathTrustHint(untrustedPathLine(normalized.cwd, guardTargetPath(normalized))) : '';
+    emitGuardDeny(agent, `Blocked on-machine by Shomra: ${local.top?.label || 'dangerous tool call'}.${pathHint || allowHint(ruleIdOf(local.top), commandText, { root: normalized.cwd || process.cwd(), severity: local.top?.severity })}`);
   }
 
   if (MODEL_WRITE_TOOLS.includes(String(tool).toLowerCase())) {

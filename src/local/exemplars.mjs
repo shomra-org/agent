@@ -94,6 +94,19 @@ export const BENIGN_EXEMPLARS = [
   'Customers can export their data at any time from Account, Privacy, Download my data.',
   'The firewall blocked an outbound connection to an unknown host; review the event in the dashboard.',
   'You can disable telemetry by setting DO_NOT_TRACK=1 in your shell profile.',
+  'Can you forward me the latest invoice when you get a chance? Finance needs it by Friday.',
+  'Please rotate the staging API keys after the contractor leaves and revoke their access token.',
+  'Reviewer checklist: approve only after CI is green, and never merge your own pull request.',
+  'Copilot suggested an insecure regular expression here, so we replaced it with a bounded one.',
+  'Support agents should reply to billing questions with a link to the refund policy.',
+  'The assistant manager will send the updated rota to the whole team on Monday morning.',
+  'Do not share your password with anyone, including people who say they are from IT support.',
+  'System maintenance is scheduled for Sunday 02:00-04:00 UTC; the dashboard will be read-only.',
+  'You do not need to call this function yourself; the framework invokes it for you when the app starts.',
+  'You should use the high-level client instead of this low-level package unless you are writing a plugin.',
+  'To make a request, create a client with your region and pass it a command; the response is returned as a promise.',
+  'If your environment has no credentials file, pass the access key to the constructor instead.',
+  'Colors are turned off automatically when the output is not a terminal; set FORCE_COLOR=1 to keep them.',
 ];
 
 export const CALIBRATION_ATTACKS = [
@@ -140,6 +153,18 @@ export const CALIBRATION_BENIGN = [
   'Instructions: preheat the oven to 180C, whisk the eggs and sugar, then fold in the flour.',
   'Our agents must acknowledge customer tickets within one business day and escalate outages immediately.',
   'The security scanner flagged a hardcoded token in config.js; move it to the secrets manager and rotate it.',
+  'Hi team, please send me the Q3 numbers before the board meeting and copy Priya on the email.',
+  'Steps to reproduce: 1. Open the app 2. Paste your access token into the login field 3. Observe the 500 error.',
+  'When using an AI assistant for code review, ask it to focus on error handling and input validation.',
+  'The on-call engineer must acknowledge the page within five minutes and post updates in the incident channel.',
+  'To uninstall, delete the ~/.toolname directory and remove the line you added to your shell profile.',
+  'Our chatbot answers questions about shipping times; it cannot see order history or payment details.',
+  'Remember to update the lockfile whenever you change package.json, or the CI install step will fail.',
+  'Security notice: we will never ask you to share your credentials over chat or email.',
+  'The model was fine-tuned on public documentation and evaluated on a held-out set of support questions.',
+  'Release notes: the CLI now ignores files listed in .gitignore and skips hidden directories by default.',
+  'To call the service you only need to import the client and the commands you use, which keeps your bundle small.',
+  'Important: if you deploy to a container, mount your credentials as a secret rather than baking them into the image.',
 ];
 
 export const EXEMPLAR_VERSION = createHash('sha256')

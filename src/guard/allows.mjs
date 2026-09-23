@@ -51,8 +51,8 @@ export function writeUserAllows(list, file = ALLOWS_FILE) {
   fs.renameSync(tmp, file);
 }
 
-export function repoLineKey(allow) {
-  return `${allow.rule}::${allow.match ?? ''}`;
+export function repoLineKey(item) {
+  return item.glob != null ? `path::${item.glob}` : `${item.rule}::${item.match ?? ''}`;
 }
 
 function repoKey(root) {
@@ -95,6 +95,20 @@ export function repoAllowStatus(root, file = TRUST_FILE) {
 
 export function loadRepoAllows(root, file = TRUST_FILE) {
   return repoAllowStatus(root, file).filter((a) => a.trusted);
+}
+
+export function repoPathStatus(root, file = TRUST_FILE) {
+  if (!root) return [];
+  let rules;
+  try {
+    rules = loadIgnoreRules(root);
+  } catch {
+    return [];
+  }
+  const sources = rules.fileGlobSources ?? [];
+  if (!sources.length) return [];
+  const trusted = readRepoTrust(file)[repoKey(root)]?.lines ?? {};
+  return sources.map((glob, i) => ({ glob, re: rules.fileGlobs[i], source: 'repo', trusted: Object.prototype.hasOwnProperty.call(trusted, repoLineKey({ glob })) }));
 }
 
 export function loadOrgAllows(file = ORG_ALLOWS_FILE, now = Date.now()) {

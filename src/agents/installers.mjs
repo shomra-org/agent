@@ -39,18 +39,25 @@ export const TOOL_GUARD_MATCHERS = {
   cline: matcherFor('cline'),
 };
 
+export const RESULT_GUARD_MATCHERS = {
+  claude: 'WebFetch|WebSearch|Read|NotebookRead|mcp__.*',
+  codex: 'WebFetch|WebSearch|Read|mcp__.*|Bash|shell|local_shell|exec_command',
+  cline: 'read_file|web_fetch|use_mcp_tool|execute_command',
+};
+
 /**
  * ⚠ AN UPGRADE MUST WIDEN AN EXISTING INSTALL, not only a fresh one. The
- * installer skipped any settings file that already had a Shomra tool-guard
+ * installer skipped any settings file that already had a Shomra guard
  * group, so a machine installed before a name was added kept the old matcher
  * forever. Every missing required name is appended to the Shomra group's
  * matcher; names the user added are kept, and a match-all matcher is left alone.
  */
-export function widenToolGuardMatcher(list, required) {
+export function widenGuardMatcher(list, required, verb) {
   if (!Array.isArray(list)) return false;
+  const re = new RegExp(`\\b${verb}\\b`);
   let changed = false;
   for (const g of list) {
-    if (!Array.isArray(g?.hooks) || !g.hooks.some((h) => /\btool-guard\b/.test(String(h?.command || '')) && /shomra/i.test(String(h?.command || '')))) continue;
+    if (!Array.isArray(g?.hooks) || !g.hooks.some((h) => re.test(String(h?.command || '')) && /shomra/i.test(String(h?.command || '')))) continue;
     const cur = typeof g.matcher === 'string' ? g.matcher : '';
     if (!cur || cur === '*' || cur === '.*') continue;
     const have = new Set(cur.split('|').map((s) => s.trim()));
@@ -60,6 +67,10 @@ export function widenToolGuardMatcher(list, required) {
     changed = true;
   }
   return changed;
+}
+
+export function widenToolGuardMatcher(list, required) {
+  return widenGuardMatcher(list, required, 'tool-guard');
 }
 
 export const AGENT_INSTALLERS = {
@@ -77,7 +88,7 @@ export const AGENT_INSTALLERS = {
       changed = true;
     } else if (widenToolGuardMatcher(pre, TOOL_GUARD_MATCHERS.claude)) changed = true;
     if (!hasGroupedHook(post, 'result-guard')) {
-      post.push({ matcher: 'WebFetch|WebSearch|Read|NotebookRead|mcp__.*', hooks: [{ type: 'command', command: hookCommand('result-guard --agent claude', { portable }) }] });
+      post.push({ matcher: RESULT_GUARD_MATCHERS.claude, hooks: [{ type: 'command', command: hookCommand('result-guard --agent claude', { portable }) }] });
       changed = true;
     }
 
@@ -117,9 +128,9 @@ export const AGENT_INSTALLERS = {
       changed = true;
     } else if (widenToolGuardMatcher(pre, TOOL_GUARD_MATCHERS.codex)) changed = true;
     if (!hasGroupedHook(post, 'result-guard')) {
-      post.push({ matcher: 'WebFetch|WebSearch|Read|mcp__.*', hooks: [{ type: 'command', command: hookCommand('result-guard --agent codex', { portable }) }] });
+      post.push({ matcher: RESULT_GUARD_MATCHERS.codex, hooks: [{ type: 'command', command: hookCommand('result-guard --agent codex', { portable }) }] });
       changed = true;
-    }
+    } else if (widenGuardMatcher(post, RESULT_GUARD_MATCHERS.codex, 'result-guard')) changed = true;
     if (changed) {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(file, JSON.stringify(settings, null, 2));
@@ -170,6 +181,7 @@ export const AGENT_INSTALLERS = {
     wire('beforeMCPExecution', hookCommand('tool-guard --agent cursor', { portable }));
     wire('afterFileEdit', hookCommand('result-guard --agent cursor', { portable }));
     wire('afterMCPExecution', hookCommand('result-guard --agent cursor', { portable }));
+    wire('afterShellExecution', hookCommand('result-guard --agent cursor', { portable }));
 
     wire('beforeSubmitPrompt', hookCommand('prompt-guard --agent cursor', { portable }));
     if (changed) {
@@ -232,9 +244,9 @@ export const AGENT_INSTALLERS = {
       changed = true;
     } else if (widenToolGuardMatcher(pre, TOOL_GUARD_MATCHERS.cline)) changed = true;
     if (!hasGroupedHook(post, 'result-guard')) {
-      post.push({ matcher: 'read_file|web_fetch|use_mcp_tool', hooks: [{ type: 'command', command: hookCommand('result-guard --agent cline', { portable }) }] });
+      post.push({ matcher: RESULT_GUARD_MATCHERS.cline, hooks: [{ type: 'command', command: hookCommand('result-guard --agent cline', { portable }) }] });
       changed = true;
-    }
+    } else if (widenGuardMatcher(post, RESULT_GUARD_MATCHERS.cline, 'result-guard')) changed = true;
     if (changed) {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(file, JSON.stringify(settings, null, 2));

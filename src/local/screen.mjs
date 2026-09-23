@@ -3,6 +3,7 @@ import { pickWindows } from './chunks.mjs';
 import { BACKOFF_MS, STATE_FILE, localBudgetMs, localDisabled, patchState, readState } from './config.mjs';
 import { EXEMPLAR_VERSION, PROBE_TEXT } from './exemplars.mjs';
 import { PROBE_MIN, dot, fires, loadIndex, normalize, scoreVector } from './index.mjs';
+import { maybeReindexInBackground } from './reindex.mjs';
 import { embed } from './runtime.mjs';
 
 export const LOCAL_MODEL_LABEL = 'A local model read this as instructions addressed to the agent';
@@ -19,7 +20,7 @@ export function indexProblem(index, settings) {
   return null;
 }
 
-export async function screenWithLocalModel(text, settings, { budgetMs = localBudgetMs(), now = Date.now(), windows: pick = {}, index: preloaded, ignoreBackoff = false, stateFile = STATE_FILE } = {}) {
+export async function screenWithLocalModel(text, settings, { budgetMs = localBudgetMs(), now = Date.now(), windows: pick = {}, index: preloaded, ignoreBackoff = false, stateFile = STATE_FILE, onStale = maybeReindexInBackground } = {}) {
   if (!settings?.embed?.model) return { state: 'not-configured' };
   if (localDisabled()) return { state: 'off' };
   if (!ignoreBackoff) {
@@ -28,6 +29,7 @@ export async function screenWithLocalModel(text, settings, { budgetMs = localBud
   }
   const index = preloaded ?? loadIndex();
   const problem = indexProblem(index, settings);
+  if (problem === 'stale-index') onStale(index, settings, { now, stateFile });
   if (problem) return { state: problem };
 
   const windows = pickWindows(text, pick);

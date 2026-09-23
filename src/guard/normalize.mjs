@@ -105,7 +105,7 @@ function normalizeGuardShape(agent, payload) {
       return {
         tool_name: payload.toolName || payload.tool_name,
         tool_input: objectArgs(payload.toolArgs ?? payload.tool_input),
-        tool_response: payload.toolResponse ?? payload.tool_response,
+        tool_response: payload.toolResponse ?? payload.tool_response ?? payload.toolResult?.textResultForLlm ?? payload.toolResult,
         cwd: payload.cwd,
         session_id: payload.sessionId || payload.session_id,
       };

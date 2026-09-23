@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { extractFixed, judgeFix, parseExplanations, terminalSafe } from '../src/local/assist.mjs';
 import { addressScore, pickWindows, textLeaves } from '../src/local/chunks.mjs';
 import { unifiedDiff } from '../src/local/diff.mjs';
-import { ATTACK_EXEMPLARS, BENIGN_EXEMPLARS, CALIBRATION_ATTACKS, CALIBRATION_BENIGN, PROBE_TEXT } from '../src/local/exemplars.mjs';
+import { ATTACK_EXEMPLARS, BENIGN_EXEMPLARS, CALIBRATION_ATTACKS, CALIBRATION_BENIGN, EXEMPLAR_VERSION, PROBE_TEXT } from '../src/local/exemplars.mjs';
 import { buildIndex, calibrate, decodeVectors, encodeVectors, normalize } from '../src/local/index.mjs';
 import { urlLocality } from '../src/local/runtime.mjs';
 import { screenWithLocalModel } from '../src/local/screen.mjs';
@@ -230,6 +230,96 @@ test('screen mechanics against a stub runtime: raise, quiet, pinned probe, budge
   }
 });
 
+test('new reference samples re-embed by themselves with the pinned model, never a swapped one', async () => {
+  const stub = await startStub();
+  const home = tempHome();
+  try {
+    const { loadIndex } = await import('../src/local/index.mjs');
+    const { maybeReindexInBackground, onlySamplesChanged, reindex } = await import('../src/local/reindex.mjs');
+    const settings = { kind: 'ollama', url: stub.url, locality: 'loopback', embed: { model: 'stub-embed:latest', digest: 'sha256:embed1' } };
+    const { stored } = await buildIndex({ kind: 'ollama', url: stub.url }, 'stub-embed:latest');
+    const file = path.join(home, 'index.json');
+    fs.writeFileSync(file, JSON.stringify({ ...stored, exemplars: 'older-samples' }));
+    const stale = loadIndex(file);
+    assert.equal(onlySamplesChanged(stale, settings), true);
+    assert.equal(onlySamplesChanged(stale, { ...settings, embed: { model: 'other' } }), false);
+
+    const spawned = [];
+    const spawnImpl = (...args) => {
+      spawned.push(args);
+      return { on() {}, unref() {} };
+    };
+    const stateFile = path.join(home, 'state.json');
+    const opts = { index: stale, ignoreBackoff: true, stateFile, onStale: (i, s, o) => maybeReindexInBackground(i, s, { ...o, env: {}, spawnImpl }) };
+    assert.equal((await screenWithLocalModel(MODEL_ONLY, settings, opts)).state, 'stale-index');
+    assert.equal(spawned.length, 1);
+    assert.deepEqual(spawned[0][1].slice(-3), ['local', 'reindex', '--quiet']);
+    await screenWithLocalModel(MODEL_ONLY, settings, opts);
+    assert.equal(spawned.length, 1, 'one rebuild per half hour, not one per tool result');
+
+    stub.state.seed = 1;
+    assert.equal((await reindex({ settings, index: stale, file })).reason, 'model-changed');
+    assert.equal(loadIndex(file).exemplars, 'older-samples');
+    stub.state.seed = 0;
+    assert.equal((await reindex({ settings: { ...settings, embed: { ...settings.embed, digest: 'sha256:other' } }, index: stale, file })).reason, 'model-changed');
+    assert.equal((await reindex({ settings, index: stale, file })).ok, true);
+    assert.equal(loadIndex(file).exemplars, EXEMPLAR_VERSION);
+    assert.equal((await reindex({ settings, index: loadIndex(file), file })).reason, 'not-needed');
+  } finally {
+    stub.server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('an enrolled machine uses the model its org pins, and a required pin refuses anything else', async () => {
+  const stub = await startStub();
+  const seen = [];
+  let served = { enabled: true, policy: { embed: { model: 'stub-embed:latest', digest: null }, chat: { model: 'stub-coder:3b', digest: null }, required: true } };
+  const backend = http.createServer((req, res) => {
+    seen.push({ url: req.url, key: req.headers['x-shomra-key'] });
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(served));
+  });
+  await new Promise((r) => backend.listen(0, '127.0.0.1', r));
+  const env = { SHOMRA_API_KEY: 'shm_test_key', SHOMRA_URL: `http://127.0.0.1:${backend.address().port}` };
+  const home = tempHome();
+  try {
+    const ok = await run(['local', 'setup', '--url', stub.url], { home, env });
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.match(ok.stdout, /Your org pins stub-embed:latest for the screen and stub-coder:3b for fix\/why · required/);
+    assert.deepEqual(seen[0], { url: '/gate/local-model', key: 'shm_test_key' });
+
+    const other = await run(['local', 'setup', '--url', stub.url, '--embed', 'stub-coder:3b'], { home, env });
+    assert.notEqual(other.status, 0);
+    assert.match(other.stderr, /your org requires stub-embed:latest for the screen, so stub-coder:3b cannot be used/);
+
+    served = { enabled: true, policy: { ...served.policy, embed: { model: 'stub-embed:latest', digest: 'f'.repeat(64) } } };
+    const build = await run(['local', 'setup', '--url', stub.url], { home, env });
+    assert.notEqual(build.status, 0);
+    assert.match(build.stderr, /not the one your org pinned/);
+
+    served = { enabled: true, policy: { ...served.policy, required: false } };
+    const soft = await run(['local', 'setup', '--url', stub.url], { home, env });
+    assert.equal(soft.status, 0, soft.stderr);
+    assert.match(soft.stdout, /Using it anyway, since the pin is not required/);
+
+    const json = JSON.parse((await run(['local', 'status', '--json'], { home, env })).stdout);
+    assert.equal(json.screen.digest, 'sha256:embed1', 'status --json shows the build an admin would pin');
+    assert.equal(json.org.state, 'held');
+    served = { enabled: true, policy: { ...served.policy, chat: null } };
+    const status = await run(['local', 'status'], { home, env });
+    assert.match(status.stdout, /Org Pin\s+stub-embed:latest for the screen · the default · your org changed it since setup/);
+
+    served = { enabled: false, policy: null };
+    const unplanned = await run(['local', 'setup', '--url', stub.url, '--embed', 'stub-coder:3b'], { home, env });
+    assert.doesNotMatch(unplanned.stdout, /Your org pins/);
+  } finally {
+    stub.server.close();
+    backend.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('end to end: setup, the tool-result note, fix --local and why --local, with no account', async () => {
   const stub = await startStub();
   const home = tempHome();
@@ -238,7 +328,7 @@ test('end to end: setup, the tool-result note, fix --local and why --local, with
     const setup = await run(['local', 'setup', '--url', stub.url], { home });
     assert.equal(setup.status, 0, setup.stderr + setup.stdout);
     assert.match(setup.stdout, /stub-embed:latest/);
-    assert.match(setup.stdout, /0 of 24/);
+    assert.match(setup.stdout, new RegExp(`0 of ${CALIBRATION_BENIGN.length}`));
     const settings = JSON.parse(fs.readFileSync(path.join(home, '.shomra', 'local', 'settings.json'), 'utf8'));
     assert.equal(settings.embed.digest, 'sha256:embed1');
     assert.equal(settings.judge.model, 'stub-coder:3b');
