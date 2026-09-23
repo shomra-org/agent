@@ -23,10 +23,11 @@ import { fileURLToPath } from 'node:url';
 
 import { ARTIFACT_PATHS, artifactKindFor } from '../src/guard/artifact-paths.mjs';
 import { WRITE_TOOLS, guardNeedsServer, guardText, guardTouchedPaths, shellWritePaths } from '../src/guard/classify.mjs';
+import { BACKEND_ROOT } from './backend-root.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const MIRROR = path.join(here, '..', 'src', 'guard', 'artifact-paths.mjs');
-const BACKEND = path.join(here, '..', '..', 'Dragox.Backend');
+const BACKEND = BACKEND_ROOT ?? path.join(here, '..', '..', 'Dragox.Backend');
 
 test('the generated artifact-path mirror is in sync with the server source', async (t) => {
   if (!fs.existsSync(path.join(BACKEND, 'scripts', 'mirror-artifact-paths.mjs'))) {

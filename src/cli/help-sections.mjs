@@ -11,9 +11,11 @@ const USAGE = () => `${bold('USAGE')}
 `;
 
 const MODES = () => `${bold('MODES')}  ${dim('- local-first: everything that can run on your machine does, with no account')}
-  ${cyan('Local')}     ${dim('(no key)')}  check · gate · doctor · protect · design · plan · corpus · rules · add · secrets · models · new · mcp
+  ${cyan('Local')}     ${dim('(no key)')}  check · gate · doctor · protect · design · plan · corpus · rules · add · secrets · models · new · mcp · allow
+                        model-scan ${dim('<path>')} · memory-scan ${dim('(on this machine)')} · model-scan ${dim('<hf model>')} ${dim('(free public scanner)')}
                         ${dim('Analysis runs on-machine. Only anonymous telemetry leaves it - see')} ${bold('shomra telemetry')}${dim('. No signup.')}
-  ${green('Enrolled')}  ${dim('(shm_live_)')} adds org policy, AI ${bold('fix')}/${bold('why')}, deep scans (zip/model/memory) & the dashboard
+                        ${dim('With a model on this machine')} ${dim('(')}${bold('shomra local setup')}${dim(') fix/why run here too, and tool results get a second read.')}
+  ${green('Enrolled')}  ${dim('(shm_live_)')} adds org policy, org AI ${bold('fix')}/${bold('why')}, zip + repo scans, memory history & the dashboard
   ${green('CI')}        ${dim('(shm_ci_)')}   scoped, revocable pipeline key for ${bold('pr')} / ${bold('check')} in CI
   ${dim('Enroll with')} ${bold('shomra init --key shm_…')}${dim('; generate keys in the platform → Settings → API Keys.')}
 `;
@@ -21,8 +23,9 @@ const MODES = () => `${bold('MODES')}  ${dim('- local-first: everything that can
 const COMMANDS = () => `${bold('COMMANDS')}
   ${dim('Daily - the verbs you live in')}
   ${cyan('check')}         ${bold('Is my repo safe?')} Gate every AI artifact  ${dim('[dir] [--staged|--changed] [--fix] [--strict] [--json]')}
-  ${cyan('fix')}           Remediate an artifact in place (AI)    ${dim('<file> [--apply] [--kind …] [--json]')}
-  ${cyan('why')}           Explain a finding + false-positive read ${dim('<file> [--kind …] [--json]')}
+  ${cyan('fix')}           Remediate an artifact in place (AI)    ${dim('<file> [--apply] [--kind …] [--local] [--json]')}
+  ${cyan('why')}           Explain a finding + false-positive read ${dim('<file> [--kind …] [--local] [--json]')}
+  ${cyan('local')}         Use a model on this machine (Ollama, LM Studio, llama.cpp) ${dim('setup [--embed m] [--model m] · status · test <text> · off')}
   ${cyan('gate')}          Vet ONE AI artifact before install     ${dim('<file> [--kind …] [--strict] [--json]  ·  --all for a whole repo (CI)')}
   ${cyan('scan')}          Discover AI tooling on this machine    ${dim('[--report] [--json] [--path <dir>] [--all-users]')}
   ${cyan('report')}        Discover + send inventory to your Shomra org ${dim('(alias: scan --report) [--json] [--all-users]')}
@@ -30,6 +33,7 @@ const COMMANDS = () => `${bold('COMMANDS')}
   ${cyan('status')}        Show config, enrollment + firewall health
   ${cyan('telemetry')}     What the free CLI shares, and the switch ${dim('[status|on [--samples]|off|show [--json]|flush]')}
   ${cyan('feedback')}      Mark the last block or flag as a false positive ${dim('--fp  (a person at a terminal only)')}
+  ${cyan('allow')}         Let one firewall rule through, narrowly  ${dim('<rule> [--once|--for 1h|--in-repo] [--match <text>]  ·  --list  ·  --rules  (a person at a terminal only)')}
   ${cyan('run')}           ${bold('Run a whole assurance playbook')} ${dim('<id> [--input k=v]… [--project <id>] [--json]  ·  --list for the catalog')}
                 ${dim('scan → red-team → harden → compliance → gate, as one command. Exits')}
                 ${dim('non-zero when a gate holds, so a pipeline can block the release.')}
@@ -144,19 +148,23 @@ const POLICY_AS_CODE = () => `${bold('POLICY-AS-CODE')}  ${dim('- team gate rule
 const FIX = () => `${bold('FIX')}  ${dim('- remediate without leaving your editor')}
   ${bold('shomra fix <file>')} generates a MINIMAL fix for whatever the gate flags in
   that artifact and shows it as a unified diff; ${bold('--apply')} writes it back to the
-  local file. The fix is produced on the platform with your org's AI key (so no
-  provider key sits on the dev machine) - enrollment is required. When the
-  server has no AI configured it degrades to printing the deterministic
-  remediation guidance to apply by hand. Nothing is committed or pushed; the
-  edit lands in your working tree for you to review and commit.
+  local file. Enrolled, the fix is produced on the platform with your org's AI key
+  (so no provider key sits on the dev machine). With no account, or with
+  ${bold('--local')}, it is written by the chat model ${bold('shomra local setup')} pinned on this
+  machine - and a local fix is only offered when a re-scan of the fixed file is
+  cleaner than the original and it adds no host, finding or control character.
+  With neither it prints the deterministic guidance to apply by hand. Nothing is
+  committed or pushed; the edit lands in your working tree for you to review.
 `;
 
 const WHY = () => `${bold('WHY')}  ${dim('- decide if a finding is real')}
   ${bold('shomra why <file>')} is the developer shape of "investigate": for each finding
   it gives a plain-English why-it-matters, a one-line exploit scenario, and an
   honest true/false-positive read - the conclusion, not a tool-call timeline.
-  AI-distilled when enrolled; offline it prints the on-machine findings and their
-  fixes. Use it when the gate flags something you think is a false positive.
+  AI-distilled when enrolled; with ${bold('--local')} (or no account and a local model) a
+  model on this machine explains each finding - but never rules on whether one is
+  real, because it is reading the attacker's own text. Offline it prints the
+  on-machine findings and their fixes.
 `;
 
 const INSTALL_PRECOMMIT = () => `${bold('INSTALL-PRECOMMIT')}
@@ -168,12 +176,16 @@ const INSTALL_PRECOMMIT = () => `${bold('INSTALL-PRECOMMIT')}
 `;
 
 const MODEL_SCAN = () => `${bold('MODEL-SCAN')}
-  Runs SAST over a public AI model's SOURCE - the custom .py files transformers
-  imports under trust_remote_code and the config.json/tokenizer that bind them.
-  Flags eval/exec/os.system/subprocess, pickle/torch.load deserialization,
-  __reduce__ gadgets, network egress and auto_map (AutoModel/AutoTokenizer)
-  usage, each with a rule id, file:line and code snippet. Weights are never
-  downloaded and nothing is executed. Findings land in your Shomra dashboard.
+  ${bold('A folder or file on this machine')} (a download, ~/.cache/huggingface, an Ollama
+  store) is read here, with no account: pickle opcodes in .bin/.pt/.pkl/.npy (the
+  torch.load RCE), GGUF chat templates (Jinja SSTI), safetensors headers, model
+  configs, and files whose bytes are not the format their extension claims. Big
+  checkpoints are read head and tail, and anything not read is said so - a floor,
+  not a clearance. Same scanners as the platform, generated from its source.
+  ${bold('A Hugging Face model')} without an account goes to the free public scanner (only
+  the name is sent). Enrolled, a model or GitHub repo is scanned in your org: SAST
+  over the custom .py files trust_remote_code imports, the config.json/tokenizer
+  that bind them, and the weights - and the findings land in your dashboard.
 `;
 
 const MEMORY_SCAN = () => `${bold('MEMORY-SCAN')}
@@ -194,6 +206,8 @@ const MEMORY_SCAN = () => `${bold('MEMORY-SCAN')}
   ${bold('--machine')} scans only those. Binary stores (SQLite, protobuf, vector DBs) are
   reported as found-but-unread, never as clean. A store whose content changed
   outside any agent write the hook saw is reported as an out-of-band write.
+  Without an account (or with ${bold('--local')}) every store is graded on this machine with
+  the same detectors; the history, out-of-band detection and rollback need enrollment.
 `;
 
 const REDTEAM = () => `${bold('REDTEAM')}

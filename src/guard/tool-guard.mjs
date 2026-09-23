@@ -1,28 +1,18 @@
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { resolveAgentIdentityHandle } from '../commands/agent-identity.mjs';
-import { isMemoryPath, reportMemoryWrite } from '../commands/memory-scan.mjs';
-import { breakerOpen, breakerReset, breakerTrip, guardTimeoutMs } from '../core/circuit-breaker.mjs';
-import { CONFIG_DIR } from '../core/config.mjs';
-import { makeLedgerStore } from './ledger.mjs';
-import { MAX_POST_CONTENT, memoryWritesFor, postEditContents, recordLedger, sha256 } from './memory-write.mjs';
-import { memoryReportBase, reportOutOfBand } from './memory-report.mjs';
-import { readSubjectTypes, rememberSubjectTypes, subjectBearingPath, subjectEscalation } from './subject-preclassify.mjs';
-import { artifactKindFor } from './artifact-paths.mjs';
-import { gateMachine } from '../core/api-client.mjs';
-import { VERSION } from '../core/version.mjs';
 import { loadConfig, resolveSettings } from '../core/config.mjs';
 import { classifyConsequence, downrankCodeContext, grade, localScan } from '../detect/guard-signals.mjs';
-import { recordVerdict, telemetryContext } from '../telemetry/record.mjs';
-import { SHELL_TOOLS_RE, WRITE_TOOLS, callSubjectTypes, guardNeedsServer, guardTargetPath, guardText, shellCommandOf } from './classify.mjs';
+import { runtimeRule } from '../telemetry/events.mjs';
+import { recordLabel, recordVerdict, telemetryContext } from '../telemetry/record.mjs';
+import { resolveAgentIdentityHandle } from './agent-handle.mjs';
+import { DESTRUCTIVE_RULE, allowHint, allowMatches, applyAllows, consumeOnce, loadOrgAllows, loadRepoAllows, loadUserAllows, ruleIdOf } from './allows.mjs';
+import { recordAsk, rememberedApproval } from './approvals.mjs';
+import { MODEL_WRITE_TOOLS, SHELL_TOOLS_RE, WRITE_TOOLS, guardTargetPath, guardText, shellCommandOf } from './classify.mjs';
 import { emitGuardAsk, emitGuardDeny } from './emit.mjs';
 import { guardPathAllowlisted } from './ignore.mjs';
-import { screenModelLoad } from './model-load.mjs';
 import { normalizeGuardInput } from './normalize.mjs';
-import { envFlag, resolveAgentFlag } from './options.mjs';
-import { recordSelftest, selftestField } from './selftest-marker.mjs';
-import { buildGuardBody, reportGuardDecision } from './report.mjs';
+import { envFlag, localTierDisabled, resolveAgentFlag } from './options.mjs';
+import { selfProtectionFindings } from './self-protect.mjs';
+import { recordSelftest } from './selftest-marker.mjs';
 
 const ALLOW_VERDICT = { verdict: 'ALLOW', top: null, findings: [] };
 
@@ -40,48 +30,35 @@ function unscreenedSevere(normalized, tool, input) {
   }) === 'severe';
 }
 
-
-function ledger() {
-  return makeLedgerStore(CONFIG_DIR, { version: VERSION });
-}
-
-function countUnscreened(reason) {
-  try {
-    ledger().count(localTierDisabled() ? 'unscreened' : 'local', reason);
-  } catch {
-  }
-}
-
-function sendLedger() {
-  try {
-    const store = ledger();
-    store.close();
-    const env = store.envelope();
-    pendingLedger = env.gaps ?? [];
-    return env;
-  } catch {
-    return undefined;
-  }
-}
-
-let pendingLedger = [];
-
-function ackLedger() {
-  if (!pendingLedger.length) return;
-  try {
-    ledger().ack(pendingLedger);
-  } catch {
-  }
-  pendingLedger = [];
-}
-
-function askUnscreened(agent, why) {
-  emitGuardAsk(
-    agent,
-    `Shomra could not screen this call (${why}), and it is a destructive one - a delete, a force push, `
+function unscreenedReason(why) {
+  return `Shomra could not screen this call (${why}), and it is a destructive one - a delete, a force push, `
     + 'or a write to a file that survives the session. Nothing has judged it: approve it only if you meant it. '
-    + 'Set SHOMRA_GUARD_FAILOPEN_SEVERE=1 to let these through unscreened.',
-  );
+    + 'Set SHOMRA_GUARD_FAILOPEN_SEVERE=1 to let these through unscreened.';
+}
+
+function destructiveReason(command) {
+  const match = String(command ?? '').trim().split(/\s+/).slice(0, 4).join(' ');
+  return 'Shomra: this command is destructive - a delete, a hard reset, a force push or a volume wipe - so it needs a person to say yes. '
+    + `Approve it only if you meant it. To stop being asked for it: shomra allow destructive --match "${match}" --for 1h`;
+}
+
+function confirmReason(finding) {
+  return `Shomra: ${finding.label}. This runs with your permissions on this machine, so it needs a person to say yes. `
+    + 'Approve it only if you asked for it.';
+}
+
+function askHuman(agent, normalized, command, reason, tctx, finding) {
+  if (command && rememberedApproval(normalized, command)) {
+    if (finding) recordLabel({ channel: 'tool', label: 'approved', findings: [finding], rule: runtimeRule, dedupe: `approved|${normalized.session_id}|${command}` }, tctx);
+    return false;
+  }
+  recordAsk(normalized?.session_id, command);
+  emitGuardAsk(agent, reason);
+  return true;
+}
+
+function askUnscreened(agent, why, normalized, command, tctx) {
+  askHuman(agent, normalized, command, unscreenedReason(why), tctx, null);
 }
 
 function readHookPayload() {
@@ -92,22 +69,46 @@ function readHookPayload() {
   }
 }
 
-function localTierDisabled() {
-  return process.env.SHOMRA_GUARD_LOCAL === '0'
-    || String(process.env.SHOMRA_GUARD_LOCAL).toLowerCase() === 'false';
+function summarize(findings, shadow = []) {
+  const top = findings.find((finding) => finding.severity === 'CRITICAL') || findings.find((finding) => finding.confirm) || findings[0] || null;
+  return { ...grade(findings), top, findings, shadow, confirm: findings.find((finding) => finding.confirm) ?? null };
 }
 
 function screenLocally(normalized, tool, input) {
   const scan = localScan(guardText(tool, input));
   const isWrite = WRITE_TOOLS.has(tool);
-  const allowlisted = isWrite && guardPathAllowlisted(normalized.cwd, guardTargetPath(normalized));
+  const target = isWrite ? guardTargetPath(normalized) : null;
+  const allowlisted = isWrite && guardPathAllowlisted(normalized.cwd, target);
 
   let findings = scan.findings;
   if (allowlisted) findings = [];
   else if (isWrite) findings = downrankCodeContext(scan.findings);
 
-  const top = findings.find((finding) => finding.severity === 'CRITICAL') || findings[0] || null;
-  return { ...grade(findings), top, findings };
+  const command = isWrite ? null : shellCommandOf(input);
+  findings = [...findings, ...selfProtectionFindings({ isWrite, targetPath: target, command, cwd: normalized.cwd })];
+  return summarize(findings, allowlisted ? [] : scan.shadow ?? []);
+}
+
+function allowSources(normalized) {
+  return [...loadUserAllows(), ...loadRepoAllows(normalized.cwd || process.cwd()), ...loadOrgAllows()];
+}
+
+function destructiveAllowed(command, normalized) {
+  if (!command) return false;
+  const hit = allowSources(normalized).find((a) => allowMatches(a, DESTRUCTIVE_RULE, command));
+  if (hit) consumeOnce([{ allow: hit }]);
+  return !!hit;
+}
+
+function applyLocalAllows(local, command, normalized, tctx, tool) {
+  if (!local.findings.length) return local;
+  const sources = allowSources(normalized);
+  if (!sources.length) return local;
+  const { findings, allowed } = applyAllows(local.findings, command, sources);
+  if (!allowed.length) return local;
+  consumeOnce(allowed);
+  recordLabel({ channel: 'tool', label: 'policy-allow', tool, findings: allowed.map((a) => a.finding), rule: runtimeRule }, tctx);
+  return { ...summarize(findings, local.shadow), allowedBy: allowed.map((a) => a.allow.source) };
 }
 
 function recordToolVerdict(tctx, { agent, normalized, tool, input, verdict, local, decidedBy, consequence }) {
@@ -118,6 +119,7 @@ function recordToolVerdict(tctx, { agent, normalized, tool, input, verdict, loca
     tool,
     verdict,
     findings: local.findings,
+    shadow: local.shadow,
     decidedBy,
     consequence,
     command: shell ? shellCommandOf(input) : null,
@@ -127,139 +129,6 @@ function recordToolVerdict(tctx, { agent, normalized, tool, input, verdict, loca
     session: normalized.session_id,
     latencyMs: performance.now(),
   }, tctx);
-}
-
-const READ_TOOLS_RE = /^(read|read_file|view|open_file|cat)$/i;
-
-async function recordMemoryWrite({ url, apiKey, tool, input, normalized }) {
-  if (breakerOpen()) return;
-
-  if (READ_TOOLS_RE.test(tool || '')) {
-    const target = input.file_path || input.path || input.target_file;
-    if (!target || !isMemoryPath(target)) return;
-    const abs = path.resolve(normalized.cwd || process.cwd(), String(target));
-    let current = null;
-    try {
-      current = fs.readFileSync(abs, 'utf8');
-    } catch {
-      return;
-    }
-    await reportOutOfBand(url, apiKey, abs, current, normalized);
-    return;
-  }
-
-  const writes = memoryWritesFor(tool, input, { cwd: normalized.cwd }).filter((w) => w.path && isMemoryPath(w.path));
-  for (const w of writes) {
-    await reportOutOfBand(url, apiKey, w.path, w.before, normalized);
-    await reportMemoryWrite(url, apiKey, {
-      ...memoryReportBase(w.path, normalized),
-      content: w.content,
-      writer: 'AGENT',
-      source: os.hostname(),
-      contentBasis: w.basis,
-    });
-    recordLedger(w.path, [w.before != null ? sha256(w.before) : null, w.basis === 'whole' ? sha256(w.content) : null]);
-  }
-}
-
-function reportUnauthenticated(agent, status, strict) {
-  process.stderr.write(
-    `[shomra] guard NOT enforced: the backend rejected this API key (HTTP ${status}). `
-    + 'Local Tier-0 screening still ran; org policy, agent identity and flow control did not. '
-    + 'Re-enroll with `shomra init --key <key>`.\n',
-  );
-  if (strict) {
-    emitGuardDeny(agent, `Shomra guard could not authenticate (HTTP ${status}); blocked by fail-closed policy.`);
-  }
-  process.exit(0);
-}
-
-async function requestServerDecision({ url, apiKey, agentId, body, agent, strict, retried, onUnreachable }) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), guardTimeoutMs());
-  try {
-    const response = await fetch(`${url}/gate/tool-call`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Shomra-Key': apiKey,
-        ...(agentId ? { 'X-Shomra-Agent': agentId } : {}),
-        Connection: 'close',
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-
-    if (!response.ok) {
-      if (response.status === 401 || response.status === 403) reportUnauthenticated(agent, response.status, strict);
-      if (response.status === 429) {
-        const wait = retryAfterMs(response);
-        if (wait !== null && !retried) {
-          clearTimeout(timer);
-          await sleep(wait);
-          return requestServerDecision({ url, apiKey, agentId, body, agent, strict, retried: true, onUnreachable });
-        }
-        clearTimeout(timer);
-        return onUnreachable('rate limited', { breaker: false });
-      }
-      throw new Error(`HTTP ${response.status}`);
-    }
-    const decision = await response.json();
-    breakerReset();
-    ackLedger();
-    return decision;
-  } catch (error) {
-    clearTimeout(timer);
-    breakerTrip();
-    if (strict) emitGuardDeny(agent, `Shomra guard could not be reached (${error.message}); blocked by fail-closed policy.`);
-    return onUnreachable(error.message, { breaker: true });
-  }
-}
-
-function retryAfterMs(response) {
-  const raw = response.headers?.get?.('retry-after');
-  if (!raw) return null;
-  const secs = Number(raw);
-  if (Number.isFinite(secs)) return Math.min(Math.max(secs, 0), 5) * 1000;
-  const when = Date.parse(raw);
-  return Number.isFinite(when) ? Math.min(Math.max(when - Date.now(), 0), 5000) : null;
-}
-
-const sleep = (ms) => new Promise((done) => { setTimeout(done, ms); });
-
-function enforceServerDecision(agent, decision) {
-  if (decision?.hold) {
-    emitGuardAsk(agent, decision.reason || 'Held for approval by Shomra - waiting on a reviewer. Retry once it’s approved.');
-  }
-  if (decision?.decision === 'BLOCK') {
-    emitGuardDeny(agent, decision.reason || 'Blocked by Shomra security policy.');
-  }
-}
-
-/** ⚠ Bounded BEFORE the read: a 2 GB file named by an Edit must not be pulled into memory to be refused. */
-function boundedRead(p) {
-  if (fs.statSync(p).size > MAX_POST_CONTENT) throw new Error('too large to send');
-  return fs.readFileSync(p, 'utf8');
-}
-
-/**
- * The post-edit file of every governed path this call edits - see
- * `postEditContents`. ⚠ Built only for a call that is being escalated, never
- * on the local-only path, and never allowed to fail the call: a reconstruction
- * that throws sends nothing and the server grades the fragment as a fragment.
- */
-export function postContentField(tool, input, normalized, read = boundedRead) {
-  try {
-    const post = postEditContents(tool, input, {
-      cwd: normalized?.cwd,
-      read,
-      keep: (p) => subjectBearingPath(p) || !!artifactKindFor(String(p ?? '').replace(/\\/g, '/')),
-    });
-    return post.length ? { post_content: post } : {};
-  } catch {
-    return {};
-  }
 }
 
 export async function cmdToolGuard(flags) {
@@ -275,107 +144,62 @@ export async function cmdToolGuard(flags) {
   const tool = (normalized.tool_name ?? '').trim();
   const input = normalized.tool_input ?? {};
 
-  const local = localTierDisabled() ? ALLOW_VERDICT : screenLocally(normalized, tool, input);
+  const commandText = WRITE_TOOLS.has(tool) ? guardText(tool, input) : shellCommandOf(input) || guardText(tool, input);
+  let local = localTierDisabled() ? ALLOW_VERDICT : screenLocally(normalized, tool, input);
   const decidedBy = localTierDisabled() ? 'unscreened' : 'local';
+  if (apiKey && (local.verdict === 'BLOCK' || local.confirm)) {
+    const { refreshOrgAllows } = await import('./org-allows.mjs');
+    await refreshOrgAllows({ url, apiKey });
+  }
+  local = applyLocalAllows(local, commandText, normalized, tctx, tool);
   if (local.verdict === 'BLOCK') {
     recordSelftest({ stage: 'local-block', tool, reason: local.top?.label ?? 'dangerous tool call' });
     recordToolVerdict(tctx, { agent, normalized, tool, input, verdict: 'BLOCK', local, decidedBy });
-    await reportGuardDecision(url, apiKey, agentId, buildGuardBody(normalized, agent, 'BLOCK', local.top?.label));
-    emitGuardDeny(agent, `Blocked on-machine by Shomra: ${local.top?.label || 'dangerous tool call'}.`);
+    if (apiKey) {
+      const { buildGuardBody, reportGuardDecision } = await import('./report.mjs');
+      await reportGuardDecision(url, apiKey, agentId, buildGuardBody(normalized, agent, 'BLOCK', local.top?.label));
+    }
+    emitGuardDeny(agent, `Blocked on-machine by Shomra: ${local.top?.label || 'dangerous tool call'}.${allowHint(ruleIdOf(local.top), commandText)}`);
   }
 
-  await screenModelLoad(agent, tool, input, url);
+  if (MODEL_WRITE_TOOLS.includes(String(tool).toLowerCase())) {
+    const { screenModelLoad } = await import('./model-load.mjs');
+    await screenModelLoad(agent, tool, input, url);
+  }
 
   if (!apiKey) {
     recordSelftest({ stage: 'not-configured', tool });
     if (strict) {
       emitGuardDeny(agent, 'Shomra is not configured on this machine (SHOMRA_GUARD_STRICT). Run: shomra init --key shm_…');
     }
-    const severe = unscreenedSevere(normalized, tool, input);
+    const severe = unscreenedSevere(normalized, tool, input) && !destructiveAllowed(commandText, normalized);
+    const confirm = local.confirm;
     recordToolVerdict(tctx, {
       agent, normalized, tool, input, local,
-      verdict: severe ? 'ASK' : local.verdict,
-      decidedBy: severe ? 'consequence' : decidedBy,
+      verdict: severe || confirm ? 'ASK' : local.verdict,
+      decidedBy: confirm ? decidedBy : severe ? 'consequence' : decidedBy,
       consequence: severe ? 'severe' : null,
     });
-    if (severe) askUnscreened(agent, 'Shomra is not configured on this machine');
+    if (confirm) askHuman(agent, normalized, commandText, confirmReason(confirm), tctx, confirm);
+    else if (severe) askHuman(agent, normalized, commandText, destructiveReason(commandText), tctx, null);
     process.exit(0);
   }
 
-  await recordMemoryWrite({ url, apiKey, tool, input, normalized });
-
-
-  const severe = unscreenedSevere(normalized, tool, input);
-  /**
-   * ⚠ The org's subject types come from the server's last answer, cached on
-   * disk - reading them costs no round trip. Unknown (no answer yet, stale, an
-   * older server) escalates every subject-bearing call: see `subject-preclassify`.
-   */
-  const subjectTypes = readSubjectTypes({ url });
-  const subjectCall = subjectEscalation(callSubjectTypes(tool, input, { cwd: normalized.cwd }), subjectTypes);
-  const escalate = alwaysEscalate || severe || local.verdict === 'FLAG' || subjectCall || guardNeedsServer(tool, input, !!agentId, { subjectTypes, cwd: normalized.cwd });
-  if (!escalate) {
-    recordSelftest({ stage: 'not-escalated', tool, subjectTypes, reason: 'the local tier decided this call alone - the server never saw it' });
-    countUnscreened('not escalated - screened by the local tier only');
-    process.exit(0);
-  }
-
-  /**
-   * ⚠ A SUBJECT CALL FOLLOWS THE MACHINE'S FAIL MODE, and says so. There is no
-   * org-level fail mode: `SHOMRA_GUARD_STRICT` is the setting. Strict skips the
-   * breaker and DENIES when the server cannot answer (`requestServerDecision`);
-   * the default fails open - and the ledger records that an org subject rule
-   * was NOT evaluated, distinct from an ordinary unscreened call, so a breaker
-   * window of unchecked installs is visible on the server once it answers.
-   */
-  const onUnreachable = (why) => {
-    recordSelftest({ stage: 'unreachable', tool, reason: why });
-    countUnscreened(subjectCall ? `${why} - org subject rules NOT evaluated` : why);
-    if (severe) askUnscreened(agent, why);
-    return process.exit(0);
-  };
-
-  if (!strict && breakerOpen()) onUnreachable('the guard is in its backoff window after an earlier failure');
-
-  const flagged = local.verdict === 'FLAG';
-  const post = postContentField(tool, input, normalized);
-  /**
-   * ⚠ A SELF-TEST CANARY CARRIES NO LEDGER. The envelope is ACKNOWLEDGED the
-   * moment the server answers, and a canary is answered by the simulator, which
-   * records nothing - so sending it would retire a real fail-open window that
-   * nobody ever stored. The self-test proves the path; it must not consume the
-   * evidence of an outage on the way.
-   */
-  const selftest = selftestField();
-  const startedAt = Date.now();
-  const decision = await requestServerDecision({
+  const severe = unscreenedSevere(normalized, tool, input) && !destructiveAllowed(commandText, normalized);
+  const { escalateToServer } = await import('./tool-guard-server.mjs');
+  return escalateToServer({
+    agent,
+    agentId,
+    strict,
+    alwaysEscalate,
     url,
     apiKey,
-    agentId,
-    agent,
-    strict,
-    onUnreachable,
-    body: {
-      ...buildGuardBody(normalized, agent, flagged ? 'FLAG' : undefined, flagged ? local.top?.label : undefined),
-      ...post,
-      ...selftest,
-      ...(selftest.selftest ? {} : { guard_ledger: sendLedger() }),
-    },
-  });
-
-  recordSelftest({
-    stage: 'answered',
+    normalized,
     tool,
-    latencyMs: Date.now() - startedAt,
-    postContent: (post.post_content ?? []).map((p) => p.path),
-    decision: decision?.decision ?? null,
-    simulated: decision?.simulated === true,
-    hold: !!decision?.hold,
-    reason: typeof decision?.reason === 'string' ? decision.reason.slice(0, 400) : null,
-    outcome: decision?.selftest ?? null,
+    input,
+    local,
+    severe,
+    askConfirm: () => askHuman(agent, normalized, commandText, confirmReason(local.confirm), tctx, local.confirm),
+    askSevere: (why) => askUnscreened(agent, why, normalized, commandText, tctx),
   });
-
-  if (decision && typeof decision === 'object') rememberSubjectTypes(decision.subjectTypes, { url });
-  enforceServerDecision(agent, decision);
-  process.exit(0);
 }

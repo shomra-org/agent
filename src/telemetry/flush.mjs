@@ -1,13 +1,14 @@
-import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { PUBLIC_BACKEND_URL } from '../core/config.mjs';
 import { CLI_ENTRY_PATH } from '../core/package-root.mjs';
 import { VERSION } from '../core/version.mjs';
 import { remoteRunner } from '../gate/environment.mjs';
 import { isCi } from './consent.mjs';
 import { SCHEMA, aggregateTicks } from './events.mjs';
 
-export const DEFAULT_TELEMETRY_URL = 'https://shomra-backend-emgjg9b0fcdmc8hu.westeurope-01.azurewebsites.net/public/telemetry/cli';
+export const DEFAULT_TELEMETRY_URL = `${PUBLIC_BACKEND_URL}/public/telemetry/cli`;
 
 export const FLUSH_INTERVAL_MS = 15 * 60_000;
 
@@ -101,14 +102,15 @@ export async function flushTelemetry({ store, state, identity, url = telemetryUr
   }
 }
 
-export function maybeFlushInBackground({ store, now = Date.now(), env = process.env, spawnImpl = spawn } = {}) {
+export function maybeFlushInBackground({ store, now = Date.now(), env = process.env, spawnImpl } = {}) {
   if (!store || env.SHOMRA_TELEMETRY_CHILD === '1') return false;
   const bytes = store.queueBytes();
   if (!bytes) return false;
   if (now - store.lastFlushAttempt() < FLUSH_INTERVAL_MS && bytes < FLUSH_BYTES) return false;
   if (!store.markFlushAttempt(now)) return false;
   try {
-    const child = spawnImpl(process.execPath, [CLI_ENTRY_PATH, 'telemetry', 'flush', '--quiet'], {
+    const run = spawnImpl ?? createRequire(import.meta.url)('node:child_process').spawn;
+    const child = run(process.execPath, [CLI_ENTRY_PATH, 'telemetry', 'flush', '--quiet'], {
       detached: true,
       stdio: 'ignore',
       windowsHide: true,

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { localGate } from '../src/detect/guard-signals.mjs';
 import { scanModelConfig } from '../src/detect/sast/scanner.mjs';
+import { BACKEND_ROOT } from './backend-root.mjs';
 
 const RANK = { INFO: 1, LOW: 2, MEDIUM: 3, HIGH: 4, CRITICAL: 5 };
 const J = (o) => JSON.stringify(o, null, 2);
@@ -72,16 +73,27 @@ test('the array form of auto_map.AutoTokenizer is matched by the local SAST', ()
   assert.ok(hits.some((h) => h.ruleId === 'json.autotokenizer_usage'));
 });
 
-test('the generated mirrors are in sync with the platform sources', { skip: !fs.existsSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'Dragox.Backend')) && 'platform checkout not present' }, async () => {
+test('the generated mirrors are in sync with the platform sources', { skip: !BACKEND_ROOT && 'platform checkout not present' }, async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const backend = path.join(here, '..', '..', 'Dragox.Backend', 'src', 'modules', 'analysis', 'checks', 'model-formats');
+  const formats = path.join(BACKEND_ROOT, 'src', 'modules', 'analysis', 'checks', 'model-formats');
   const { stripTypeScriptTypes } = await import('node:module');
   if (typeof stripTypeScriptTypes !== 'function') return;
-  for (const [ts, mjs] of [['model-config-rules.ts', 'model-config-rules.mjs'], ['chat-template.ts', 'chat-template.mjs']]) {
-    const stripped = stripTypeScriptTypes(fs.readFileSync(path.join(backend, ts), 'utf8'), { mode: 'strip' });
-    const local = fs.readFileSync(path.join(here, '..', 'src', 'detect', 'signals', mjs), 'utf8');
-    // compare the RULE bodies: drop the import lines both sides swap
-    const body = (s) => s.split('\n').filter((l) => !/^import |^\/\/ |^const binaryFinding/.test(l)).join('\n').replace(/\s+/g, ' ').trim();
-    assert.equal(body(local), body(stripped), `${mjs} drifted from ${ts} - regenerate with Dragox.Backend/scripts/mirror-model-config.mjs`);
+  const mirrors = [
+    [path.join(formats, 'model-config-rules.ts'), 'signals/model-config-rules.mjs'],
+    [path.join(formats, 'chat-template.ts'), 'signals/chat-template.mjs'],
+    [path.join(BACKEND_ROOT, 'src', 'shared', 'kernel', 'supply', 'weight-formats.ts'), 'model-formats/weight-formats.mjs'],
+    [path.join(formats, 'model-format.ts'), 'model-formats/model-format.mjs'],
+    [path.join(formats, 'readers', 'zip-walk.ts'), 'model-formats/zip-walk.mjs'],
+    [path.join(formats, 'scanners', 'pickle-scan.ts'), 'model-formats/pickle-scan.mjs'],
+    [path.join(formats, 'scanners', 'numpy-scan.ts'), 'model-formats/numpy-scan.mjs'],
+    [path.join(formats, 'scanners', 'gguf-scan.ts'), 'model-formats/gguf-scan.mjs', 'transform'],
+    [path.join(formats, 'scanners', 'safetensors-scan.ts'), 'model-formats/safetensors-scan.mjs'],
+  ];
+  const body = (s) => s.split('\n').filter((l) => !/^import |^export .* from '|^\/\/ |^const binaryFinding/.test(l)).join('\n').replace(/\s+/g, ' ').trim();
+  for (const [ts, mjs, mode = 'strip'] of mirrors) {
+    const stripped = stripTypeScriptTypes(fs.readFileSync(ts, 'utf8').replace(/\r\n/g, '\n'), { mode });
+    const local = fs.readFileSync(path.join(here, '..', 'src', 'detect', mjs), 'utf8');
+    assert.equal(body(local), body(stripped), `${mjs} drifted from ${path.basename(ts)} - regenerate with scripts/mirror-model-config.mjs in the backend`);
   }
 });
+

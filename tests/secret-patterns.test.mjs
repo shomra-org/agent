@@ -5,9 +5,10 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { SECRET_PATTERNS } from '../src/detect/signals/secrets.mjs';
 import { redactLocally } from '../src/detect/local-redact.mjs';
+import { BACKEND_ROOT } from './backend-root.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const SCRIPT = path.join(here, '..', '..', 'Dragox.Backend', 'scripts', 'mirror-secret-patterns.mjs');
+const SCRIPT = path.join(BACKEND_ROOT ?? path.join(here, '..', '..', 'Dragox.Backend'), 'scripts', 'mirror-secret-patterns.mjs');
 
 test('the generated secret mirror is in sync with the platform source', { skip: !fs.existsSync(SCRIPT) && 'platform checkout not present' }, async () => {
   const { stripTypeScriptTypes } = await import('node:module');

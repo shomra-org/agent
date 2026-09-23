@@ -5,8 +5,9 @@ import { MAX_ARTIFACT_BYTES, SKIP_DIRS } from '../artifacts/matchers.mjs';
 import { api } from '../core/api-client.mjs';
 import { guardTimeoutMs } from '../core/circuit-breaker.mjs';
 import { getMachineId, loadConfig, resolveSettings } from '../core/config.mjs';
-import { EXIT_USAGE, exitNotConfigured } from '../core/exit-codes.mjs';
+import { EXIT_USAGE } from '../core/exit-codes.mjs';
 import { SEV_COLOR, VERDICT_COLOR, bold, cyan, dim, gray, green, red, yellow } from '../core/terminal.mjs';
+import { localGate } from '../detect/guard-signals.mjs';
 import { isInstructionPath } from '../detect/signals/instruction-paths.mjs';
 import { MACHINE_MEMORY_ROOTS, SERVER_SIDE_MEMORY, classifyMemoryPath, sniffMemoryJsonl } from '../detect/signals/memory-locations.mjs';
 import { outOfBandChange, recordLedger, sha256 } from '../guard/memory-write.mjs';
@@ -197,10 +198,52 @@ function writerFor(file, content, flags) {
   return { writer: 'SCAN', source: 'shomra memory-scan' };
 }
 
+const LOCAL_VERDICT = { BLOCK: 'FAIL', FLAG: 'REVIEW', ALLOW: 'PASS' };
+
+function printLocalStore(file, verdict, findings, note) {
+  const colour = VERDICT_COLOR[verdict] || gray;
+  console.log(`\n  ${colour('●')} ${bold(path.basename(file.rel))} ${dim(file.rel)} ${verdict ? colour(verdict) : yellow('NOT READ')}${note ? ` ${yellow(note)}` : ''}`);
+  for (const finding of findings.filter((f) => f.severity !== 'INFO')) {
+    console.log(`      ${SEV_COLOR[finding.severity](String(finding.severity).padEnd(8))} ${finding.title}${finding.line ? dim(` (line ${finding.line})`) : ''}`);
+  }
+}
+
+function localMemoryScan(target, files, flags) {
+  if (!flags.json) {
+    console.log(bold(cyan('\n  Shomra Memory Integrity')) + dim(` - ${files.length} store${files.length > 1 ? 's' : ''} on this machine (${target})`));
+  }
+  let worst = 'PASS';
+  let unread = 0;
+  const stores = [];
+  for (const file of files) {
+    const { content, unreadable } = readStore(file);
+    const loc = memoryLocation(file.full) ?? memoryLocation(file.rel);
+    if (unreadable) {
+      unread++;
+      stores.push({ path: file.rel, vendor: loc?.vendor ?? null, unreadable, verdict: null, findings: [] });
+      if (!flags.json) printLocalStore(file, null, [], `not read: ${unreadable}`);
+      continue;
+    }
+    const res = localGate(content, { kind: loc ? 'memory' : 'rules', path: file.rel });
+    const verdict = LOCAL_VERDICT[res.verdict] ?? 'PASS';
+    worst = worseVerdict(worst, verdict);
+    stores.push({ path: file.rel, vendor: loc?.vendor ?? null, unreadable: null, verdict, findings: res.findings });
+    if (!flags.json) printLocalStore(file, verdict, res.findings);
+  }
+  if (flags.json) {
+    console.log(JSON.stringify({ source: 'local', scanned: stores.length, unread, worst, stores, serverSide: SERVER_SIDE_MEMORY }, null, 2));
+  } else {
+    if (unread) console.log(`\n  ${yellow('⚠')} ${unread} store${unread > 1 ? 's were' : ' was'} found but not read - reported as not looked inside, never as clean.`);
+    console.log(dim(`\n  Not scannable from this machine: ${SERVER_SIDE_MEMORY.map((s) => s.vendor).join(', ')} keep memory server-side.`));
+    console.log(`\n  ${summaryLine(worst)}${dim(' Checked on this machine. Enrolled, stores also get a history, out-of-band write detection and rollback.\n')}`);
+  }
+  if (worst === 'FAIL') process.exitCode = 1;
+  else if (worst === 'REVIEW' && flags.strict) process.exitCode = 2;
+}
+
 export async function cmdMemoryScan(flags, positional) {
   const cfg = loadConfig();
   const { apiKey, url } = resolveSettings(cfg);
-  if (!apiKey) exitNotConfigured();
 
   const { target, files } = resolveMemoryTargets(positional, flags);
   if (!files.length) {
@@ -208,6 +251,7 @@ export async function cmdMemoryScan(flags, positional) {
     else console.log(dim(`\n  No memory or rules files found under ${target}.\n  ${NO_STORES_HINT}\n`));
     return;
   }
+  if (!apiKey || flags.local === true) return localMemoryScan(target, files, flags);
 
   const machineId = getMachineId(cfg);
   const ingestFields = {

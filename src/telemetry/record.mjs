@@ -25,7 +25,7 @@ export function recordVerdict(input, ctx = telemetryContext()) {
   try {
     if (!ctx?.state?.enabled || !ctx.store) return null;
     const ev = verdictEvent({ ...input, level: ctx.state.level, salt: ctx.salt });
-    if (ev.d === 'ALLOW') {
+    if (ev.d === 'ALLOW' && !ev.r?.some((r) => r.k.startsWith('shadow:'))) {
       ctx.store.append(tickOf(ev));
     } else {
       ctx.store.append(ev);

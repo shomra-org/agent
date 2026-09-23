@@ -5,10 +5,11 @@ import { detectExecutionHijack } from './execution-hijack.mjs';
 import { BUILD_ARTIFACT, INJECTION_PHRASES, INJECTION_REGEXES, INVISIBLE_CHARS_RE, precededByNegation, describesRatherThanInstructs } from './injection.mjs';
 import { lineAt, locate } from './lines.mjs';
 import { codeMask, deobfuscate } from './masking.mjs';
-import { PII_PATTERNS, RESERVED_IPV4, SECRET_PATTERNS, VERSION_CONTEXT, isPlaceholderSecret, luhnValid } from './secrets.mjs';
+import { PII_PATTERNS, RESERVED_IPV4, SECRET_PATTERNS, VERSION_CONTEXT, isPlaceholderCredential, luhnValid } from './secrets.mjs';
 import { SEV_RANK } from './severity.mjs';
-import { DANGEROUS_SHELL, matchesShellSignal } from './shell.mjs';
+import { DANGEROUS_SHELL, SHADOW_SHELL, matchesShellSignal } from './shell.mjs';
 import { scanStagedFetchExec } from './staged-fetch.mjs';
+import { scanPipelineTaint } from './fetch-exec.mjs';
 
 export function localScan(text, opts = {}) {
   const findings = [];
@@ -19,8 +20,11 @@ export function localScan(text, opts = {}) {
   if (cats.includes('shell')) {
     const aug = deobfuscate(t);
     if (aug.decodedPayload) findings.push({ label: 'Encoded shell / RCE payload (base64, hex, percent or char-code)', severity: 'CRITICAL', category: 'shell' });
-    for (const sig of DANGEROUS_SHELL) if (matchesShellSignal(sig, aug.text)) findings.push({ label: sig.name, severity: sig.severity, category: 'shell', ...locate(t, sig.re, mask) });
-    for (const sig of scanStagedFetchExec(aug.text)) findings.push({ label: sig.name, severity: sig.severity, category: 'shell', ...locate(t, sig.re, mask) });
+    const shellFinding = (sig) => ({ label: sig.name, severity: sig.severity, category: 'shell', ...(sig.id ? { id: sig.id } : {}), ...(sig.confirm ? { confirm: true } : {}), ...locate(t, sig.re, mask) });
+    for (const sig of DANGEROUS_SHELL) if (matchesShellSignal(sig, aug.text)) findings.push(shellFinding(sig));
+    for (const sig of SHADOW_SHELL) if (matchesShellSignal(sig, aug.text)) findings.push({ ...shellFinding(sig), shadow: true });
+    for (const sig of scanPipelineTaint(aug.text)) findings.push(shellFinding(sig));
+    for (const sig of scanStagedFetchExec(aug.text)) findings.push(shellFinding(sig));
     for (const h of detectExecutionHijack(aug.text))
       findings.push({ label: `Installs an execution hook that governs ${h.governs} (${h.key})`, severity: h.severity, category: 'shell' });
     for (const c of detectCredentialHarvest(aug.text))
@@ -48,7 +52,7 @@ export function localScan(text, opts = {}) {
     if (INVISIBLE_CHARS_RE.test(t)) findings.push({ label: 'Invisible / zero-width characters', severity: 'MEDIUM', category: 'injection', ...locate(t, INVISIBLE_CHARS_RE, mask) });
   }
   if (cats.includes('secret')) {
-    for (const { name, re } of SECRET_PATTERNS) { const m = t.match(re); if (m && (/private key/i.test(name) || !isPlaceholderSecret(m[0]))) findings.push({ label: `Live credential: ${name}`, severity: 'CRITICAL', category: 'secret', ...locate(t, re, mask) }); }
+    for (const { name, re } of SECRET_PATTERNS) { const m = t.match(re); if (m && (/private key/i.test(name) || !isPlaceholderCredential(m[0]))) findings.push({ label: `Live credential: ${name}`, severity: 'CRITICAL', category: 'secret', ...locate(t, re, mask) }); }
   }
   if (cats.includes('pii')) {
     for (const { name, re } of PII_PATTERNS) {
@@ -80,10 +84,12 @@ export function localScan(text, opts = {}) {
     if (h) findings.push({ label: `Exfiltration sink host: ${h}`, severity: 'HIGH', category: 'egress', ...locate(t, h, mask) });
   }
 
+  const shadow = findings.filter((f) => f.shadow);
+  const enforced = shadow.length ? findings.filter((f) => !f.shadow) : findings;
   let worstRank = 0, top = null;
-  for (const f of findings) if (SEV_RANK[f.severity] > worstRank) { worstRank = SEV_RANK[f.severity]; top = f; }
+  for (const f of enforced) if (SEV_RANK[f.severity] > worstRank) { worstRank = SEV_RANK[f.severity]; top = f; }
   const verdict = worstRank >= SEV_RANK.CRITICAL ? 'BLOCK' : worstRank >= SEV_RANK.HIGH ? 'FLAG' : 'ALLOW';
-  return { verdict, top, findings };
+  return { verdict, top, findings: enforced, shadow };
 }
 
 export function downrankCodeContext(findings) {

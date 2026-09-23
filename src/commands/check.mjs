@@ -9,7 +9,8 @@ import { failOnHit, gateArtifactList } from '../gate/batch.mjs';
 import { detectEnv } from '../gate/environment.mjs';
 import { toSarif } from '../gate/sarif.mjs';
 import { findingFingerprint } from '../gate/suppressions.mjs';
-import { fixOneFile } from './fix.mjs';
+import { fixOneFile, fixWithLocalModel } from './fix.mjs';
+import { localSettings } from '../local/config.mjs';
 
 const GIT_TIMEOUT_MS = 3000;
 
@@ -59,19 +60,21 @@ function printHeader({ flags, artifacts, env, apiKey }) {
 async function applyFixes({ results, flags, apiKey, url, blocked, flagged }) {
   if (!flags.fix || !(blocked || flagged)) return 0;
 
-  if (!apiKey) {
+  const local = apiKey && flags.local !== true ? null : localSettings();
+  if ((!apiKey || flags.local === true) && !local?.judge) {
     if (!flags.json) {
-      console.error(`  ${yellow('⚠')} ${dim('--fix needs enrollment (the fix runs on the platform). Run')} ${bold('shomra init')}${dim('.')}`);
+      console.error(`  ${yellow('⚠')} ${dim('--fix needs a model to write the fix: one on this machine')} ${bold('shomra local setup')} ${dim('or your org\'s')} ${bold('shomra init')}${dim('.')}`);
     }
     return 0;
   }
 
-  if (!flags.json) console.log(dim('\n  Fixing flagged artifacts…'));
+  if (!flags.json) console.log(dim(`\n  Fixing flagged artifacts${local?.judge ? ` with ${local.judge.model} on this machine` : ''}…`));
   let fixed = 0;
   for (const result of results) {
     if (result.decision === 'ALLOW') continue;
-    const done = await fixOneFile(result.full, { apiKey, url, flags: { ...flags, apply: true, quiet: flags.json } });
-    if (done) fixed += 1;
+    const opts = { flags: { ...flags, apply: true, quiet: flags.json } };
+    const done = local?.judge ? await fixWithLocalModel(result.full, { settings: local, ...opts }) : await fixOneFile(result.full, { apiKey, url, ...opts });
+    if (done === true || done === 'applied') fixed += 1;
   }
   return fixed;
 }

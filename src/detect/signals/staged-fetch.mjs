@@ -1,17 +1,5 @@
-const STAGED_LOOPBACK_RE = /^(localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|0\.0\.0\.0|\[::1\]|::1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/i;
-
-const STAGED_METADATA_HOSTS = new Set(['169.254.169.254', 'metadata.google.internal']);
-
-function targetsExternalNetwork(line) {
-  const urls = line.match(/https?:\/\/[^\s'"`;|)&]+/gi);
-  if (!urls?.length) return true;
-  return urls.some((raw) => {
-    let host;
-    try { host = new URL(raw).hostname.toLowerCase(); } catch { return true; }
-    if (STAGED_METADATA_HOSTS.has(host)) return true;
-    return !STAGED_LOOPBACK_RE.test(host);
-  });
-}
+import { vendorInstallerLine } from './fetch-exec.mjs';
+import { targetsExternalNetwork } from './network.mjs';
 
 const FETCH_TO_FILE = [
   /\b(?:curl|wget)\b[^\n;|&]{0,200}?(?:-o|-O|--output(?:-document)?)[= ]\s*["']?([^\s"'>;|&]+)/gi,
@@ -45,7 +33,7 @@ export function scanStagedFetchExec(text) {
     if (!name || targets.has(name)) return;
     if (/^\/dev\/(null|stdout|stderr)$/i.test(name)) return;
     if (!targetsExternalNetwork(stmt)) return;
-    targets.set(name, at);
+    targets.set(name, { at, vendor: vendorInstallerLine(stmt) });
   };
   for (const re of FETCH_TO_FILE) {
     re.lastIndex = 0;
@@ -57,10 +45,10 @@ export function scanStagedFetchExec(text) {
     try { base = new URL(m[1]).pathname.split('/').filter(Boolean).pop() ?? ''; } catch { continue; }
     record(base, m.index ?? 0, m[0]);
   }
-  for (const [target, at] of targets) {
-    if (execPattern(target).test(text.slice(at))) {
-      return [{ name: 'Downloads a file and then executes it (staged fetch-to-execute)', re: new RegExp(escapeRe(target), 'i'), severity: 'CRITICAL' }];
-    }
+  for (const [target, { at, vendor }] of targets) {
+    if (!execPattern(target).test(text.slice(at))) continue;
+    if (vendor) return [{ id: 'vendor-installer', name: 'Runs a vendor installer script (known host)', re: new RegExp(escapeRe(target), 'i'), severity: 'HIGH', confirm: true }];
+    return [{ id: 'staged-fetch-exec', name: 'Downloads a file and then executes it (staged fetch-to-execute)', re: new RegExp(escapeRe(target), 'i'), severity: 'CRITICAL' }];
   }
   return [];
 }

@@ -15,6 +15,8 @@
  * the server blocks work no server verdict would have blocked, and looser puts
  * a hole in the floor at exactly the moment the floor is all there is.
  */
+import { destructiveShell, secretEgress } from './destructive.mjs';
+
 const SEVERE_VERB = /\b(delete|destroy|drop|purge|revoke|terminate|shutdown|wipe|erase|truncate|force[-_]?push)\b/i;
 
 const RM_COMMAND = /(?<![-\w])rm\b/i;
@@ -48,7 +50,9 @@ export function classifyConsequence(input) {
     return SEVERE_VERB.test(blob) || RM_COMMAND.test(raw) ? 'severe' : 'material';
   }
   if (PERSISTENCE_TARGET.test(raw)) return 'severe';
-  if (SEVERE_VERB.test(blob) || RM_COMMAND.test(raw) || FORCE_PUSH.test(raw)) return 'severe';
+  const removes = input.isShell ? destructiveShell(String(input.args ?? '')) : RM_COMMAND.test(raw);
+  if (SEVERE_VERB.test(blob) || removes || FORCE_PUSH.test(raw)) return 'severe';
+  if (input.isShell && secretEgress(String(input.args ?? ''))) return 'severe';
   if (AUTHORITY_GRANT.test(blob)) return PRIVILEGED_TARGET.test(blob) ? 'severe' : 'material';
   if (input.isShell) return 'material';
   if (MATERIAL_VERB.test(blob)) return 'material';

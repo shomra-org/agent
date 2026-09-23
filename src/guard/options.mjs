@@ -8,3 +8,8 @@ export function resolveAgentFlag(flags) {
 export function envFlag(name) {
   return ['1', 'true', 'yes', 'on'].includes(String(process.env[name] ?? '').toLowerCase());
 }
+
+export function localTierDisabled() {
+  return process.env.SHOMRA_GUARD_LOCAL === '0'
+    || String(process.env.SHOMRA_GUARD_LOCAL).toLowerCase() === 'false';
+}

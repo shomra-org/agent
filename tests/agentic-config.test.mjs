@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { localGate } from '../src/detect/signals/gate.mjs';
+import { BACKEND_ROOT } from './backend-root.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const titles = (r) => r.findings.map((f) => `${f.severity}:${f.title}`).join(' | ');
@@ -89,11 +90,11 @@ test('a stock-shaped Langflow flow is quiet - stock source and canvas floats are
   assert.ok(!r.findings.some((f) => ['HIGH', 'CRITICAL'].includes(f.severity)), titles(r));
 });
 
-test('the generated mirrors are in sync with the platform sources', { skip: !fs.existsSync(path.join(here, '..', '..', 'Dragox.Backend', 'scripts', 'mirror-agentic-config.mjs')) && 'platform checkout not present' }, async () => {
+test('the generated mirrors are in sync with the platform sources', { skip: !(BACKEND_ROOT && fs.existsSync(path.join(BACKEND_ROOT, 'scripts', 'mirror-agentic-config.mjs'))) && 'platform checkout not present' }, async () => {
   const { stripTypeScriptTypes } = await import('node:module');
   if (typeof stripTypeScriptTypes !== 'function') return;
 
-  const { render, jobs } = await import(pathToFileURL(path.join(here, '..', '..', 'Dragox.Backend', 'scripts', 'mirror-agentic-config.mjs')).href);
+  const { render, jobs } = await import(pathToFileURL(path.join(BACKEND_ROOT, 'scripts', 'mirror-agentic-config.mjs')).href);
   assert.ok(jobs.length >= 6, 'every generated mirror is in the job table');
   for (const j of jobs) {
     const local = fs.readFileSync(path.join(here, '..', 'src', 'detect', 'signals', j.out), 'utf8');

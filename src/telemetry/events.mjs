@@ -11,7 +11,7 @@ export const CHANNELS = ['tool', 'result', 'prompt', 'plan', 'gate', 'add', 'mcp
 
 export const VERDICTS = ['ALLOW', 'FLAG', 'BLOCK', 'ASK'];
 
-export const LABELS = ['forced', 'suppressed', 'policy-allow', 'baseline', 'inline', 'feedback-fp'];
+export const LABELS = ['forced', 'suppressed', 'policy-allow', 'baseline', 'inline', 'feedback-fp', 'approved'];
 
 const SEVERITIES = new Set(['INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
 
@@ -125,8 +125,8 @@ export function sampleText(text, at) {
 }
 
 export function verdictEvent(input) {
-  const { channel, agent, tool, kind, verdict, findings, rule = runtimeRule, command, target, text, at, consequence, session, salt, latencyMs, decidedBy, level } = input;
-  const rules = rulesOf(findings, rule);
+  const { channel, agent, tool, kind, verdict, findings, shadow, rule = runtimeRule, command, target, text, at, consequence, session, salt, latencyMs, decidedBy, level } = input;
+  const rules = [...rulesOf(findings, rule), ...rulesOf(shadow, (f) => { const r = rule(f); return { ...r, k: r.k ? `shadow:${r.k}` : r.k }; })].slice(0, MAX_RULES);
   const shape = command ? commandShape(command) : null;
   const tg = target ? targetShape(target) : null;
   const ev = {

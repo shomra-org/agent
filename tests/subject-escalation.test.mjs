@@ -9,7 +9,8 @@ import { SHELL_TOOL_NAMES, SHELL_TOOLS_RE, argvCommand, callSubjectTypes, guardN
 import { commandSubjectTypes, pathSubjectTypes, readSubjectTypes, rememberSubjectTypes, subjectEscalation } from '../src/guard/subject-preclassify.mjs';
 import { postEditContents } from '../src/guard/memory-write.mjs';
 import { normalizeGuardInput } from '../src/guard/normalize.mjs';
-import { postContentField } from '../src/guard/tool-guard.mjs';
+import { postContentField } from '../src/guard/tool-guard-server.mjs';
+import { BACKEND_ROOT } from './backend-root.mjs';
 
 const read = (files) => (p) => {
   const hit = Object.entries(files).find(([k]) => path.resolve(k) === path.resolve(p));
@@ -26,8 +27,10 @@ test('every vendor shell tool is a shell tool', () => {
   assert.equal(SHELL_TOOL_NAMES.length, new Set(SHELL_TOOL_NAMES).size);
 });
 
-test('the shell tool list matches the server’s SHELL_TOOL_NAMES', { skip: !fs.existsSync(new URL('../../Dragox.Backend/src/modules/runtime/gate/domain/tool-guard-grading.ts', import.meta.url)) }, () => {
-  const src = fs.readFileSync(new URL('../../Dragox.Backend/src/modules/runtime/gate/domain/tool-guard-grading.ts', import.meta.url), 'utf8');
+const GRADING_TS = BACKEND_ROOT ? path.join(BACKEND_ROOT, 'src', 'modules', 'runtime', 'gate', 'domain', 'tool-guard-grading.ts') : null;
+
+test('the shell tool list matches the server’s SHELL_TOOL_NAMES', { skip: !(GRADING_TS && fs.existsSync(GRADING_TS)) && 'platform checkout not present' }, () => {
+  const src = fs.readFileSync(GRADING_TS, 'utf8');
   const lit = /SHELL_TOOL_NAMES: readonly string\[\] = \[([\s\S]*?)\];/.exec(src);
   const server = new Set([...(lit?.[1] ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1]));
   assert.deepEqual([...server].sort(), [...SHELL_TOOL_NAMES].sort());

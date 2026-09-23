@@ -1,32 +1,9 @@
 import { lineTextAt } from './lines.mjs';
+import { PIPE_TO_SHELL_RE, SUBSTITUTION_SIGNAL_RE, fetchExecShape, vendorInstallerLine } from './fetch-exec.mjs';
+import { socketStaysOnLoopback, targetsExternalNetwork } from './network.mjs';
+import { BENIGN_ABSOLUTE_RM_RE, CATASTROPHIC_RM_TARGET_RE, EPHEMERAL_RM_TARGET_RE, HOME_CACHE_RE } from './destructive.mjs';
 
-const EPHEMERAL_RM_TARGET_RE =
-  /^(\.\/)?(node_modules|dist|build|out|coverage|\.nyc_output|target|\.next|\.nuxt|\.turbo|\.svelte-kit|\.cache|\.parcel-cache|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|venv|\.venv|\.eggs|[\w.-]+\.egg-info)\/?\*?$/i;
-
-const BENIGN_ABSOLUTE_RM_RE =
-  /^\/(var\/(lib\/apt\/lists|cache|tmp|log)|tmp|usr\/share\/(doc|man|locale|info)|root\/\.cache|home\/[\w.-]+\/\.cache|opt\/[\w.-]+\/\.cache)(\/|$|\*)/i;
-
-const CATASTROPHIC_RM_TARGET_RE = /^(\/|~|\$|\$\{|%\w+%|[A-Za-z]:[\\/]|\.\.?$|\.\.\/|\*$)/;
-
-const LOOPBACK_OR_PRIVATE_HOST_RE =
-  /^(localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|0\.0\.0\.0|\[::1\]|::1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/i;
-
-const CLOUD_METADATA_HOSTS = new Set(['169.254.169.254', 'metadata.google.internal']);
-
-export function targetsExternalNetwork(line) {
-  const urls = line.match(/https?:\/\/[^\s'"`;|)&]+/gi);
-  if (!urls?.length) return true;
-  return urls.some((raw) => {
-    let host;
-    try {
-      host = new URL(raw).hostname.toLowerCase();
-    } catch {
-      return true;
-    }
-    if (CLOUD_METADATA_HOSTS.has(host)) return true;
-    return !LOOPBACK_OR_PRIVATE_HOST_RE.test(host);
-  });
-}
+export { targetsExternalNetwork };
 
 const RM_RF_RE = /(?<!\b(?:docker|podman|nerdctl|kubectl|helm|conda|brew)\s{1,4})\brm\b(?=[^\n;|&]{0,200}?\s(?:-[a-zA-Z]*r[a-zA-Z]*|--recursive)(?![\w-]))(?=[^\n;|&]{0,200}?\s(?:-[a-zA-Z]*f[a-zA-Z]*|--force)(?![\w-]))/i;
 
@@ -46,8 +23,8 @@ export function rmTargetClass(line) {
     return /^\s*(?:[,)\]}?!"'`.]|$)/.test(after) ? 'local' : 'catastrophic';
   }
 
-  if (targets.some((t) => CATASTROPHIC_RM_TARGET_RE.test(t) && !BENIGN_ABSOLUTE_RM_RE.test(t))) return 'catastrophic';
-  return targets.every((t) => EPHEMERAL_RM_TARGET_RE.test(t) || BENIGN_ABSOLUTE_RM_RE.test(t)) ? 'ephemeral' : 'local';
+  if (targets.some((t) => CATASTROPHIC_RM_TARGET_RE.test(t) && !BENIGN_ABSOLUTE_RM_RE.test(t) && !HOME_CACHE_RE.test(t))) return 'catastrophic';
+  return targets.every((t) => EPHEMERAL_RM_TARGET_RE.test(t) || BENIGN_ABSOLUTE_RM_RE.test(t) || HOME_CACHE_RE.test(t)) ? 'ephemeral' : 'local';
 }
 
 export function matchesShellSignal(sig, text) {
@@ -63,12 +40,14 @@ export function matchesShellSignal(sig, text) {
 const SENSITIVE_PATH = String.raw`~/\.(?:ssh|aws|kube|gnupg|docker|config/gcloud)|/root/|/etc/(?:shadow|passwd|ssh)|id_[rd]sa|\.pem(?![.\w])|\.env(?![.\w])|credentials|\.npmrc|\.git-credentials|\bsecrets?\b|authorized_keys|\$HOME\b|/home(?:/[\w.-]+)?/?(?=[\s'"]|$)`;
 
 export const DANGEROUS_SHELL = [
-  { name: 'Pipe-to-shell installer (curl … | sh)', re: /\b(curl|wget)\b[^\n|]{0,200}\|\s*(sudo\s+)?(ba|z|k)?sh\b/i, severity: 'CRITICAL' },
+  { id: 'pipe-to-shell', name: 'Pipe-to-shell installer (curl … | sh)', re: PIPE_TO_SHELL_RE, severity: 'CRITICAL', refine: (l) => !vendorInstallerLine(l) },
+  { id: 'download-exec-substitution', name: 'Runs a downloaded script via process or command substitution', re: SUBSTITUTION_SIGNAL_RE, severity: 'CRITICAL', refine: (l) => targetsExternalNetwork(l) && !vendorInstallerLine(l) },
+  { id: 'vendor-installer', name: 'Runs a vendor installer script (known host)', re: /\b(?:curl|wget)\b/i, severity: 'HIGH', confirm: true, refine: (l) => vendorInstallerLine(l) && fetchExecShape(l) !== null },
   { name: 'PowerShell download-and-run (iwr/curl … | iex)', re: /\b(iwr|curl|wget|invoke-webrequest|invoke-restmethod|irm)\b[^\n|]{0,200}\|\s*(iex|invoke-expression)\b/i, severity: 'CRITICAL' },
   { name: 'Invoke-Expression of downloaded content', re: /\b(iex|invoke-expression)\b[^\n]{0,120}(downloadstring|net\.webclient|\(\s*(iwr|irm|invoke-)|\$\()/i, severity: 'CRITICAL' },
   { name: 'Reverse shell via /dev/tcp', re: /\/dev\/(tcp|udp)\//i, severity: 'CRITICAL' },
   { name: 'Base64 blob piped to a shell', re: /base64\s+(--?d(ecode)?)?\b[^\n|]{0,200}\|\s*(ba|z)?sh\b/i, severity: 'CRITICAL' },
-  { name: 'curl/wget posts data to the network (exfiltration)', re: /\b(curl|wget|http|https|invoke-restmethod|irm)\b[^\n]{0,220}(--data(-raw|-binary|-urlencode)?|--form\b|--upload-file\b|(^|\s)-d\s|(^|\s)-F\s|(^|\s)-T\s|-Method\s+Post)/i, severity: 'HIGH', refine: targetsExternalNetwork },
+  { name: 'curl/wget posts data to the network (exfiltration)', re: /\b(curl|wget|http|https|invoke-restmethod|irm)\b[^\n]{0,220}(--data(-raw|-binary|-urlencode)?|--form\b|--upload-file\b|(^|\s)-d\s|(^|\s)-F\s|(^|\s)-T\s|-Method\s+Post|--post-(?:data|file)\b|--body-(?:data|file)\b|--method[= ](?:POST|PUT)\b)/i, severity: 'HIGH', refine: targetsExternalNetwork },
   {
     name: 'Command output piped into a network call',
     re: /\b(curl|wget|invoke-restmethod|invoke-webrequest|irm|iwr)\b[^\n]{0,220}(\$\(|<\(|`[^`\n]*(?:\b(?:cat|ls|whoami|id|env|printenv|uname|hostname|pwd|base64|echo|head|tail|find|grep|awk|sed|curl|wget|nc|python\d?|node|perl|ruby|php|git|aws|kubectl|openssl)\b|\/(?:etc|var|tmp|home|root|usr|proc)\/|\$\w|\s-{1,2}\w)[^`\n]*`)/i,
@@ -115,7 +94,8 @@ export const DANGEROUS_SHELL = [
   { name: 'Disables the audit / logging subsystem', re: /\b(systemctl|service)\s+(stop|disable|mask)\s+\S{0,20}(auditd|rsyslog|syslog|systemd-journald|journald)\b|\bauditctl\s+(-e\s*0|-D)\b|\bsetenforce\s+0\b|\bsystemctl\s+(stop|disable|mask)\s+firewalld\b/i, severity: 'HIGH' },
 
   { name: 'Locally decoded or decrypted blob piped to a shell', re: /\b(?:gpg|openssl\s+enc|xxd\s+-r|uudecode|zcat|gunzip|bunzip2|unxz)\b[^\n|]{0,160}\|\s*(?:sudo\s+)?(?:ba|z|k)?sh\b/i, severity: 'CRITICAL' },
-  { name: 'Container escape to the host (privileged / host mount / host namespace)', re: /\b(?:docker|podman|nerdctl)\s+(?:run|create|exec)\b[^\n]{0,200}?(?:--privileged\b|--pid[= ]host\b|--ipc[= ]host\b|--userns[= ]host\b|--security-opt[= ]\S{0,40}(?:seccomp[=:]unconfined|apparmor[=:]unconfined)|--cap-add[= ](?:ALL|SYS_ADMIN|SYS_PTRACE|SYS_MODULE)\b|-v\s+\/(?:\s|:)|--volume[= ]\/:|(?:-v|--volume)[= ]\s*\/var\/run\/docker\.sock)/i, severity: 'CRITICAL' },
+  { name: 'Container escape to the host (privileged / host mount / host namespace)', re: /\b(?:docker|podman|nerdctl)\s+(?:run|create|exec)\b[^\n]{0,200}?(?:--pid[= ]host\b|--ipc[= ]host\b|--userns[= ]host\b|--security-opt[= ]\S{0,40}(?:seccomp[=:]unconfined|apparmor[=:]unconfined)|--cap-add[= ](?:ALL|SYS_ADMIN|SYS_PTRACE|SYS_MODULE)\b|-v\s+\/(?:\s|:)|--volume[= ]\/:)/i, severity: 'CRITICAL' },
+  { id: 'container-host-control', name: 'Runs a container with host-level control (--privileged or the Docker socket)', re: /\b(?:docker|podman|nerdctl)\s+(?:run|create|exec)\b[^\n]{0,200}?(?:--privileged\b|\/var\/run\/docker\.sock\b)/i, severity: 'HIGH', confirm: true },
   { name: 'Enters the host namespace from a container (nsenter / chroot onto a host mount)', re: /\bnsenter\b[^\n]{0,80}(?:-t\s*1\b|--target\s*1\b)|\bchroot\s+\/(?:host|mnt|proc\/1\/root)\b/i, severity: 'CRITICAL' },
   { name: 'Grants cluster-admin in Kubernetes', re: /\bkubectl\b[^\n]{0,120}\b(?:create|apply)\b[^\n]{0,120}\b(?:cluster)?rolebinding\b[^\n]{0,160}(?:--clusterrole[= ]\s*cluster-admin|cluster-admin)\b/i, severity: 'HIGH' },
   { name: 'Attaches an administrator policy to a cloud identity', re: /\baws\s+iam\s+(?:attach-(?:user|role|group)-policy|put-(?:user|role|group)-policy)\b[^\n]{0,160}(?:AdministratorAccess|PowerUserAccess|"?Action"?\s*:\s*"?\*)|\bgcloud\b[^\n]{0,120}add-iam-policy-binding\b[^\n]{0,160}roles\/(?:owner|editor|iam\.securityAdmin)\b|\baz\s+role\s+assignment\s+create\b[^\n]{0,160}--role\s+"?(?:Owner|Contributor|User Access Administrator)"?/i, severity: 'HIGH' },
@@ -132,6 +112,9 @@ export const DANGEROUS_SHELL = [
   { name: 'Kills the audit / EDR agent (anti-forensics)', re: /\b(?:pkill|killall|kill)\b[^\n]{0,40}\b(?:auditd|osqueryd?|falcon-sensor|falconctl|wazuh|ossec|filebeat|splunkd|sysmon|crowdstrike|carbonblack|cbagent)\b|\bSet-MpPreference\b[^\n]{0,60}-Disable\w*\s+\$?true/i, severity: 'HIGH' },
   { name: 'Downloads and executes through a signed system binary (LOLBin)', re: /\bcertutil\b[^\n]{0,80}-urlcache\b|\bbitsadmin\b[^\n]{0,80}\/transfer\b|\bmshta\b\s+https?:\/\/|\bregsvr32\b[^\n]{0,60}\/i:\s*https?:\/\/|\brundll32\b[^\n]{0,60}\b(?:url\.dll|javascript:)|\bwmic\b[^\n]{0,60}\bprocess\s+call\s+create\b|\bmsiexec\b[^\n]{0,40}\/i\s+https?:\/\//i, severity: 'CRITICAL' },
   { name: 'PowerShell runs a base64-encoded command', re: /\bpowershell(?:\.exe)?\b[^\n]{0,80}\s-(?:e|ec|enc|encoded|encodedcommand)\b/i, severity: 'CRITICAL' },
-  { name: 'Interpreter opens a raw socket (reverse shell)', re: /\b(?:perl|ruby|php|python[0-9.]*|node)\b[^\n]{0,40}-(?:e|r|c)\b[^\n]{0,200}(?:\bfsockopen|\bsocket\s*\(|\bSocket::|\bSOCK_STREAM\b|\bnet\.connect|\bcreateConnection\b)/i, severity: 'CRITICAL' },
+  { name: 'Interpreter opens a raw socket (reverse shell)', re: /\b(?:perl|ruby|php|python[0-9.]*|node)\b[^\n]{0,40}-(?:e|r|c)\b[^\n]{0,200}(?:\bfsockopen|\bsocket\s*\(|\bSocket::|\bSOCK_STREAM\b|\bnet\.connect|\bcreateConnection\b)/i, severity: 'CRITICAL', refine: (l) => !socketStaysOnLoopback(l) },
   { name: 'Netcat listener or command-execution flag', re: /\bn?c(?:at)?\b[^\n]{0,40}\s-\w*[ec]\s+\S{0,30}(?:sh|bash|cmd|powershell)\b|\bn?c(?:at)?\b[^\n]{0,20}\s-\w*l\w*\s*(?:-\w+\s*)*\d{2,5}\b/i, severity: 'HIGH' },
+  { id: 'netcat-shell', name: 'Netcat or socat hands a shell to a remote host (reverse shell)', re: /\bn(?:c|cat)\b[^\n]{0,60}\s(?:-\w*[ec]\s*|--(?:exec|sh-exec|lua-exec)[= ]\s*)\S{0,30}(?:sh|bash|zsh|cmd|powershell)\b|\bsocat\b[^\n]{0,200}\b(?:exec|system):[^\n]{0,40}\b(?:sh|bash|zsh|cmd|powershell)\b/i, severity: 'CRITICAL' },
 ];
+
+export const SHADOW_SHELL = [];

@@ -14,6 +14,6 @@ export { downrankCodeContext, localScan } from './signals/scan.mjs';
 export { PII_PATTERNS, SECRET_PATTERNS } from './signals/secrets.mjs';
 export { NETWORK_VERBS, SENSITIVE_READ } from './signals/sensitive.mjs';
 export { grade } from './signals/severity.mjs';
-export { DANGEROUS_SHELL, matchesShellSignal } from './signals/shell.mjs';
+export { DANGEROUS_SHELL, SHADOW_SHELL, matchesShellSignal } from './signals/shell.mjs';
 export { scanStagedFetchExec } from './signals/staged-fetch.mjs';
 export { containsAny, containsWord } from './signals/text-match.mjs';

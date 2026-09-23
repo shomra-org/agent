@@ -1,4 +1,5 @@
 import { cmdAdd } from '../commands/add.mjs';
+import { cmdAllow } from '../commands/allow.mjs';
 import { cmdAgentIdentity } from '../commands/agent-identity.mjs';
 import { cmdBaseline, cmdCheck } from '../commands/check.mjs';
 import { cmdCorpus } from '../commands/corpus.mjs';
@@ -11,6 +12,7 @@ import { cmdInstallPrecommit } from '../commands/git-hooks.mjs';
 import { cmdInit } from '../commands/init.mjs';
 import { cmdInstallHook } from '../commands/install-hook.mjs';
 import { cmdLedger } from '../commands/ledger.mjs';
+import { cmdLocal } from '../commands/local.mjs';
 import { cmdLlmProxy } from '../commands/llm-proxy.mjs';
 import { cmdMcp, cmdMcpGuard } from '../commands/mcp.mjs';
 import { cmdMdmScript } from '../commands/mdm-script.mjs';
@@ -85,6 +87,8 @@ export const COMMANDS = {
   status: () => cmdStatus(),
   telemetry: (f, p) => cmdTelemetry(f, p),
   feedback: (f) => cmdFeedback(f),
+  allow: (f, p) => cmdAllow(f, p),
+  local: (f, p) => cmdLocal(f, p),
 };
 
 export const ADMIN_VERBS = new Set([

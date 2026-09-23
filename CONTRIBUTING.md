@@ -20,6 +20,17 @@ runtime firewall all run these same analyzers on-machine.
   delay or change a verdict. `tests/telemetry.test.mjs` pins both.
 - **Low false positives.** A noisy scanner gets turned off. New rules must be
   justified against real attack patterns and must not fire on benign code.
+- **New blocking rules ship in shadow first.** Add them to `SHADOW_SHELL` in
+  `src/detect/signals/shell.mjs`: they run on every call and report what they
+  would have caught through telemetry, but never block. Promote a rule into
+  `DANGEROUS_SHELL` (here and in the backend's `signals.ts`) once the back
+  office's rule health shows its hits are attacks, not installers. A blocking
+  rule people override 2% of the time or more is recommended for demotion to ask.
+- **A local model may only raise.** Anything under `src/local/` can add a note
+  for the agent or propose a fix; it never blocks, never clears a finding, and a
+  fix it writes is only offered when the deterministic re-scan is cleaner. Its
+  model is pinned (every embedding carries a probe) and its template is vetted
+  at setup, and a call that runs past its budget is no reading, never a pass.
 
 ## Project layout
 
@@ -38,6 +49,7 @@ lives under `src/`, grouped by what it is responsible for:
 | `src/inventory/` | Discovering AI tooling, artifacts and keys on a machine |
 | `src/mcp/` | The MCP server Shomra exposes, and the stdio shim that guards others |
 | `src/models/` | Model reference collection and Model Index lookup |
+| `src/local/` | An optional model on the developer's machine (Ollama, LM Studio, llama.cpp): the raise-only tool-result screen, and `fix`/`why --local` |
 | `src/rules/` | Generating the agent rules block written into `CLAUDE.md` etc. |
 | `src/corpus/`, `src/artifacts/`, `src/scaffold/` | RAG screening, artifact walking, `shomra new` templates |
 | `tests/` | `node --test` suites (zero-dep) |

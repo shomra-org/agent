@@ -1,5 +1,5 @@
-import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,6 +7,8 @@ import path from 'node:path';
 export const CONFIG_DIR = path.join(os.homedir(), '.shomra');
 
 export const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+
+export const PUBLIC_BACKEND_URL = 'https://shomra-backend-emgjg9b0fcdmc8hu.westeurope-01.azurewebsites.net';
 
 export function machineConfigFile(platform = process.platform, env = process.env) {
   if (platform === 'win32') return path.win32.join(env.ProgramData || env.PROGRAMDATA || 'C:\\ProgramData', 'Shomra', 'config.json');
@@ -56,7 +58,7 @@ export function loadConfig() {
 
 function restrictWindowsDir(dir, env = process.env) {
   const icacls = path.win32.join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', 'icacls.exe');
-  execFileSync(icacls, [dir, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F'], { stdio: 'ignore', timeout: 15000, windowsHide: true });
+  createRequire(import.meta.url)('node:child_process').execFileSync(icacls, [dir, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F'], { stdio: 'ignore', timeout: 15000, windowsHide: true });
 }
 
 export function saveMachineConfig(cfg, file = MACHINE_CONFIG_FILE) {

@@ -104,12 +104,22 @@ test('clean check exits 0', () => {
 });
 
 test('backend-only commands with no config exit 3 (usage/config error)', () => {
-  for (const args of [['scan-zip', 'x.zip'], ['model-scan', 'owner/model'], ['redteam'], ['campaign'], ['harden'], ['memory-scan'], ['llm-proxy']]) {
+  for (const args of [['scan-zip', 'x.zip'], ['redteam'], ['campaign'], ['harden'], ['llm-proxy']]) {
     const r = run(args);
     assert.equal(r.code, 3, `${args.join(' ')} should exit 3, got ${r.code}`);
     assert.match(r.stderr, /Not configured/i, `${args.join(' ')} stderr`);
     assert.match(r.stderr, /Settings → API Keys/, `${args.join(' ')} points at where to get a key`);
   }
+});
+
+test('model-scan and memory-scan need no account', () => {
+  const gh = run(['model-scan', 'https://github.com/acme/model-code']);
+  assert.equal(gh.code, 3);
+  assert.match(gh.stderr, /only Hugging Face models can be scanned without an account/);
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'shomra-mem-'));
+  const mem = run(['memory-scan', empty]);
+  assert.equal(mem.code, 0, mem.stderr);
+  assert.match(mem.stdout, /No memory or rules files found/);
 });
 
 test('secrets exits 1 when a live-looking secret is present', () => {

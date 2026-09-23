@@ -125,6 +125,13 @@ function normalizeGuardShape(agent, payload) {
     case 'claude':
     case 'aider':
     default:
-      return { tool_name: payload.tool_name, tool_input: payload.tool_input, tool_response: payload.tool_response, cwd: payload.cwd, session_id: payload.session_id };
+      return {
+        tool_name: payload.tool_name,
+        tool_input: payload.tool_input,
+        tool_response: payload.tool_response,
+        cwd: payload.cwd,
+        session_id: payload.session_id,
+        ...(typeof payload.transcript_path === 'string' ? { transcript_path: payload.transcript_path } : {}),
+      };
   }
 }

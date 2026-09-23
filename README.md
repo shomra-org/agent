@@ -30,11 +30,14 @@ npx @shomra/agent gate .mcp.json
 ## Auth (optional)
 
 Shomra is **local-first** - every verdict is computed on your machine. `gate`,
-`check`, `models`, `secrets`, and the runtime firewall all work with no key and
-no network. You only connect to a Shomra org to layer on your **org policy**,
-cloud/deep scans, AI fixes, and the Model Security Index. Unenrolled installs
-share anonymous detection telemetry - see [Telemetry](#telemetry) for exactly
-what, and how to switch it off.
+`check`, `models`, `secrets`, `model-scan <folder>`, `memory-scan`, `allow` and the
+runtime firewall all work with no key and no network, and `fix`/`why` can use a model
+on your machine (`shomra local setup`). A public Hugging Face model can be scanned
+with no key by the free public scanner, which only sees the model's name. You only
+connect to a Shomra org to layer on your **org policy**, org AI fixes, repository and
+zip scans, memory history, org-wide allows and the Model Security Index. Unenrolled
+installs share anonymous detection telemetry - see [Telemetry](#telemetry) for
+exactly what, and how to switch it off.
 
 - **Dev machine:** `shomra init --key shm_live_… --url https://shomra.your-co.com` (writes `~/.shomra/config.json`).
 - **CI / headless:** set env vars instead - no `init` needed:
@@ -57,6 +60,8 @@ shomra selftest --agent all            # prove the firewall is really in path on
 shomra rules --write                   # teach the agent what gets blocked, so it never writes it
 shomra mcp install                     # let the agent gate its own content BEFORE writing it
 shomra scan                            # discover AI tooling on this machine
+shomra model-scan ./models/my-model    # pickle / GGUF / safetensors checks on files here
+shomra memory-scan                     # poisoned agent memory and rules files on this machine
 shomra status                          # config + firewall health
 shomra help                            # full command list
 ```
@@ -71,9 +76,58 @@ drives precise editor squiggles and `why`/`fix` point at the exact offending lin
   policy layered on when enrolled. It's `gate --all` with dev ergonomics
   (`--staged` / `--changed` scoping, `--fix`, clean `--json` for an IDE extension).
 - **`fix`** generates a minimal fix for what the gate flags and (with `--apply`)
-  writes it back to your working tree - the fix is produced on the platform with
-  your org's AI key, so no provider key sits on the dev machine. Nothing is
-  committed or pushed. Without AI on the server it prints deterministic guidance.
+  writes it back to your working tree. Enrolled, the fix is produced on the
+  platform with your org's AI key, so no provider key sits on the dev machine.
+  With no account it uses a model on your machine (`shomra local setup`, below).
+  Nothing is committed or pushed.
+
+### A model on your machine, no account
+
+```bash
+ollama pull nomic-embed-text           # the screen (all-minilm is the fastest)
+ollama pull qwen2.5-coder:3b           # optional: fix / why
+shomra local setup                     # find the runtime, vet + pin the models, calibrate
+shomra fix .claude/skills/x/SKILL.md   # written by the local model, re-scanned before it is offered
+shomra why .mcp.json --local           # explained by the local model
+shomra local test "some text"          # see how the screen would read it
+```
+
+Ollama, LM Studio and a llama.cpp server all work. What the model is allowed to do
+is deliberately narrow:
+
+- **It can only raise.** Tool results are also read by the embedding model, and
+  what it can do is add a note telling the agent to treat a passage as data. It
+  never blocks and never clears a finding the rules made. It skips source files
+  and agent instruction files (`CLAUDE.md`, skills, memory), which are addressed
+  to the agent by design, and user prompts, which always are.
+- **It is budgeted.** 250 ms by default (`SHOMRA_LOCAL_BUDGET_MS`). A slow or
+  missing runtime is no reading, never a pass, and backs off for a while.
+- **It is calibrated on your machine.** Setup scores held-out attack and ordinary
+  samples and sets the threshold so none of the ordinary ones fire. A model that
+  cannot separate them keeps the screen off and says so.
+- **It is pinned and vetted.** Every embedding request carries a fixed probe, so a
+  swapped model is detected and not used. The chat model's digest is checked
+  before each fix. A model whose template can reach the host (Jinja SSTI) is
+  refused at setup.
+- **A local fix is only offered when it is better.** The fixed file is re-scanned
+  on your machine. It is rejected if it is not cleaner, adds a finding, adds a
+  host, adds control characters or deletes most of the file.
+- **`why --local` explains; it never rules.** The model is reading the attacker's
+  own text, so it doesn't get to say whether a finding is a false positive.
+
+### When the firewall is wrong
+
+```bash
+shomra allow destructive --match "rm -rf ./build" --for 1h   # stop asking for one thing
+shomra allow pipe-to-shell --match get.example.dev --once    # the next matching call only
+shomra allow multi-stage-fetch-exec --in-repo --match "scripts/bootstrap.sh"   # for the team, via .shomraignore
+shomra allow --list                                          # what is allowed, and from where
+```
+
+Allows are narrow by design. A standing allow on a critical rule needs `--match`,
+and they expire (30 days at most). An allow only works from a terminal, so an agent
+that was just blocked cannot allow itself. On a paid plan, admins can also set
+org-wide allows in Settings → Firewall Allows.
 
 ### The install-time verbs (still here)
 
@@ -632,6 +686,8 @@ id), `DO_NOT_TRACK=1`, or `SHOMRA_TELEMETRY=0`. Also:
 | `SHOMRA_PLAN_GUARD_OFF` | `1` = disable the plan channel only |
 | `SHOMRA_MODEL_CACHE` | `0` = disable the on-machine model-index verdict cache |
 | `SHOMRA_MODEL_CACHE_TTL_MS` | Model-cache freshness window (default 7 days) |
+| `SHOMRA_LOCAL_OFF` | `1` = don't consult the local model (`shomra local setup`) in the firewall |
+| `SHOMRA_LOCAL_BUDGET_MS` | How long the tool-result screen waits for the local model (default 250, max 2000) |
 | `DO_NOT_TRACK` | `1` = anonymous telemetry off (the cross-tool convention) |
 | `SHOMRA_TELEMETRY` | `0` = off, `1` = on (required in CI), `samples` = on with redacted samples |
 | `SHOMRA_TELEMETRY_URL` | Where anonymous telemetry is sent (default: the Shomra public endpoint) |

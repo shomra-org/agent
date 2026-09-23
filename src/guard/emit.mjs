@@ -35,6 +35,17 @@ export function emitResultBlock(agent, reason) {
   process.exit(0);
 }
 
+export function emitResultContext(agent, note) {
+  const context = () => ({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: note } });
+  const bodies = { claude: context, codex: context, cline: context };
+  if (!bodies[agent]) {
+    process.stderr.write(note + '\n');
+    process.exit(0);
+  }
+  process.stdout.write(JSON.stringify(bodies[agent]()));
+  process.exit(0);
+}
+
 export function emitGuardAsk(agent, reason) {
   const bodies = {
     cursor: () => ({ permission: 'ask', user_message: reason, agent_message: reason }),

@@ -36,3 +36,16 @@ export function isPlaceholderSecret(v) {
   if (/^(0123|1234|abcd|abcdef|deadbeef)/i.test(tail)) return true;
   return false;
 }
+
+export function isPlaceholderCredential(v) {
+  return isPlaceholderSecret(v) || isPlaceholderValue(v);
+}
+
+export function isPlaceholderValue(v) {
+  const low = String(v).toLowerCase();
+  if (/(your|my|the|some|placeholder|example|sample|dummy|test|fake|changeme|redacted|x{3,64}|\.\.\.|todo|replace|insert|here|value|token|secret|key)$/i.test(low)) return true;
+  if (/^[x*.\-_0]+$/i.test(v)) return true;
+  if (/(.)\1{7,}/.test(v)) return true;
+  if (/^(?:abc|123|test|foo|bar|qwerty)/i.test(low)) return true;
+  return false;
+}

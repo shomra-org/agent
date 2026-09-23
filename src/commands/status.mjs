@@ -7,6 +7,7 @@ import { CONFIG_FILE, loadConfig, resolveSettings } from '../core/config.mjs';
 import { bold, cyan, dim, gray, green, red, yellow } from '../core/terminal.mjs';
 import { VERSION } from '../core/version.mjs';
 import { envFlag } from '../guard/options.mjs';
+import { localSettings } from '../local/config.mjs';
 import { telemetryState } from '../telemetry/consent.mjs';
 
 function telemetryLine(state) {
@@ -35,9 +36,11 @@ export function cmdStatus() {
   console.log(`  ${dim('Machine  ')} ${os.hostname()} ${dim('(' + (cfg.machineId || 'unenrolled') + ')')}`);
   console.log(`  ${dim('Config   ')} ${CONFIG_FILE}`);
 
+  const local = localSettings();
   console.log(bold('\n  Available now') + dim(enrolled ? '' : ' (local, no key)'));
-  console.log(`  ${green('✓')} ${dim('check · gate · doctor · protect · secrets · models · new · mcp add · why (offline)')}`);
-  console.log(`  ${enrolled ? green('✓') : gray('○')} ${(enrolled ? dim : gray)('fix (AI) · deep scans (scan-zip/model-scan/memory-scan) · org policy · dashboard telemetry')}`);
+  console.log(`  ${green('✓')} ${dim('check · gate · doctor · protect · secrets · models · new · mcp add · allow · why (offline) · model-scan · memory-scan (on-machine)')}`);
+  console.log(`  ${local?.judge ? green('✓') : gray('○')} ${(local?.judge ? dim : gray)(local?.judge ? `fix / why with ${local.judge.model} on this machine` : 'fix / why with a model on this machine - shomra local setup')}`);
+  console.log(`  ${enrolled ? green('✓') : gray('○')} ${(enrolled ? dim : gray)('fix (org AI) · deep scans (scan-zip, hub model-scan, memory history) · org policy · dashboard telemetry')}`);
 
   const localOff = process.env.SHOMRA_GUARD_LOCAL === '0' || String(process.env.SHOMRA_GUARD_LOCAL).toLowerCase() === 'false';
   const strict = envFlag('SHOMRA_GUARD_STRICT');
@@ -55,6 +58,7 @@ export function cmdStatus() {
     console.log(`  ${dim('Hooks    ')} ${yellow('not installed for any agent')}${dim('  (run: shomra install-hook --agent all  or  shomra protect)')}`);
   }
   console.log(`  ${dim('Tier 0   ')} ${localOff ? yellow('off') + dim(' (server-only)') : green('on') + dim(' - dangerous calls blocked on-machine, zero network')}`);
+  console.log(`  ${dim('Local AI ')} ${local ? `${green('on')} ${dim(`- ${local.embed.model} reads tool results (raise-only) · shomra local status`)}` : dim('not set up - shomra local setup')}`);
   console.log(`  ${dim('Mode     ')} ${strict ? 'fail-closed (strict)' : 'fail-open'}${dim(` · server timeout ${guardTimeoutMs()}ms · breaker ${breakerCooldownMs()}ms`)}`);
   console.log(`  ${dim('Breaker  ')} ${breakerOpen() ? red('OPEN') + dim(' - backend recently unreachable; server tier is being skipped') : green('closed')}\n`);
 }
