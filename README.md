@@ -126,8 +126,11 @@ shomra allow --list                                          # what is allowed, 
 
 Allows are narrow by design. A standing allow on a critical rule needs `--match`,
 and they expire (30 days at most). An allow only works from a terminal, so an agent
-that was just blocked cannot allow itself. On a paid plan, admins can also set
-org-wide allows in Settings → Firewall Allows.
+that was just blocked cannot allow itself. A repo's `.shomraignore` allows apply only
+once someone has trusted them on that machine (`shomra allow --trust-repo`), because a
+repo you clone could otherwise switch the firewall off for itself; a changed line needs
+trusting again. On a paid plan, admins can also set org-wide allows in Settings →
+Firewall Allows.
 
 ### The install-time verbs (still here)
 

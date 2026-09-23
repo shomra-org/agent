@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { CONFIG_DIR } from '../core/config.mjs';
 
-const STATE_FILE_RE = /\.shomra[\\/]+(?:allows|org-allows|asks|config|machine)\.json\b/i;
+const STATE_FILE_RE = /\.shomra[\\/]+(?:allows|org-allows|asks|config|machine|trusted-repos)\.json\b/i;
 const IGNORE_FILE_RE = /(?:^|[\s'"=/\\])\.shomraignore\b/;
 const SHELL_WRITE_RE = /(?:>>?|\btee\b|\bcp\b|\bmv\b|\bsed\b[^\n;|&]*\s-i|\brm\b|\bdd\b|\btruncate\b|\bln\b|\binstall\b|\bchmod\b|\bnode\b|\bpython[0-9.]*\b|\bperl\b|\bruby\b|\bjq\b[^\n;|&]*>|\bSet-Content\b|\bAdd-Content\b|\bOut-File\b)/i;
 

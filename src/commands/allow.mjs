@@ -10,9 +10,10 @@ import {
   DESTRUCTIVE_RULE,
   NEVER_ALLOWABLE,
   loadOrgAllows,
-  loadRepoAllows,
   readUserAllows,
+  repoAllowStatus,
   slugRule,
+  trustRepoLines,
   writeUserAllows,
 } from '../guard/allows.mjs';
 import { IGNORE_EDIT } from '../guard/self-protect.mjs';
@@ -55,6 +56,7 @@ function usage() {
       ${dim('--match <text>   only when the command contains <text> (required for critical rules unless --once)')}
       ${dim('--reason <text>  a note for whoever reads the allow later')}
   ${bold('shomra allow --list')}                   ${dim('what is allowed right now, and from where')}
+  ${bold('shomra allow --trust-repo')}             ${dim("review this repo's .shomraignore allows; add --yes to trust them on this machine")}
   ${bold('shomra allow --revoke <id>')}            ${dim('remove one of your allows')}
   ${bold('shomra allow --rules')}                  ${dim('every rule id this version knows')}
 `);
@@ -63,7 +65,7 @@ function usage() {
 function list(cwd) {
   const now = Date.now();
   const user = readUserAllows().filter((a) => !a.usedAt && (!a.expiresAt || Date.parse(a.expiresAt) > now));
-  const repo = loadRepoAllows(cwd);
+  const repo = repoAllowStatus(cwd);
   const org = loadOrgAllows();
   const line = (a) => `${bold(a.rule)}${a.match ? dim(` · when it contains "${a.match}"`) : dim(' · any command')}`;
   console.log('');
@@ -72,7 +74,7 @@ function list(cwd) {
   for (const a of user) console.log(`    ${line(a)} ${dim(`· ${a.once ? 'once' : `until ${a.expiresAt}`} · id ${a.id}`)}`);
   console.log(`  ${bold('This Repo')} ${dim('(.shomraignore)')}`);
   if (!repo.length) console.log(`    ${dim('none')}`);
-  for (const a of repo) console.log(`    ${line(a)}`);
+  for (const a of repo) console.log(`    ${line(a)} ${a.trusted ? dim('· trusted on this machine') : yellow('· NOT trusted - ignored until you run shomra allow --trust-repo')}`);
   console.log(`  ${bold('Your Org')} ${dim('(synced from the platform when enrolled)')}`);
   if (!org.length) console.log(`    ${dim('none')}`);
   for (const a of org) console.log(`    ${line(a)}${a.expiresAt ? dim(` · until ${a.expiresAt}`) : ''}`);
@@ -83,6 +85,30 @@ function rules() {
   console.log('');
   for (const [id, r] of ruleCatalog()) console.log(`  ${bold(id.padEnd(44))} ${dim(`${r.severity.padEnd(8)} ${r.name}`)}`);
   console.log('');
+}
+
+function trustRepo(cwd, confirmed) {
+  const catalog = ruleCatalog();
+  const pending = repoAllowStatus(cwd).filter((a) => !a.trusted);
+  if (!pending.length) {
+    console.log(`\n  ${green('✓')} ${dim('Nothing to review - every allow in this repo is already trusted, or it has none.')}\n`);
+    return;
+  }
+  const inert = (a) => !a.match && (catalog.get(a.rule)?.severity === 'CRITICAL' || a.rule === DESTRUCTIVE_RULE);
+  console.log(`\n  ${bold("This repo's .shomraignore asks to allow:")}`);
+  for (const a of pending) {
+    const known = catalog.get(a.rule);
+    const what = known ? `${known.severity} · ${known.name}` : 'a rule this version does not know';
+    const note = inert(a) ? yellow(' · has no --match, so it will never apply to a critical rule') : '';
+    console.log(`    ${bold(a.rule)}${a.match ? dim(` · when the command contains "${a.match}"`) : dim(' · any command')} ${dim(`(${what})`)}${note}`);
+  }
+  if (!confirmed) {
+    console.log(`\n  ${dim('A cloned repo can ask for anything here. Trust it only if you know who wrote these lines.')}`);
+    console.log(`  ${dim('To trust them on this machine:')} ${bold('shomra allow --trust-repo --yes')}\n`);
+    return;
+  }
+  trustRepoLines(cwd, pending);
+  console.log(`\n  ${green('✓')} Trusted ${pending.length} allow${pending.length === 1 ? '' : 's'} for ${bold(cwd)} ${dim('- a changed line needs trusting again')}\n`);
 }
 
 function revoke(id) {
@@ -111,6 +137,10 @@ export function cmdAllow(flags, positional = [], { stdin = process.stdin, stdout
   if (flags.list) return list(cwd);
   if (flags.rules) return rules();
   if (typeof flags.revoke === 'string') return revoke(flags.revoke);
+  if (flags['trust-repo'] === true) {
+    if (!stdin?.isTTY || !stdout?.isTTY) fail(`${bold('shomra allow --trust-repo')} is for a person at a terminal. ${dim('It is refused without one, so an agent cannot trust a repo for you.')}`);
+    return trustRepo(cwd, flags.yes === true);
+  }
 
   const rule = String(positional[0] ?? '').trim().toLowerCase();
   if (!rule) return usage();
@@ -139,6 +169,7 @@ export function cmdAllow(flags, positional = [], { stdin = process.stdin, stdout
 
   if (flags['in-repo'] === true) {
     const file = appendRepoAllow(cwd, rule, match, reason);
+    trustRepoLines(cwd, [{ rule, match }]);
     console.log(`\n  ${green('✓')} Allowed ${bold(rule)}${match ? ` when the command contains ${bold(match)}` : ''} in this repo ${dim(`(${file})`)}`);
     console.log(`  ${dim('Commit .shomraignore so the team shares it - and so review sees it.')}\n`);
     return;

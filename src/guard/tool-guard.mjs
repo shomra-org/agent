@@ -95,7 +95,7 @@ function allowSources(normalized) {
 
 function destructiveAllowed(command, normalized) {
   if (!command) return false;
-  const hit = allowSources(normalized).find((a) => allowMatches(a, DESTRUCTIVE_RULE, command));
+  const hit = allowSources(normalized).find((a) => allowMatches(a, DESTRUCTIVE_RULE, command, 'ASK'));
   if (hit) consumeOnce([{ allow: hit }]);
   return !!hit;
 }
@@ -159,7 +159,7 @@ export async function cmdToolGuard(flags) {
       const { buildGuardBody, reportGuardDecision } = await import('./report.mjs');
       await reportGuardDecision(url, apiKey, agentId, buildGuardBody(normalized, agent, 'BLOCK', local.top?.label));
     }
-    emitGuardDeny(agent, `Blocked on-machine by Shomra: ${local.top?.label || 'dangerous tool call'}.${allowHint(ruleIdOf(local.top), commandText)}`);
+    emitGuardDeny(agent, `Blocked on-machine by Shomra: ${local.top?.label || 'dangerous tool call'}.${allowHint(ruleIdOf(local.top), commandText, { root: normalized.cwd || process.cwd(), severity: local.top?.severity })}`);
   }
 
   if (MODEL_WRITE_TOOLS.includes(String(tool).toLowerCase())) {

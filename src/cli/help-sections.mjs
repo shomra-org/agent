@@ -33,7 +33,7 @@ const COMMANDS = () => `${bold('COMMANDS')}
   ${cyan('status')}        Show config, enrollment + firewall health
   ${cyan('telemetry')}     What the free CLI shares, and the switch ${dim('[status|on [--samples]|off|show [--json]|flush]')}
   ${cyan('feedback')}      Mark the last block or flag as a false positive ${dim('--fp  (a person at a terminal only)')}
-  ${cyan('allow')}         Let one firewall rule through, narrowly  ${dim('<rule> [--once|--for 1h|--in-repo] [--match <text>]  ·  --list  ·  --rules  (a person at a terminal only)')}
+  ${cyan('allow')}         Let one firewall rule through, narrowly  ${dim('<rule> [--once|--for 1h|--in-repo] [--match <text>]  ·  --list  ·  --rules  ·  --trust-repo  (a person at a terminal only)')}
   ${cyan('run')}           ${bold('Run a whole assurance playbook')} ${dim('<id> [--input k=v]… [--project <id>] [--json]  ·  --list for the catalog')}
                 ${dim('scan → red-team → harden → compliance → gate, as one command. Exits')}
                 ${dim('non-zero when a gate holds, so a pipeline can block the release.')}

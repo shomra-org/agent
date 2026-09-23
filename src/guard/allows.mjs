@@ -5,6 +5,7 @@ import { loadIgnoreRules } from '../gate/suppressions.mjs';
 
 export const ALLOWS_FILE = path.join(CONFIG_DIR, 'allows.json');
 export const ORG_ALLOWS_FILE = path.join(CONFIG_DIR, 'org-allows.json');
+export const TRUST_FILE = path.join(CONFIG_DIR, 'trusted-repos.json');
 
 export const NEVER_ALLOWABLE = new Set(['shomra-self-modify']);
 
@@ -50,13 +51,50 @@ export function writeUserAllows(list, file = ALLOWS_FILE) {
   fs.renameSync(tmp, file);
 }
 
-export function loadRepoAllows(root) {
-  if (!root) return [];
+export function repoLineKey(allow) {
+  return `${allow.rule}::${allow.match ?? ''}`;
+}
+
+function repoKey(root) {
   try {
-    return (loadIgnoreRules(root).ruleAllows ?? []).map((a) => ({ ...a, source: 'repo' }));
+    return fs.realpathSync(root);
+  } catch {
+    return path.resolve(root);
+  }
+}
+
+export function readRepoTrust(file = TRUST_FILE) {
+  const doc = readJson(file);
+  return doc?.repos && typeof doc.repos === 'object' ? doc.repos : {};
+}
+
+export function trustRepoLines(root, allows, file = TRUST_FILE, now = Date.now()) {
+  const repos = readRepoTrust(file);
+  const key = repoKey(root);
+  const lines = { ...(repos[key]?.lines ?? {}) };
+  for (const a of allows) lines[repoLineKey(a)] = new Date(now).toISOString();
+  repos[key] = { lines };
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ version: 1, repos }, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
+export function repoAllowStatus(root, file = TRUST_FILE) {
+  if (!root) return [];
+  let raw;
+  try {
+    raw = loadIgnoreRules(root).ruleAllows ?? [];
   } catch {
     return [];
   }
+  if (!raw.length) return [];
+  const trusted = readRepoTrust(file)[repoKey(root)]?.lines ?? {};
+  return raw.map((a) => ({ ...a, source: 'repo', trusted: Object.prototype.hasOwnProperty.call(trusted, repoLineKey(a)) }));
+}
+
+export function loadRepoAllows(root, file = TRUST_FILE) {
+  return repoAllowStatus(root, file).filter((a) => a.trusted);
 }
 
 export function loadOrgAllows(file = ORG_ALLOWS_FILE, now = Date.now()) {
@@ -86,10 +124,10 @@ export function writeOrgAllows(allows, { url, now = Date.now() } = {}, file = OR
   fs.renameSync(tmp, file);
 }
 
-export function allowMatches(allow, ruleId, command) {
+export function allowMatches(allow, ruleId, command, severity) {
   if (NEVER_ALLOWABLE.has(ruleId)) return false;
   if (allow.rule !== ruleId) return false;
-  if (!allow.match) return true;
+  if (!allow.match) return !(allow.source === 'repo' && (severity === 'CRITICAL' || ruleId === DESTRUCTIVE_RULE));
   return String(command ?? '').toLowerCase().includes(String(allow.match).toLowerCase());
 }
 
@@ -98,7 +136,7 @@ export function applyAllows(findings, command, allows) {
   const allowed = [];
   for (const f of findings ?? []) {
     const id = ruleIdOf(f);
-    const hit = (allows ?? []).find((a) => allowMatches(a, id, command));
+    const hit = (allows ?? []).find((a) => allowMatches(a, id, command, f.severity));
     if (hit) allowed.push({ finding: f, allow: hit });
     else kept.push(f);
   }
@@ -116,8 +154,10 @@ export function consumeOnce(allowed, file = ALLOWS_FILE, now = Date.now()) {
   }
 }
 
-export function allowHint(ruleId, command) {
+export function allowHint(ruleId, command, { root, severity } = {}) {
   if (NEVER_ALLOWABLE.has(ruleId)) return '';
+  const pending = root ? repoAllowStatus(root).find((a) => !a.trusted && allowMatches(a, ruleId, command, severity)) : null;
+  if (pending) return ` This repo's .shomraignore asks to allow it, but that line is not trusted on this machine. Review it, then run in your own terminal: shomra allow --trust-repo`;
   const host = /https?:\/\/([^/\s'"`]+)/i.exec(String(command ?? ''))?.[1];
   const match = host ? ` --match ${host}` : '';
   return ` If this is expected, run in your own terminal: shomra allow ${ruleId}${match} --once`;
