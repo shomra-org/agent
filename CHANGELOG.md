@@ -10,9 +10,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The server now answers before the hook gives up.** The hook waits
   `SHOMRA_GUARD_TIMEOUT_MS` (2s by default) and then fails open, while the
   server allowed its enrichment passes 4s - so a slow pass ran the call
-  unscreened and opened a 30s breaker. Every tool call now declares its wait
-  (`guard_timeout_ms`), and the server bounds its screen inside it: a pass cut
-  short is recorded and raises the floor instead.
+  unscreened and opened a 30s breaker. Every tool call and every prompt now
+  declares its wait (`guard_timeout_ms`), and the server bounds its screen
+  inside it: a pass cut short is recorded and raises the floor instead.
+  `SHOMRA_GUARD_TIER=fast` now reaches the server from both hooks.
 - **The org key never follows a redirect to another host.** Node's `fetch`
   strips only `Authorization` on a cross-origin redirect, so `X-Shomra-Key` and
   an `shm_agt_` credential in `X-Shomra-Agent` went wherever a 3xx pointed.

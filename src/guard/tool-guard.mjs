@@ -20,7 +20,7 @@ import { emitGuardAsk, emitGuardDeny } from './emit.mjs';
 import { guardPathAllowlisted } from './ignore.mjs';
 import { screenModelLoad } from './model-load.mjs';
 import { normalizeGuardInput } from './normalize.mjs';
-import { envFlag, resolveAgentFlag } from './options.mjs';
+import { envFlag, guardWait, resolveAgentFlag } from './options.mjs';
 import { recordSelftest, selftestField } from './selftest-marker.mjs';
 import { buildGuardBody, reportGuardDecision } from './report.mjs';
 import { guardStateTamper, refuseOrAsk, tamperReason } from './self-protect.mjs';
@@ -344,8 +344,7 @@ export async function cmdToolGuard(flags) {
       ...post,
       ...selftest,
       ...(selftest.selftest ? {} : { guard_ledger: sendLedger() }),
-      guard_timeout_ms: guardTimeoutMs(),
-      ...(String(process.env.SHOMRA_GUARD_TIER ?? '').trim().toLowerCase() === 'fast' ? { screen_tier: 'fast' } : {}),
+      ...guardWait(),
     },
   });
 

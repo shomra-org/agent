@@ -32,14 +32,14 @@ const FORCE_PUSH = { tool_name: 'Bash', tool_input: { command: 'git push --force
  * carries the ledger without itself being a severe call under test. */
 const ROUTINE_ESCALATED = { tool_name: 'mcp__jira__get_issue', tool_input: { key: 'PROJ-1' }, cwd: home };
 
-function guard(payload, env = {}) {
+function guard(payload, env = {}, command = 'tool-guard') {
   const base = { ...process.env, USERPROFILE: home, HOME: home, NO_COLOR: '1' };
   for (const k of Object.keys(base)) if (k.startsWith('SHOMRA_')) delete base[k];
   for (const dir of [home, os.homedir()]) {
     fs.rmSync(path.join(dir, '.shomra', 'guard-breaker.json'), { force: true });
   }
   return new Promise((done) => {
-    const child = spawn(process.execPath, [CLI, 'tool-guard', '--agent', 'claude'], {
+    const child = spawn(process.execPath, [CLI, command, '--agent', 'claude'], {
       env: { ...base, ...env },
       cwd: home,
     });
@@ -252,6 +252,29 @@ test('the guard tells the server how long it will wait, so the answer can arrive
   try {
     await guard(ROUTINE_ESCALATED, { SHOMRA_API_KEY: KEY, SHOMRA_URL: s.url, SHOMRA_GUARD_TIMEOUT_MS: '1700', SHOMRA_GUARD_BREAKER_MS: '0' });
     assert.equal(declared, 1700, 'the declared wait must be the one this hook actually waits, or the server plans for the wrong clock');
+  } finally {
+    await s.close();
+  }
+});
+
+test('the prompt guard declares the same wait and tier, so a slow prompt screen cannot outlast the hook either', async () => {
+  const seen = [];
+  const s = await serve((req, res, body) => {
+    try {
+      const sent = JSON.parse(body);
+      if (sent.tool_name === 'UserPromptSubmit') seen.push([sent.guard_timeout_ms, sent.screen_tier ?? null]);
+    } catch {
+      /* Not every request on this port is the guard call. */
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ decision: 'ALLOW' }));
+  });
+  try {
+    const prompt = { prompt: 'Summarise the release notes for the team', session_id: 's-prompt', cwd: home };
+    const env = { SHOMRA_API_KEY: KEY, SHOMRA_URL: s.url, SHOMRA_GUARD_TIMEOUT_MS: '1700', SHOMRA_GUARD_BREAKER_MS: '0' };
+    await guard(prompt, { ...env, SHOMRA_GUARD_TIER: 'fast' }, 'prompt-guard');
+    await guard(prompt, env, 'prompt-guard');
+    assert.deepEqual(seen, [[1700, 'fast'], [1700, null]], 'the prompt hook waits the same clock the tool hook does and must say so');
   } finally {
     await s.close();
   }

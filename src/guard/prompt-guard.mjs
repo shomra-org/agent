@@ -6,7 +6,7 @@ import { downrankCodeContext, localScan } from '../detect/guard-signals.mjs';
 import { redactLocally } from '../detect/local-redact.mjs';
 import { detectEnv } from '../gate/environment.mjs';
 import { parentSessionFrom } from './normalize.mjs';
-import { envFlag, resolveAgentFlag } from './options.mjs';
+import { envFlag, guardWait, resolveAgentFlag } from './options.mjs';
 import { reportGuardDecision } from './report.mjs';
 import { keyedFetch } from '../core/keyed-fetch.mjs';
 
@@ -154,7 +154,7 @@ export async function cmdPromptGuard(flags) {
     agent,
     strict,
     injection,
-    body: buildPromptGuardBody(normalized, agent),
+    body: { ...buildPromptGuardBody(normalized, agent), ...guardWait() },
   });
 
   if (decision?.decision === 'BLOCK') {
