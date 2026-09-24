@@ -284,6 +284,10 @@ const ENV = () => `${bold('ENV')}
   SHOMRA_URL                  Backend URL (overrides config)
   SHOMRA_API_TIMEOUT_MS=30000 Per-request backend timeout for scan/gate/report (never hangs)
   SHOMRA_AGENT                Agent credential (shm_agt_…) presented as x-shomra-agent (llm-proxy + firewall)
+  SHOMRA_WORKLOAD             Keyless sign-in: github | gitlab | kubernetes. The firewall trades the job's own
+                              identity token for an hour-long agent credential and needs no stored key
+  SHOMRA_AUDIENCE             The audience the agent's Keyless Sign-In panel shows (shomra:org:…)
+  SHOMRA_TOKEN_FILE           Kubernetes token path (default /var/run/secrets/shomra/token)
   SHOMRA_GATE_CONCURRENCY=8   Parallel backend gate/model-lookup calls in batch runs (1-32)
   SHOMRA_GH_TOKEN             GitHub token for \`shomra pr\` (falls back to GITHUB_TOKEN)
   SHOMRA_GUARD_STRICT=1       Fail-closed on the server tier if the backend is unreachable

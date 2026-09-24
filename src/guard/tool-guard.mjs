@@ -13,6 +13,7 @@ import { artifactKindFor } from './artifact-paths.mjs';
 import { gateMachine } from '../core/api-client.mjs';
 import { VERSION } from '../core/version.mjs';
 import { loadConfig, resolveSettings } from '../core/config.mjs';
+import { workloadCredential } from '../core/workload-identity.mjs';
 import { classifyConsequence, downrankCodeContext, grade, localScan } from '../detect/guard-signals.mjs';
 import { WRITE_TOOLS, callSubjectTypes, guardNeedsServer, guardTargetPath, guardText } from './classify.mjs';
 import { emitGuardAsk, emitGuardDeny } from './emit.mjs';
@@ -246,10 +247,14 @@ export function postContentField(tool, input, normalized, read = boundedRead) {
 
 export async function cmdToolGuard(flags) {
   const agent = resolveAgentFlag(flags);
-  const agentId = resolveAgentIdentityHandle(flags);
   const strict = envFlag('SHOMRA_GUARD_STRICT');
   const alwaysEscalate = envFlag('SHOMRA_GUARD_ALWAYS_ESCALATE');
-  const { apiKey, url } = resolveSettings(loadConfig());
+  const settings = resolveSettings(loadConfig());
+  const { url } = settings;
+  const agentId =
+    resolveAgentIdentityHandle(flags) ??
+    (await workloadCredential({ url, onError: (e) => process.stderr.write(`shomra: keyless sign-in failed - ${e?.message ?? e}\n`) }));
+  const apiKey = settings.apiKey || (agentId?.startsWith('shm_agt_') ? agentId : undefined);
 
   const normalized = normalizeGuardInput(agent, readHookPayload());
   const tool = (normalized.tool_name ?? '').trim();
