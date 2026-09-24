@@ -280,6 +280,32 @@ test('the prompt guard declares the same wait and tier, so a slow prompt screen 
   }
 });
 
+test('a call waiting for the person tells the person, not only the model', async () => {
+  const waiting = { decision: 'BLOCK', reason: 'Waiting for dana@acme.test to confirm send_payment on their phone (code A7K2).', confirmation: { state: 'WAITING', tool: 'send\u202Etnemyap', person: 'dana@acme.test', code: 'A7K2', retryAfterSeconds: 5 } };
+  const s = await serve((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(waiting));
+  });
+  try {
+    const out = await guard(ROUTINE_ESCALATED, { SHOMRA_API_KEY: KEY, SHOMRA_URL: s.url, SHOMRA_GUARD_BREAKER_MS: '0' });
+    const body = JSON.parse(out.stdout);
+    assert.equal(out.decision, 'deny');
+    assert.match(body.systemMessage ?? '', /Check your phone: confirm sendtnemyap with code A7K2/, 'the person sees the code, and a bidi override in a tool name never reaches their screen');
+  } finally {
+    await s.close();
+  }
+  const plain = await serve((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ decision: 'BLOCK', reason: 'Blocked by policy.' }));
+  });
+  try {
+    const out = await guard(ROUTINE_ESCALATED, { SHOMRA_API_KEY: KEY, SHOMRA_URL: plain.url, SHOMRA_GUARD_BREAKER_MS: '0' });
+    assert.equal(JSON.parse(out.stdout).systemMessage, undefined, 'an ordinary refusal adds no message of its own');
+  } finally {
+    await plain.close();
+  }
+});
+
 test('SHOMRA_GUARD_TIER=fast asks the server for its fast screen, and nothing else does', async () => {
   const tiers = [];
   const s = await serve((req, res, body) => {

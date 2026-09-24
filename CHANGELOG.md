@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Security (agent runtime hardening)
+- **A call waiting for the person tells the person.** When an agent's policy
+  asks the person it acts for to confirm a tool on their phone, Claude Code now
+  shows them the code directly (`systemMessage`), not only the agent. Control
+  and bidi-override characters in a tool name never reach their screen.
 - **The server now answers before the hook gives up.** The hook waits
   `SHOMRA_GUARD_TIMEOUT_MS` (2s by default) and then fails open, while the
   server allowed its enrichment passes 4s - so a slow pass ran the call
