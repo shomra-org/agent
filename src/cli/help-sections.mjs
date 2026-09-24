@@ -296,7 +296,8 @@ const ENV = () => `${bold('ENV')}
                              withheld) - plus any .shomraignore in the working dir. For files with
                              benign patterns in source (detection code, fixtures, docs).
   SHOMRA_GUARD_ALWAYS_ESCALATE=1  Send every call to the server (full telemetry, higher overhead)
-  SHOMRA_GUARD_TIMEOUT_MS=2000    Per-call server timeout budget (default 2000)
+  SHOMRA_GUARD_TIMEOUT_MS=2000    Per-call server timeout budget (default 2000); the server answers inside it
+  SHOMRA_GUARD_TIER=fast          Ask for a 100ms screen: every enrichment pass is skipped and the verdict says so
   SHOMRA_GUARD_BREAKER_MS=30000   Skip the server for this long after a failure (0 disables)
   SHOMRA_LLM_PROXY_BASE       Proxy base URL install-hook writes for Aider (default http://127.0.0.1:4141/openai/v1)
   SHOMRA_MODEL_GUARD=0        Disable the model-load screen in the PreToolUse hook

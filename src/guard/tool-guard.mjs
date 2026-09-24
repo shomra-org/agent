@@ -344,6 +344,8 @@ export async function cmdToolGuard(flags) {
       ...post,
       ...selftest,
       ...(selftest.selftest ? {} : { guard_ledger: sendLedger() }),
+      guard_timeout_ms: guardTimeoutMs(),
+      ...(String(process.env.SHOMRA_GUARD_TIER ?? '').trim().toLowerCase() === 'fast' ? { screen_tier: 'fast' } : {}),
     },
   });
 

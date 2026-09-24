@@ -236,3 +236,45 @@ test('and it is acknowledged, so one outage is not re-reported forever', async (
     await s.close();
   }
 });
+
+test('the guard tells the server how long it will wait, so the answer can arrive inside it', async () => {
+  let declared;
+  const s = await serve((req, res, body) => {
+    try {
+      const sent = JSON.parse(body);
+      if (sent.tool_name) declared = sent.guard_timeout_ms;
+    } catch {
+      /* Not every request on this port is the guard call. */
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ decision: 'ALLOW' }));
+  });
+  try {
+    await guard(ROUTINE_ESCALATED, { SHOMRA_API_KEY: KEY, SHOMRA_URL: s.url, SHOMRA_GUARD_TIMEOUT_MS: '1700', SHOMRA_GUARD_BREAKER_MS: '0' });
+    assert.equal(declared, 1700, 'the declared wait must be the one this hook actually waits, or the server plans for the wrong clock');
+  } finally {
+    await s.close();
+  }
+});
+
+test('SHOMRA_GUARD_TIER=fast asks the server for its fast screen, and nothing else does', async () => {
+  const tiers = [];
+  const s = await serve((req, res, body) => {
+    try {
+      const sent = JSON.parse(body);
+      if (sent.tool_name) tiers.push(sent.screen_tier ?? null);
+    } catch {
+      /* Not every request on this port is the guard call. */
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ decision: 'ALLOW' }));
+  });
+  try {
+    const env = { SHOMRA_API_KEY: KEY, SHOMRA_URL: s.url, SHOMRA_GUARD_BREAKER_MS: '0' };
+    await guard(ROUTINE_ESCALATED, { ...env, SHOMRA_GUARD_TIER: 'fast' });
+    await guard(ROUTINE_ESCALATED, env);
+    assert.deepEqual(tiers, ['fast', null], 'fast only when asked for - an absent tier is a full screen');
+  } finally {
+    await s.close();
+  }
+});
