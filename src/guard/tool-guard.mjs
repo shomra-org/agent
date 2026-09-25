@@ -23,7 +23,7 @@ import { normalizeGuardInput } from './normalize.mjs';
 import { envFlag, guardWait, resolveAgentFlag } from './options.mjs';
 import { recordSelftest, selftestField } from './selftest-marker.mjs';
 import { buildGuardBody, reportGuardDecision } from './report.mjs';
-import { guardStateTamper, refuseOrAsk, tamperReason } from './self-protect.mjs';
+import { guardHookTamper, guardStateTamper, hookTamperReason, refuseOrAsk, tamperReason } from './self-protect.mjs';
 import { keyedFetch } from '../core/keyed-fetch.mjs';
 
 const ALLOW_VERDICT = { verdict: 'ALLOW', top: null, findings: [] };
@@ -271,6 +271,14 @@ export async function cmdToolGuard(flags) {
   if (tamper) {
     const reason = tamperReason(tamper);
     await reportGuardDecision(url, apiKey, agentId, buildGuardBody(normalized, agent, 'FLAG', 'Edits the Shomra guard’s own state'));
+    if (refuseOrAsk(agent, strict) === 'deny') emitGuardDeny(agent, `Blocked on-machine by Shomra: ${reason}`);
+    emitGuardAsk(agent, reason);
+  }
+
+  const hookTamper = guardHookTamper(tool, input, { cwd: normalized.cwd });
+  if (hookTamper) {
+    const reason = hookTamperReason(hookTamper);
+    await reportGuardDecision(url, apiKey, agentId, buildGuardBody(normalized, agent, 'FLAG', 'Switches off the Shomra guard hook'));
     if (refuseOrAsk(agent, strict) === 'deny') emitGuardDeny(agent, `Blocked on-machine by Shomra: ${reason}`);
     emitGuardAsk(agent, reason);
   }
