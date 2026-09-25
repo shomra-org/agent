@@ -133,37 +133,51 @@ const EXFIL_RULES = [
   },
 ];
 
+const GLOBAL_CLONES = new WeakMap();
+
+function* matchesIn(re, line) {
+  let g = GLOBAL_CLONES.get(re);
+  if (!g) GLOBAL_CLONES.set(re, (g = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`)));
+  g.lastIndex = 0;
+  let m;
+  for (let n = 0; n < 8 && (m = g.exec(line)); n++) {
+    yield m;
+    if (!m[0]) g.lastIndex++;
+  }
+}
+
 function scanDirectives(units) {
   const sabotage = new Map(), exfil = new Map();
   for (const { text: line } of units) {
     for (const r of SABOTAGE_RULES) {
-      const m = r.re.exec(line);
-      if (!m) continue;
-      if (r.guarded && negatedAround(line, m.index, m[0].length)) continue;
-      if (r.guarded && isDescriptiveLine(line)) continue;
-      if (r.guarded && citationGoverns(line, m.index)) continue;
-      if (r.guarded && quotedMention(line, m.index)) continue;
-      if (r.context && !r.context.test(line)) continue;
-      if (!sabotage.has(r.label)) sabotage.set(r.label, line);
+      if (sabotage.has(r.label) || (r.context && !r.context.test(line))) continue;
+      for (const m of matchesIn(r.re, line)) {
+        if (r.guarded && negatedAround(line, m.index, m[0].length)) continue;
+        if (r.guarded && isDescriptiveLine(line)) continue;
+        if (r.guarded && citationGoverns(line, m.index)) continue;
+        if (r.guarded && quotedMention(line, m.index)) continue;
+        sabotage.set(r.label, line);
+        break;
+      }
     }
     for (const r of EXFIL_RULES) {
-      const m = r.re.exec(line);
-      if (!m) continue;
-
-      if (negatedAround(line, m.index, m[0].length)) continue;
-      if (r.descGuard && isDescriptiveLine(line)) continue;
-      if (r.descGuard && citationGoverns(line, m.index)) continue;
-      if (r.descGuard && (quotedMention(line, m.index) || describesAt(line, m.index))) continue;
-      if (r.descGuard && isRiskTableRow(line)) continue;
-      if (r.label === 'send-to-external' && LOCAL_URL_RE.test(line) && !/\b(attacker|c2|command[- ]and[- ]control|external|evil)\b/i.test(line)) continue;
-      if (r.label === 'send-to-external' && m.index != null && insideMarkdownLinkLabel(line, m.index)) continue;
-      if (r.label === 'send-to-external' && m.index != null) {
-        const around = line.slice(Math.max(0, m.index - 24), m.index + 24);
-        if (SEND_AS_NOUN_RE.test(around) || PASSIVE_SEND_RE.test(around)) continue;
-        if (urlIsMarkdownTarget(line, m[0]) && !EXFIL_OBJECT_RE.test(m[0])) continue;
+      if (exfil.has(r.label)) continue;
+      for (const m of matchesIn(r.re, line)) {
+        if (negatedAround(line, m.index, m[0].length)) continue;
+        if (r.descGuard && isDescriptiveLine(line)) continue;
+        if (r.descGuard && citationGoverns(line, m.index)) continue;
+        if (r.descGuard && (quotedMention(line, m.index) || describesAt(line, m.index))) continue;
+        if (r.descGuard && isRiskTableRow(line)) continue;
+        if (r.label === 'send-to-external' && LOCAL_URL_RE.test(line) && !/\b(attacker|c2|command[- ]and[- ]control|external|evil)\b/i.test(line)) continue;
+        if (r.label === 'send-to-external' && m.index != null && insideMarkdownLinkLabel(line, m.index)) continue;
+        if (r.label === 'send-to-external' && m.index != null) {
+          const around = line.slice(Math.max(0, m.index - 24), m.index + 24);
+          if (SEND_AS_NOUN_RE.test(around) || PASSIVE_SEND_RE.test(around)) continue;
+          if (urlIsMarkdownTarget(line, m[0]) && !EXFIL_OBJECT_RE.test(m[0])) continue;
+        }
+        exfil.set(r.label, r.severity);
+        break;
       }
-      const prev = exfil.get(r.label);
-      if (!prev || (prev === 'HIGH' && r.severity === 'CRITICAL')) exfil.set(r.label, r.severity);
     }
   }
   return { sabotage, exfil };
@@ -319,12 +333,24 @@ function reportIncidents(text, { isInstruction, units, flat }, push) {
   }
 }
 
+const NETWORK_WORD_RE = new RegExp(
+  `(?<![-\\w])(?:${NETWORK_VERBS.filter((w) => w !== 'email').map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![-\\w])`,
+  'i',
+);
+const EMAIL_VERB_RE =
+  /(?<![-\w])e-?mail\s+(?:it|them|this|that|these|those|the|a|an|all|every|any|my|your|our|their|me|us|him|her)\b|\bto\s+e-?mail\b/i;
+
+function reachesNetwork(text) {
+  const prose = text.replace(/`[^`\n]*`/g, ' ');
+  return NETWORK_WORD_RE.test(prose) || EMAIL_VERB_RE.test(prose);
+}
+
 function reportToxicFlow(text, { noun, units }, push) {
   if (!IMPERATIVE.test(text)) return;
   const line = units.filter((u) => !u.code).map((u) => u.text).find((candidate) => IMPERATIVE.test(candidate)
     && !NEGATION_GUARD.test(candidate)
     && hasWordFrom(candidate, SENSITIVE_READ)
-    && hasWordFrom(candidate, NETWORK_VERBS)
+    && reachesNetwork(candidate)
     && !isDescriptiveLine(candidate));
   if (!line) return;
   push(
