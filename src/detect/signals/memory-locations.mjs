@@ -55,6 +55,7 @@ export const MEMORY_LOCATIONS                   = [
   { id: 'mem0-local', vendor: 'mem0 / OpenMemory', re: /(^|\/)\.mem0\/.+$/, injected: 'retrieved' },
   { id: 'letta-local', vendor: 'Letta / MemGPT', re: /(^|\/)\.(letta|memgpt)\/.+$/, injected: 'retrieved' },
   { id: 'crewai-memory', vendor: 'CrewAI', re: /(^|\/)(\.crewai\/memory\/.+|long_term_memory_storage\.db)$/, injected: 'retrieved' },
+  { id: 'openclaw-memory', vendor: 'OpenClaw', re: /(^|\/)\.openclaw\/(?:workspace\/)?(?:MEMORY\.md|SOUL\.md|HEARTBEAT\.md|memory\/[^/]+\.md)$/i, injected: 'always', committed: true },
   { id: 'mcp-server-memory', vendor: 'MCP memory server', re: /(^|\/)memory\.jsonl$/, injected: 'retrieved' },
   { id: 'vendor-memory-dir', vendor: 'Agent memory', re: /^(?!.*\/global_rules\.md$)(.*\/)?\.(cursor|continue|aider|windsurf|cline|roo|zed|codeium|kiro|junie|augment|amp|opencode|trae|codex|gemini|qwen|kilocode)\/(.+\/)?memor(y|ies)\/.+\.(md|mdx|mdc|json|jsonl|txt|ya?ml)$/, injected: 'on-demand' },
   { id: 'memory-tool-root', vendor: 'Anthropic memory tool', re: /^\/?memories\/.+\.(md|txt|xml|json)$/, injected: 'always' },
@@ -101,6 +102,7 @@ export const MACHINE_MEMORY_ROOTS                      = [
   { vendor: 'basic-memory', base: 'home', dir: 'basic-memory', depth: 4 },
   { vendor: 'mem0 / OpenMemory', base: 'home', dir: '.mem0', depth: 2 },
   { vendor: 'Letta / MemGPT', base: 'home', dir: '.letta', depth: 2 },
+  { vendor: 'OpenClaw', base: 'home', dir: '.openclaw/workspace', depth: 3 },
   { vendor: 'GitHub Copilot (VS Code)', base: 'vscode-user', dir: 'globalStorage/github.copilot-chat/memory-tool', depth: 4 },
 ];
 

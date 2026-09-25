@@ -60,7 +60,7 @@ export function matchesShellSignal(sig, text) {
   return false;
 }
 
-const SENSITIVE_PATH = String.raw`~/\.(?:ssh|aws|kube|gnupg|docker|config/gcloud)|/root/|/etc/(?:shadow|passwd|ssh)|id_[rd]sa|\.pem(?![.\w])|\.env(?![.\w])|credentials|\.npmrc|\.git-credentials|\bsecrets?\b|authorized_keys|\$HOME\b|/home(?:/[\w.-]+)?/?(?=[\s'"]|$)`;
+const SENSITIVE_PATH = String.raw`~/\.(?:ssh|aws|kube|gnupg|docker|config/gcloud)|/root/|/etc/(?:shadow|passwd|ssh)|id_[rd]sa|\.pem(?![.\w])|\.env(?![.\w])|credentials|\.npmrc|\.git-credentials|\bsecrets?\b|authorized_keys|\$HOME\b|/home(?:/[\w.-]+)?/?(?=[\s'"]|$)|~/\.(?:codex|gemini|openclaw|config/(?:github-copilot|gh)|cache/huggingface|huggingface)(?=[/\s'\"]|$)|oauth_creds\.json`;
 
 const FIND_DELETE_RE = /\bfind\s+(?:-[HLP]\s+)?("?(?:\/[^\s;|&"]*|~[^\s;|&"]*|\$\{?HOME\}?[^\s;|&"]*)"?)(?=\s)[^\n|;&]{0,200}?(?:\s-delete\b|\s-exec\s+rm\b)/i;
 const FIND_NARROWING_RE = /\s-(?:i?name|i?path|i?regex|newer\w*|[acm]time|[acm]min|size|empty|user|group|perm|links|samefile)\b/;
@@ -118,6 +118,10 @@ export const DANGEROUS_SHELL = [
   { name: 'Disables TLS / cert verification', re: /(NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*0|GIT_SSL_NO_VERIFY|--no-check-certificate|--insecure\b|verify\s*=\s*False)/i, severity: 'MEDIUM' },
   { name: 'python -c one-liner', re: /python[0-9.]*\s+-c\b/i, severity: 'MEDIUM' },
   { name: 'node -e one-liner', re: /\bnode\s+-e\b/i, severity: 'MEDIUM' },
+  { name: 'Re-evaluates a variable as a prompt string (${var@P}), running any command hidden in it', re: /\$\{[#!]?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]{0,40}\])?@[PE]\}/, severity: 'HIGH' },
+  { name: 'Writes a Python autoload file that runs on every interpreter start (.pth / sitecustomize / usercustomize)', re: /(?:>>?|\btee\b(?:\s+-a)?|\b(?:cp|mv|install)\b(?:\s+-\S+)*\s+\S+)\s+[^\n;&|]{0,120}?(?:(?:site|dist)-packages\/[^\s/'"]+\.pth|(?:sitecustomize|usercustomize)\.py)\b/i, severity: 'HIGH' },
+  { name: "Modifies the coding agent's own application, server or installed files (self-tamper)", re: new RegExp(String.raw`(?:>>?|\btee\b(?:\s+-a)?\s+|\b(?:cp|mv|install|ln|chmod|chown|truncate|patch)\b(?:\s+-\S+)*\s+(?:\S+\s+)?|\b(?:sed|perl)\b[^\n;&|]{0,60}?-\S*i\S*[^\n;&|]{0,60}?\s)['"]?\S{0,80}?(?:\/Applications\/[^/\s'"]*(?:Cursor|Windsurf|Visual Studio Code|VSCodium|Claude|ChatGPT|Codex|Zed|Kiro|Trae)[^/\s'"]*\.app\/Contents\/|\/(?:usr\/share|usr\/lib|opt)\/(?:cursor|code|code-insiders|windsurf|codium|kiro)\/|\.(?:vscode|cursor|windsurf)-server\/(?:bin|cli)\/|node_modules\/(?:@anthropic-ai\/claude-code|@openai\/codex|@google\/gemini-cli)\/|resources\/app\/product\.json)`, 'i'), severity: 'HIGH' },
+  { name: 'Clones a commit hash as a branch name (git serves a same-named branch instead of the pinned commit)', re: /\bgit\s+(?:clone|fetch)\b[^\n;&|]*?(?:--branch[=\s]+|\s-b\s+)['"]?(?:[0-9a-f]{40}|[0-9a-f]{64})\b/i, severity: 'MEDIUM' },
   { name: 'Netcat / socket exfil', re: /\bnc\s+-[a-z]*\b|\bncat\b/i, severity: 'MEDIUM' },
 
   { name: 'Clears recorded shell history (anti-forensics)', re: /\bhistory\s+-c\b|\brm\b[^\n]{0,30}\.(bash|zsh|sh)_history\b|>\s*\S{0,30}\.(bash|zsh|sh)_history\b/i, severity: 'MEDIUM' },
@@ -147,6 +151,7 @@ export const DANGEROUS_SHELL = [
   { name: 'Installs or starts Tor (anonymizing egress)', re: /\b(?:apt(?:-get)?|yum|dnf|apk|pacman|brew|choco|winget|snap|zypper|port)\s+(?:-\S+\s+)*(?:install|add|-S)\s+(?:-\S+\s+)*(?:[\w.+-]+\s+){0,8}?(?:tor|torsocks|tor-browser|torbrowser-launcher|obfs4proxy)(?![\w.-])|\bpip[0-9.]*\s+install\s+(?:-\S+\s+)*(?:[\w.=<>-]+\s+){0,8}?torpy(?![\w.-])|\bnpm\s+(?:i|install|add)\s+(?:-\S+\s+)*(?:[@\w.\/-]+\s+){0,8}?(?:tor-request|tor-axios|granax)(?![\w.-])|\b(?:systemctl|service)\s+(?:start|enable|restart)\s+tor(?:@\S*)?(?![\w.-])|\bservice\s+tor\s+(?:start|restart)\b|(?<![\w.\/-])tor\s+(?:--SocksPort|--RunAsDaemon|--ControlPort|-f\s+\S*torrc)|\bdocker\s+run\b[^\n]{0,200}?\b(?:dperson\/torproxy|osminogin\/tor-simple|peterdavehello\/tor-socks-proxy|leplusorg\/tor|[\w.-]+\/tor-?(?:proxy|socks(?:-proxy)?))\b/i, severity: 'MEDIUM' },
 
   { name: 'Locally decoded or decrypted blob piped to a shell', re: /\b(?:gpg|openssl\s+enc|xxd\s+-r|uudecode|zcat|gunzip|bunzip2|unxz)\b[^\n|]{0,160}\|\s*(?:sudo\s+)?(?:ba|z|k)?sh\b/i, severity: 'CRITICAL' },
+  { name: 'A git object piped into a shell (a payload stored as a git blob, SkillCloak)', re: /\bgit\s+(?:cat-file|show|unpack-file)\b[^\n|]{0,160}\|\s*(?:sudo\s+)?(?:(?:ba|z|k|da)?sh|python3?|node|perl|ruby)\b/i, severity: 'HIGH' },
   { name: 'Container escape to the host (privileged / host mount / host namespace)', re: /\b(?:docker|podman|nerdctl)\s+(?:run|create|exec)\b[^\n]{0,200}?(?:--privileged\b|--pid[= ]host\b|--ipc[= ]host\b|--userns[= ]host\b|--security-opt[= ]\S{0,40}(?:seccomp[=:]unconfined|apparmor[=:]unconfined)|--cap-add[= ](?:ALL|SYS_ADMIN|SYS_PTRACE|SYS_MODULE)\b|-v\s+\/(?:\s|:)|--volume[= ]\/:|(?:-v|--volume)[= ]\s*\/var\/run\/docker\.sock)/i, severity: 'CRITICAL' },
   { name: 'Enters the host namespace from a container (nsenter / chroot onto a host mount)', re: /\bnsenter\b[^\n]{0,80}(?:-t\s*1\b|--target\s*1\b)|\bchroot\s+\/(?:host|mnt|proc\/1\/root)\b/i, severity: 'CRITICAL' },
   { name: 'Grants cluster-admin in Kubernetes', re: /\bkubectl\b[^\n]{0,120}\b(?:create|apply)\b[^\n]{0,120}\b(?:cluster)?rolebinding\b[^\n]{0,160}(?:--clusterrole[= ]\s*cluster-admin|cluster-admin)\b/i, severity: 'HIGH' },
