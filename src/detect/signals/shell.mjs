@@ -62,6 +62,17 @@ export function matchesShellSignal(sig, text) {
 
 const SENSITIVE_PATH = String.raw`~/\.(?:ssh|aws|kube|gnupg|docker|config/gcloud)|/root/|/etc/(?:shadow|passwd|ssh)|id_[rd]sa|\.pem(?![.\w])|\.env(?![.\w])|credentials|\.npmrc|\.git-credentials|\bsecrets?\b|authorized_keys|\$HOME\b|/home(?:/[\w.-]+)?/?(?=[\s'"]|$)`;
 
+const FIND_DELETE_RE = /\bfind\s+(?:-[HLP]\s+)?("?(?:\/[^\s;|&"]*|~[^\s;|&"]*|\$\{?HOME\}?[^\s;|&"]*)"?)(?=\s)[^\n|;&]{0,200}?(?:\s-delete\b|\s-exec\s+rm\b)/i;
+const FIND_NARROWING_RE = /\s-(?:i?name|i?path|i?regex|newer\w*|[acm]time|[acm]min|size|empty|user|group|perm|links|samefile)\b/;
+const FIND_ROUTINE_ROOT_RE = /^\/(?:tmp|var\/(?:log|cache|tmp)|dev\/shm)(?:\/|$)/;
+
+function findDeletesProtectedRoot(line) {
+  const m = FIND_DELETE_RE.exec(line);
+  if (!m || FIND_NARROWING_RE.test(m[0])) return false;
+  const root = m[1].replace(/"/g, '');
+  return !FIND_ROUTINE_ROOT_RE.test(root);
+}
+
 export const DANGEROUS_SHELL = [
   { name: 'Pipe-to-shell installer (curl … | sh)', re: /\b(curl|wget)\b[^\n|]{0,200}\|\s*(sudo\s+)?(ba|z|k)?sh\b/i, severity: 'CRITICAL' },
   { name: 'PowerShell download-and-run (iwr/curl … | iex)', re: /\b(iwr|curl|wget|invoke-webrequest|invoke-restmethod|irm)\b[^\n|]{0,200}\|\s*(iex|invoke-expression)\b/i, severity: 'CRITICAL' },
@@ -109,6 +120,9 @@ export const DANGEROUS_SHELL = [
   { name: 'Recursive force delete of the filesystem root (rm -rf /, --no-preserve-root)', re: /(?<!\b(?:docker|podman|nerdctl|kubectl|helm|conda|brew)\s{1,4})\brm\b(?=[^\n;|&]{0,200}?\s(?:-[a-zA-Z]*r[a-zA-Z]*|--recursive)(?![\w-]))(?=[^\n;|&]{0,200}?\s(?:-[a-zA-Z]*f[a-zA-Z]*|--force)(?![\w-]))(?=[^\n;|&]{0,200}(?:--no-preserve-root|\s\/(?:\s|\*|$)))/i, severity: 'CRITICAL' },
   { name: 'Fork bomb (process-exhaustion DoS)', re: /(:|\b[a-z_][a-z0-9_]*)\s*\(\s*\)\s*\{\s*\1\s*[^\n}]*\|\s*\1[^\n}]*&\s*\}\s*;\s*\1/i, severity: 'HIGH' },
   { name: 'Writes over a raw disk device (data destruction)', re: /\b(dd\b[^\n]{0,80}\bof=\/dev\/[sh]d|mkfs(\.\w+)?\s+[^\n]{0,40}\/dev\/|>\s*\/dev\/[sh]d[a-z])/i, severity: 'CRITICAL' },
+  { name: 'Wipes filesystem signatures or the partition table of a disk (wipefs, sgdisk --zap-all)', re: /\b(?:wipefs\b[^\n]{0,40}\s(?:-a|--all)\b[^\n]{0,40}\/dev\/|sgdisk\s+(?:--zap-all|-Z)\b[^\n]{0,40}\/dev\/)/i, severity: 'CRITICAL' },
+  { name: 'Recursive delete from a protected root with find (-delete / -exec rm)', re: FIND_DELETE_RE, severity: 'HIGH', refine: findDeletesProtectedRoot },
+  { name: 'Overwrites keys, credentials, shell history or a disk with shred', re: /\bshred\b[^\n]{0,60}?(?:\/dev\/(?:sd|hd|nvme|xvd|vd|mmcblk)|~\/\.(?:ssh|aws|gnupg|kube)\b|\/etc\/|\bid_(?:rsa|ed25519|ecdsa|dsa)\b|\.bash_history|\.zsh_history|\/var\/log\/)/i, severity: 'HIGH' },
   { name: 'Reads the system password-hash / sudo policy file', re: /\b(cat|less|more|head|tail|strings|xxd|od|grep|awk|sed|cp|scp|tar)\b[^\n]{0,80}\/etc\/(shadow|gshadow|sudoers(\.d)?)\b/i, severity: 'HIGH' },
   { name: 'Deletes a Kubernetes namespace / workload', re: /\bkubectl\b[^\n]{0,80}\bdelete\b[^\n]{0,80}\b(namespace|ns|deployment|statefulset|pvc|persistentvolumeclaim)\b/i, severity: 'MEDIUM' },
   { name: 'Drops a database / schema', re: /\bdrop\s+(database|schema|table)\b/i, severity: 'MEDIUM' },

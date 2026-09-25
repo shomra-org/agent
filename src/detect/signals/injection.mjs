@@ -60,4 +60,31 @@ export function precededByNegation(before) {
 
 export const BUILD_ARTIFACT = /\b(node_modules|dist|build|out|coverage|target|cache|generated|tmp|temp|__pycache__|artifacts?|logs?|tests?|test|fixtures?|staging|scratch|migrations?)\b/i;
 
+const NAMES_THE_COMMAND_RE = /^\s+(?:command|statement|query|operation|button|option|action|endpoint|function|method)\b/i;
+const DISPOSABLE_TARGET_RE =
+  /\b(?:temp(?:orary)?|tmp|cache[ds]?|build|dist|artifacts?|node_modules|tests?|testing|dev|development|staging|sandbox|fixtures?|mock|dummy|sample|scratch)\b/i;
+const LIVE_TARGET_RE = /\b(?:prod(?:uction)?|live|customers?|patients?|medical|health|personal|financial|backups?|audit|everything|you\s+have\s+access)\b/i;
+
+export function bulkDeleteIsRoutine(text, at, hit) {
+  if (BUILD_ARTIFACT.test(hit) || /\boff\s+(?:all|every|each)\b/i.test(hit)) return true;
+  const end = at + hit.length;
+  if (NAMES_THE_COMMAND_RE.test(text.slice(end, end + 30))) return true;
+  const from = Math.max(text.lastIndexOf('. ', at), text.lastIndexOf('\n', at)) + 1;
+  const stops = [text.indexOf('. ', end), text.indexOf('\n', end)].filter((i) => i >= 0);
+  const sentence = text.slice(from, stops.length ? Math.min(...stops) : text.length);
+  return DISPOSABLE_TARGET_RE.test(sentence) && !LIVE_TARGET_RE.test(sentence);
+}
+
+export const DESCRIBED_VERB_PHRASES = new Set(['exfiltrate']);
+const DESCRIBED_ACTOR_RE =
+  /\b(?:attackers?|adversar\w+|threat\s+actors?|bad\s+actors?|hackers?|malware|intruders?|criminals?|insiders?|ransomware|spyware|infostealers?)\b[^.\n]{0,80}?\b(?:may|might|could|can|will|would|attempts?|tries|tried|seeks?|uses?|used|is\s+able)\b/i;
+const DESCRIBED_BEFORE_RE = /\b(?:tries|tried|trying|attempts?|attempted|attempting|used|uses|designed|able|order|ways?|how|means|meant)\s+to\s+$/i;
+
+export function describedVerb(text, at, phrase) {
+  if (/[a-z]/i.test(text[at + phrase.length] ?? '')) return true;
+  const before = text.slice(Math.max(0, at - 48), at);
+  const lineBefore = text.slice(Math.max(text.lastIndexOf('\n', at), text.lastIndexOf('. ', at), text.lastIndexOf('! ', at), text.lastIndexOf('? ', at)) + 1, at);
+  return DECLARATIVE_SUBJECT_RE.test(before) || DESCRIBED_BEFORE_RE.test(before) || HYPOTHETICAL_ACTOR_RE.test(lineBefore) || DESCRIBED_ACTOR_RE.test(lineBefore);
+}
+
 export const INVISIBLE_CHARS_RE = /[؜ᅟᅠ᠎​‌‎‏‪-‮⁠-⁤⁦-⁩ㅤ﻿ﾠ￹-￻]|[\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/u;
