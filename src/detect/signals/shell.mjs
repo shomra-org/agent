@@ -73,6 +73,18 @@ function findDeletesProtectedRoot(line) {
   return !FIND_ROUTINE_ROOT_RE.test(root);
 }
 
+const ONION_HOST = String.raw`\b(?:[a-z2-7]{56}|[a-z2-7]{16})\.onion\b`;
+const ONION_REACH = String.raw`\bhttps?:\/\/(?:[^\s"'@\/]{1,80}@)?${ONION_HOST}|\b(?:curl|wget|nc|ncat|socat|ssh|scp|sftp|rsync|git|torsocks|torify|proxychains[34]?|fetch|requests\.\w+|urlopen|axios(?:\.\w+)?)\b[^\n]{0,200}?${ONION_HOST}`;
+const UPLOAD_FLAG = String.raw`(?:--data(?:-raw|-binary|-urlencode)?\b|--form\b|--upload-file\b|(?:^|\s)-[dFT]\s|-X\s*POST\b|--post-(?:data|file)\b|\bmethod\s*[:=]\s*['"]?post\b|\.post\()`;
+const PKG_INSTALL_RE = /\b(?:apt(?:-get)?|yum|dnf|apk|pacman|brew|choco|winget|snap|zypper|port|pip[0-9.]*|pipx|uv|npm|pnpm|yarn|gem|cargo|go)\s+(?:-\S+\s+)*(?:install|add|-S|i|get)\b/i;
+const notPackageInstall = (line) => !PKG_INSTALL_RE.test(line);
+const SOCKS_IP_RE = /\bsocks(?:4a?|5h?)?:\/\/(?:[^\s"'@\/]{1,80}@)?(\d{1,3}(?:\.\d{1,3}){3}):\d{2,5}\b|--socks(?:4a?|5)(?:-hostname)?[=\s]+(\d{1,3}(?:\.\d{1,3}){3}):\d{2,5}\b/gi;
+const socksOnPublicAddress = (line) =>
+  [...line.matchAll(SOCKS_IP_RE)].some((m) => {
+    const ip = m[1] ?? m[2];
+    return !LOOPBACK_OR_PRIVATE_HOST_RE.test(ip) && !/^(?:169\.254|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7]))\./.test(ip);
+  });
+
 export const DANGEROUS_SHELL = [
   { name: 'Pipe-to-shell installer (curl … | sh)', re: /\b(curl|wget)\b[^\n|]{0,200}\|\s*(sudo\s+)?(ba|z|k)?sh\b/i, severity: 'CRITICAL' },
   { name: 'PowerShell download-and-run (iwr/curl … | iex)', re: /\b(iwr|curl|wget|invoke-webrequest|invoke-restmethod|irm)\b[^\n|]{0,200}\|\s*(iex|invoke-expression)\b/i, severity: 'CRITICAL' },
@@ -127,6 +139,12 @@ export const DANGEROUS_SHELL = [
   { name: 'Deletes a Kubernetes namespace / workload', re: /\bkubectl\b[^\n]{0,80}\bdelete\b[^\n]{0,80}\b(namespace|ns|deployment|statefulset|pvc|persistentvolumeclaim)\b/i, severity: 'MEDIUM' },
   { name: 'Drops a database / schema', re: /\bdrop\s+(database|schema|table)\b/i, severity: 'MEDIUM' },
   { name: 'Disables the audit / logging subsystem', re: /\b(systemctl|service)\s+(stop|disable|mask)\s+\S{0,20}(auditd|rsyslog|syslog|systemd-journald|journald)\b|\bauditctl\s+(-e\s*0|-D)\b|\bsetenforce\s+0\b|\bsystemctl\s+(stop|disable|mask)\s+firewalld\b/i, severity: 'HIGH' },
+  { name: 'Routes a command through Tor (torsocks / torify / proxychains)', re: /(?<![\w.\/-])(?:torsocks|torify|proxychains[34]?)(?![\w.-])(?:\s+-{1,2}[\w-]+(?:[= ](?!-)\S+)?)*\s+(?:sudo\s+)?[\w.\/~$"'-]/i, severity: 'HIGH', refine: notPackageInstall },
+  { name: 'Sends traffic through a local Tor SOCKS proxy (port 9050 / 9150)', re: /\bsocks(?:4a?|5h?)?:\/\/(?:[^\s"'@\/]{1,80}@)?[\w.\-\[\]:]{0,60}:(?:9050|9150)\b|--socks(?:4a?|5)(?:-hostname)?[=\s]+(?:[\w.\-\[\]:]{0,60}:)?(?:9050|9150)\b|\bproxy[\w-]{0,12}\s*[:=]\s*['"]?socks[\w:\/]{0,12}[\w.\-\[\]:]{0,60}:(?:9050|9150)\b/i, severity: 'HIGH' },
+  { name: 'Uploads data to a Tor onion service', re: new RegExp(String.raw`(?:${ONION_REACH})[^\n]{0,200}?${UPLOAD_FLAG}|${UPLOAD_FLAG}[^\n]{0,200}?${ONION_HOST}`, 'i'), severity: 'CRITICAL' },
+  { name: 'Reaches a Tor onion service (.onion)', re: new RegExp(ONION_REACH, 'i'), severity: 'HIGH' },
+  { name: 'Routes traffic through a SOCKS proxy on a public address', re: /\bsocks(?:4a?|5h?)?:\/\/(?:[^\s"'@\/]{1,80}@)?\d{1,3}(?:\.\d{1,3}){3}:\d{2,5}\b|--socks(?:4a?|5)(?:-hostname)?[=\s]+\d{1,3}(?:\.\d{1,3}){3}:\d{2,5}\b/i, severity: 'HIGH', refine: socksOnPublicAddress },
+  { name: 'Installs or starts Tor (anonymizing egress)', re: /\b(?:apt(?:-get)?|yum|dnf|apk|pacman|brew|choco|winget|snap|zypper|port)\s+(?:-\S+\s+)*(?:install|add|-S)\s+(?:-\S+\s+)*(?:[\w.+-]+\s+){0,8}?(?:tor|torsocks|tor-browser|torbrowser-launcher|obfs4proxy)(?![\w.-])|\bpip[0-9.]*\s+install\s+(?:-\S+\s+)*(?:[\w.=<>-]+\s+){0,8}?torpy(?![\w.-])|\bnpm\s+(?:i|install|add)\s+(?:-\S+\s+)*(?:[@\w.\/-]+\s+){0,8}?(?:tor-request|tor-axios|granax)(?![\w.-])|\b(?:systemctl|service)\s+(?:start|enable|restart)\s+tor(?:@\S*)?(?![\w.-])|\bservice\s+tor\s+(?:start|restart)\b|(?<![\w.\/-])tor\s+(?:--SocksPort|--RunAsDaemon|--ControlPort|-f\s+\S*torrc)|\bdocker\s+run\b[^\n]{0,200}?\b(?:dperson\/torproxy|osminogin\/tor-simple|peterdavehello\/tor-socks-proxy|leplusorg\/tor|[\w.-]+\/tor-?(?:proxy|socks(?:-proxy)?))\b/i, severity: 'MEDIUM' },
 
   { name: 'Locally decoded or decrypted blob piped to a shell', re: /\b(?:gpg|openssl\s+enc|xxd\s+-r|uudecode|zcat|gunzip|bunzip2|unxz)\b[^\n|]{0,160}\|\s*(?:sudo\s+)?(?:ba|z|k)?sh\b/i, severity: 'CRITICAL' },
   { name: 'Container escape to the host (privileged / host mount / host namespace)', re: /\b(?:docker|podman|nerdctl)\s+(?:run|create|exec)\b[^\n]{0,200}?(?:--privileged\b|--pid[= ]host\b|--ipc[= ]host\b|--userns[= ]host\b|--security-opt[= ]\S{0,40}(?:seccomp[=:]unconfined|apparmor[=:]unconfined)|--cap-add[= ](?:ALL|SYS_ADMIN|SYS_PTRACE|SYS_MODULE)\b|-v\s+\/(?:\s|:)|--volume[= ]\/:|(?:-v|--volume)[= ]\s*\/var\/run\/docker\.sock)/i, severity: 'CRITICAL' },
