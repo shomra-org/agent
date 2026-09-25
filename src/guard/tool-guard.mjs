@@ -16,7 +16,7 @@ import { loadConfig, resolveSettings } from '../core/config.mjs';
 import { workloadCredential } from '../core/workload-identity.mjs';
 import { classifyConsequence, downrankCodeContext, grade, localScan } from '../detect/guard-signals.mjs';
 import { WRITE_TOOLS, callSubjectTypes, guardNeedsServer, guardTargetPath, guardText } from './classify.mjs';
-import { confirmationNote, emitGuardAsk, emitGuardDeny } from './emit.mjs';
+import { confirmationNote, emitGuardAsk, emitGuardDeny, stoppedNote } from './emit.mjs';
 import { guardPathAllowlisted } from './ignore.mjs';
 import { screenModelLoad } from './model-load.mjs';
 import { normalizeGuardInput } from './normalize.mjs';
@@ -216,7 +216,7 @@ function enforceServerDecision(agent, decision) {
     emitGuardAsk(agent, decision.reason || 'Held for approval by Shomra - waiting on a reviewer. Retry once it’s approved.');
   }
   if (decision?.decision === 'BLOCK') {
-    emitGuardDeny(agent, decision.reason || 'Blocked by Shomra security policy.', confirmationNote(decision.confirmation));
+    emitGuardDeny(agent, decision.reason || 'Blocked by Shomra security policy.', confirmationNote(decision.confirmation), stoppedNote(decision.stopped));
   }
 }
 

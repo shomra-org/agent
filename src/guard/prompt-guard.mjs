@@ -9,6 +9,7 @@ import { parentSessionFrom } from './normalize.mjs';
 import { envFlag, guardWait, resolveAgentFlag } from './options.mjs';
 import { reportGuardDecision } from './report.mjs';
 import { keyedFetch } from '../core/keyed-fetch.mjs';
+import { stoppedNote } from './emit.mjs';
 
 export const PROMPT_HOOK_AGENTS = new Set(['claude', 'cursor']);
 
@@ -32,7 +33,11 @@ function normalizePromptInput(agent, payload) {
   };
 }
 
-function emitPromptDeny(agent, reason) {
+function emitPromptDeny(agent, reason, stopped) {
+  if (stopped && (agent === 'claude' || !agent)) {
+    process.stdout.write(JSON.stringify({ continue: false, stopReason: stopped, decision: 'block', reason }));
+    process.exit(0);
+  }
   if (agent === 'cursor') {
     process.stdout.write(JSON.stringify({ continue: false, user_message: reason }));
     process.exit(0);
@@ -158,7 +163,7 @@ export async function cmdPromptGuard(flags) {
   });
 
   if (decision?.decision === 'BLOCK') {
-    emitPromptDeny(agent, decision.reason || 'Shomra blocked this prompt: it carries data your organisation does not allow sending to a model.');
+    emitPromptDeny(agent, decision.reason || 'Shomra blocked this prompt: it carries data your organisation does not allow sending to a model.', stoppedNote(decision.stopped));
   }
   exitWithInjectionNote(agent, injection);
 }
