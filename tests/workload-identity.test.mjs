@@ -101,3 +101,105 @@ test('without a platform, an audience or a backend nothing is fetched', async ()
     restore();
   }
 });
+
+test('Entra and Okta are named platforms too', () => {
+  assert.equal(workloadSource({ SHOMRA_WORKLOAD: 'Entra' }), 'entra');
+  assert.equal(workloadSource({ SHOMRA_WORKLOAD: 'okta' }), 'okta');
+});
+
+const ENTRA_AUD = 'api://shomra';
+const TID = '0f3c2b1a-1111-4222-8333-444455556666';
+
+test('on AKS, the pod’s federated token buys an Entra token for the binding’s audience, with no stored secret', async () => {
+  const file = tmp();
+  const saToken = path.join(path.dirname(file), 'azure-identity-token');
+  fs.writeFileSync(saToken, 'k8s-sa-token\n');
+  const env = { SHOMRA_WORKLOAD: 'entra', SHOMRA_AUDIENCE: ENTRA_AUD, AZURE_TENANT_ID: TID, AZURE_CLIENT_ID: 'app-1', AZURE_FEDERATED_TOKEN_FILE: saToken, AZURE_AUTHORITY_HOST: 'https://login.microsoftonline.com/' };
+  const { calls, restore } = stubFetch((url) => (url.includes('login.microsoftonline.com') ? json(200, { access_token: 'entra-at' }) : json(200, { credential: 'shm_agt_entra', expiresAt: soon(60) })));
+  try {
+    assert.equal(await workloadCredential({ url: URL_, env, file }), 'shm_agt_entra');
+    assert.equal(calls[0].url, `https://login.microsoftonline.com/${TID}/oauth2/v2.0/token`);
+    const form = new URLSearchParams(calls[0].init.body);
+    assert.equal(form.get('scope'), 'api://shomra/.default');
+    assert.equal(form.get('client_assertion'), 'k8s-sa-token');
+    assert.equal(form.get('client_id'), 'app-1');
+    assert.deepEqual(JSON.parse(calls[1].init.body), { token: 'entra-at' });
+  } finally {
+    restore();
+  }
+});
+
+test('the federated token is never sent to an authority that is not https', async () => {
+  const file = tmp();
+  const saToken = path.join(path.dirname(file), 'azure-identity-token');
+  fs.writeFileSync(saToken, 'k8s-sa-token');
+  const errors = [];
+  const { calls, restore } = stubFetch(() => json(200, { access_token: 'x' }));
+  try {
+    const env = { SHOMRA_WORKLOAD: 'entra', SHOMRA_AUDIENCE: ENTRA_AUD, AZURE_TENANT_ID: TID, AZURE_CLIENT_ID: 'app-1', AZURE_FEDERATED_TOKEN_FILE: saToken, AZURE_AUTHORITY_HOST: 'http://login.example/' };
+    assert.equal(await workloadCredential({ url: URL_, env, file, onError: (e) => errors.push(e.message) }), null);
+    assert.equal(calls.length, 0);
+    assert.match(errors[0], /must be an https URL/);
+  } finally {
+    restore();
+  }
+});
+
+test('on an Azure VM, the instance metadata service is asked for the audience', async () => {
+  const file = tmp();
+  const { calls, restore } = stubFetch((url) => (url.startsWith('http://169.254.169.254') ? json(200, { access_token: 'mi-at' }) : json(200, { credential: 'shm_agt_vm', expiresAt: soon(60) })));
+  try {
+    assert.equal(await workloadCredential({ url: URL_, env: { SHOMRA_WORKLOAD: 'entra', SHOMRA_AUDIENCE: ENTRA_AUD }, file }), 'shm_agt_vm');
+    const asked = new URL(calls[0].url);
+    assert.equal(asked.origin + asked.pathname, 'http://169.254.169.254/metadata/identity/oauth2/token');
+    assert.equal(asked.searchParams.get('resource'), ENTRA_AUD);
+    assert.equal(asked.searchParams.get('api-version'), '2018-02-01');
+    assert.equal(calls[0].init.headers.Metadata, 'true');
+  } finally {
+    restore();
+  }
+});
+
+test('on App Service or Container Apps, the local identity endpoint is asked with its header', async () => {
+  const file = tmp();
+  const env = { SHOMRA_WORKLOAD: 'entra', SHOMRA_AUDIENCE: ENTRA_AUD, IDENTITY_ENDPOINT: 'http://localhost:4141/msi/token', IDENTITY_HEADER: 'local-secret', AZURE_CLIENT_ID: 'uami-1' };
+  const { calls, restore } = stubFetch((url) => (url.startsWith('http://localhost:4141') ? json(200, { access_token: 'app-at' }) : json(200, { credential: 'shm_agt_app', expiresAt: soon(60) })));
+  try {
+    assert.equal(await workloadCredential({ url: URL_, env, file }), 'shm_agt_app');
+    const asked = new URL(calls[0].url);
+    assert.equal(asked.searchParams.get('client_id'), 'uami-1');
+    assert.equal(asked.searchParams.get('api-version'), '2019-08-01');
+    assert.equal(calls[0].init.headers['X-IDENTITY-HEADER'], 'local-secret');
+  } finally {
+    restore();
+  }
+});
+
+test('a token the environment already holds is exchanged as it is', async () => {
+  const file = tmp();
+  const { calls, restore } = stubFetch(() => json(200, { credential: 'shm_agt_given', expiresAt: soon(60) }));
+  try {
+    assert.equal(await workloadCredential({ url: URL_, env: { SHOMRA_WORKLOAD: 'entra', SHOMRA_AUDIENCE: ENTRA_AUD, SHOMRA_ID_TOKEN: 'held-at' }, file }), 'shm_agt_given');
+    assert.equal(calls.length, 1);
+    assert.deepEqual(JSON.parse(calls[0].init.body), { token: 'held-at' });
+  } finally {
+    restore();
+  }
+});
+
+test('an Okta agent reads its token from the file it keeps, and says so when there is none', async () => {
+  const file = tmp();
+  const oktaFile = path.join(path.dirname(file), 'okta-token');
+  fs.writeFileSync(oktaFile, 'okta-at\n');
+  const { calls, restore } = stubFetch(() => json(200, { credential: 'shm_agt_okta', expiresAt: soon(60) }));
+  try {
+    assert.equal(await workloadCredential({ url: URL_, env: { SHOMRA_WORKLOAD: 'okta', SHOMRA_AUDIENCE: ENTRA_AUD, SHOMRA_TOKEN_FILE: oktaFile }, file }), 'shm_agt_okta');
+    assert.deepEqual(JSON.parse(calls[0].init.body), { token: 'okta-at' });
+    const errors = [];
+    assert.equal(await workloadCredential({ url: URL_, env: { SHOMRA_WORKLOAD: 'okta', SHOMRA_AUDIENCE: 'api://other' }, file: tmp(), onError: (e) => errors.push(e.message) }), null);
+    assert.match(errors[0], /no Okta token/);
+    assert.equal(calls.length, 1);
+  } finally {
+    restore();
+  }
+});
