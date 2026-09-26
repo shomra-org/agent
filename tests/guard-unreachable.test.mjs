@@ -32,14 +32,14 @@ const FORCE_PUSH = { tool_name: 'Bash', tool_input: { command: 'git push --force
  * carries the ledger without itself being a severe call under test. */
 const ROUTINE_ESCALATED = { tool_name: 'mcp__jira__get_issue', tool_input: { key: 'PROJ-1' }, cwd: home };
 
-function guard(payload, env = {}) {
+function guard(payload, env = {}, command = 'tool-guard') {
   const base = { ...process.env, USERPROFILE: home, HOME: home, NO_COLOR: '1' };
   for (const k of Object.keys(base)) if (k.startsWith('SHOMRA_')) delete base[k];
   for (const dir of [home, os.homedir()]) {
     fs.rmSync(path.join(dir, '.shomra', 'guard-breaker.json'), { force: true });
   }
   return new Promise((done) => {
-    const child = spawn(process.execPath, [CLI, 'tool-guard', '--agent', 'claude'], {
+    const child = spawn(process.execPath, [CLI, command, '--agent', 'claude'], {
       env: { ...base, ...env },
       cwd: home,
     });
@@ -232,6 +232,97 @@ test('and it is acknowledged, so one outage is not re-reported forever', async (
     await guard(ROUTINE_ESCALATED, env);
     const state = JSON.parse(fs.readFileSync(path.join(home, '.shomra', 'guard-ledger.json'), 'utf8'));
     assert.equal((state.pending ?? []).length, 0, `an acknowledged gap must not stay pending: ${JSON.stringify(state)}`);
+  } finally {
+    await s.close();
+  }
+});
+
+test('the guard tells the server how long it will wait, so the answer can arrive inside it', async () => {
+  let declared;
+  const s = await serve((req, res, body) => {
+    try {
+      const sent = JSON.parse(body);
+      if (sent.tool_name) declared = sent.guard_timeout_ms;
+    } catch {
+      /* Not every request on this port is the guard call. */
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ decision: 'ALLOW' }));
+  });
+  try {
+    await guard(ROUTINE_ESCALATED, { SHOMRA_API_KEY: KEY, SHOMRA_URL: s.url, SHOMRA_GUARD_TIMEOUT_MS: '1700', SHOMRA_GUARD_BREAKER_MS: '0' });
+    assert.equal(declared, 1700, 'the declared wait must be the one this hook actually waits, or the server plans for the wrong clock');
+  } finally {
+    await s.close();
+  }
+});
+
+test('the prompt guard declares the same wait and tier, so a slow prompt screen cannot outlast the hook either', async () => {
+  const seen = [];
+  const s = await serve((req, res, body) => {
+    try {
+      const sent = JSON.parse(body);
+      if (sent.tool_name === 'UserPromptSubmit') seen.push([sent.guard_timeout_ms, sent.screen_tier ?? null]);
+    } catch {
+      /* Not every request on this port is the guard call. */
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ decision: 'ALLOW' }));
+  });
+  try {
+    const prompt = { prompt: 'Summarise the release notes for the team', session_id: 's-prompt', cwd: home };
+    const env = { SHOMRA_API_KEY: KEY, SHOMRA_URL: s.url, SHOMRA_GUARD_TIMEOUT_MS: '1700', SHOMRA_GUARD_BREAKER_MS: '0' };
+    await guard(prompt, { ...env, SHOMRA_GUARD_TIER: 'fast' }, 'prompt-guard');
+    await guard(prompt, env, 'prompt-guard');
+    assert.deepEqual(seen, [[1700, 'fast'], [1700, null]], 'the prompt hook waits the same clock the tool hook does and must say so');
+  } finally {
+    await s.close();
+  }
+});
+
+test('a call waiting for the person tells the person, not only the model', async () => {
+  const waiting = { decision: 'BLOCK', reason: 'Waiting for dana@acme.test to confirm send_payment on their phone (code A7K2).', confirmation: { state: 'WAITING', tool: 'send\u202Etnemyap', person: 'dana@acme.test', code: 'A7K2', retryAfterSeconds: 5 } };
+  const s = await serve((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(waiting));
+  });
+  try {
+    const out = await guard(ROUTINE_ESCALATED, { SHOMRA_API_KEY: KEY, SHOMRA_URL: s.url, SHOMRA_GUARD_BREAKER_MS: '0' });
+    const body = JSON.parse(out.stdout);
+    assert.equal(out.decision, 'deny');
+    assert.match(body.systemMessage ?? '', /Check your phone: confirm sendtnemyap with code A7K2/, 'the person sees the code, and a bidi override in a tool name never reaches their screen');
+  } finally {
+    await s.close();
+  }
+  const plain = await serve((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ decision: 'BLOCK', reason: 'Blocked by policy.' }));
+  });
+  try {
+    const out = await guard(ROUTINE_ESCALATED, { SHOMRA_API_KEY: KEY, SHOMRA_URL: plain.url, SHOMRA_GUARD_BREAKER_MS: '0' });
+    assert.equal(JSON.parse(out.stdout).systemMessage, undefined, 'an ordinary refusal adds no message of its own');
+  } finally {
+    await plain.close();
+  }
+});
+
+test('SHOMRA_GUARD_TIER=fast asks the server for its fast screen, and nothing else does', async () => {
+  const tiers = [];
+  const s = await serve((req, res, body) => {
+    try {
+      const sent = JSON.parse(body);
+      if (sent.tool_name) tiers.push(sent.screen_tier ?? null);
+    } catch {
+      /* Not every request on this port is the guard call. */
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ decision: 'ALLOW' }));
+  });
+  try {
+    const env = { SHOMRA_API_KEY: KEY, SHOMRA_URL: s.url, SHOMRA_GUARD_BREAKER_MS: '0' };
+    await guard(ROUTINE_ESCALATED, { ...env, SHOMRA_GUARD_TIER: 'fast' });
+    await guard(ROUTINE_ESCALATED, env);
+    assert.deepEqual(tiers, ['fast', null], 'fast only when asked for - an absent tier is a full screen');
   } finally {
     await s.close();
   }

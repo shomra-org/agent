@@ -3,6 +3,7 @@ import { loadConfig, resolveSettings } from '../core/config.mjs';
 import { detectEnv, remoteRunner } from '../gate/environment.mjs';
 import { envFlag, resolveAgentFlag } from './options.mjs';
 import { baselineSessionContext } from './memory-report.mjs';
+import { applyPendingRestores, restoreSummary } from './memory-restore.mjs';
 
 const PROBE_TIMEOUT_MS = 1500;
 
@@ -70,6 +71,8 @@ export async function cmdSessionGuard(flags) {
     if (posture.message) process.stderr.write(`[shomra] ${posture.message}\n`);
 
     if (up && !envFlag('SHOMRA_SESSION_MEMORY_OFF')) {
+      const restored = await applyPendingRestores({ url: settings.url, apiKey: settings.apiKey });
+      for (const line of restoreSummary(restored)) process.stderr.write(`[shomra] ${line}\n`);
       const payload = hookPayload();
       await baselineSessionContext({
         url: settings.url,

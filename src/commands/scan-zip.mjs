@@ -4,6 +4,7 @@ import path from 'node:path';
 import { loadConfig, resolveSettings } from '../core/config.mjs';
 import { EXIT_USAGE, exitNotConfigured } from '../core/exit-codes.mjs';
 import { SEV_COLOR, VERDICT_COLOR, bold, dim, gray, green, red, yellow } from '../core/terminal.mjs';
+import { keyedFetch } from '../core/keyed-fetch.mjs';
 
 const MAX_POLICY_HITS_SHOWN = 3;
 
@@ -50,7 +51,7 @@ async function readResponse(response) {
 async function uploadArchive({ url, apiKey, target, flags }) {
   if (!flags.json) process.stdout.write(dim('\n  Uploading to Workspace Scan… '));
   try {
-    const response = await fetch(`${url}/bundle/agent-scan`, {
+    const response = await keyedFetch(`${url}/bundle/agent-scan`, {
       method: 'POST',
       headers: { 'X-Shomra-Key': apiKey, Connection: 'close' },
       body: buildUploadForm(target, flags),

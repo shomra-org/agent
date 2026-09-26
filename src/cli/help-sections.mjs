@@ -283,7 +283,15 @@ const ENV = () => `${bold('ENV')}
   SHOMRA_API_KEY              API key (overrides config)
   SHOMRA_URL                  Backend URL (overrides config)
   SHOMRA_API_TIMEOUT_MS=30000 Per-request backend timeout for scan/gate/report (never hangs)
-  SHOMRA_AGENT                Agent-identity handle presented as x-shomra-agent (llm-proxy + firewall)
+  SHOMRA_AGENT                Agent credential (shm_agt_…) presented as x-shomra-agent (llm-proxy + firewall)
+  SHOMRA_WORKLOAD             Keyless sign-in: github | gitlab | kubernetes | entra | okta. The firewall trades
+                              the workload's own identity token for an hour-long agent credential and needs no
+                              stored key. entra asks the Azure managed identity (AKS workload identity, App
+                              Service, Container Apps, VMs); okta reads SHOMRA_TOKEN_FILE or SHOMRA_ID_TOKEN
+  SHOMRA_AUDIENCE             The audience the agent's Keyless Sign-In panel shows (shomra:org:…, or the
+                              Entra or Okta binding's own audience)
+  SHOMRA_ID_TOKEN             A token the environment already holds (GitLab id_tokens, an Entra or Okta token)
+  SHOMRA_TOKEN_FILE           Token path (Kubernetes default /var/run/secrets/shomra/token, or an Okta token file)
   SHOMRA_GATE_CONCURRENCY=8   Parallel backend gate/model-lookup calls in batch runs (1-32)
   SHOMRA_GH_TOKEN             GitHub token for \`shomra pr\` (falls back to GITHUB_TOKEN)
   SHOMRA_GUARD_STRICT=1       Fail-closed on the server tier if the backend is unreachable
@@ -292,7 +300,8 @@ const ENV = () => `${bold('ENV')}
                              withheld) - plus any .shomraignore in the working dir. For files with
                              benign patterns in source (detection code, fixtures, docs).
   SHOMRA_GUARD_ALWAYS_ESCALATE=1  Send every call to the server (full telemetry, higher overhead)
-  SHOMRA_GUARD_TIMEOUT_MS=2000    Per-call server timeout budget (default 2000)
+  SHOMRA_GUARD_TIMEOUT_MS=2000    Per-call server timeout budget (default 2000); the server answers inside it
+  SHOMRA_GUARD_TIER=fast          Ask for a 100ms screen: every enrichment pass is skipped and the verdict says so
   SHOMRA_GUARD_BREAKER_MS=30000   Skip the server for this long after a failure (0 disables)
   SHOMRA_LLM_PROXY_BASE       Proxy base URL install-hook writes for Aider (default http://127.0.0.1:4141/openai/v1)
   SHOMRA_MODEL_GUARD=0        Disable the model-load screen in the PreToolUse hook

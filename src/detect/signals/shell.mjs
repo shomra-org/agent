@@ -60,7 +60,30 @@ export function matchesShellSignal(sig, text) {
   return false;
 }
 
-const SENSITIVE_PATH = String.raw`~/\.(?:ssh|aws|kube|gnupg|docker|config/gcloud)|/root/|/etc/(?:shadow|passwd|ssh)|id_[rd]sa|\.pem(?![.\w])|\.env(?![.\w])|credentials|\.npmrc|\.git-credentials|\bsecrets?\b|authorized_keys|\$HOME\b|/home(?:/[\w.-]+)?/?(?=[\s'"]|$)`;
+const SENSITIVE_PATH = String.raw`~/\.(?:ssh|aws|kube|gnupg|docker|config/gcloud)|/root/|/etc/(?:shadow|passwd|ssh)|id_[rd]sa|\.pem(?![.\w])|\.env(?![.\w])|credentials|\.npmrc|\.git-credentials|\bsecrets?\b|authorized_keys|\$HOME\b|/home(?:/[\w.-]+)?/?(?=[\s'"]|$)|~/\.(?:codex|gemini|openclaw|config/(?:github-copilot|gh)|cache/huggingface|huggingface)(?=[/\s'\"]|$)|oauth_creds\.json`;
+
+const FIND_DELETE_RE = /\bfind\s+(?:-[HLP]\s+)?("?(?:\/[^\s;|&"]*|~[^\s;|&"]*|\$\{?HOME\}?[^\s;|&"]*)"?)(?=\s)[^\n|;&]{0,200}?(?:\s-delete\b|\s-exec\s+rm\b)/i;
+const FIND_NARROWING_RE = /\s-(?:i?name|i?path|i?regex|newer\w*|[acm]time|[acm]min|size|empty|user|group|perm|links|samefile)\b/;
+const FIND_ROUTINE_ROOT_RE = /^\/(?:tmp|var\/(?:log|cache|tmp)|dev\/shm)(?:\/|$)/;
+
+function findDeletesProtectedRoot(line) {
+  const m = FIND_DELETE_RE.exec(line);
+  if (!m || FIND_NARROWING_RE.test(m[0])) return false;
+  const root = m[1].replace(/"/g, '');
+  return !FIND_ROUTINE_ROOT_RE.test(root);
+}
+
+const ONION_HOST = String.raw`\b(?:[a-z2-7]{56}|[a-z2-7]{16})\.onion\b`;
+const ONION_REACH = String.raw`\bhttps?:\/\/(?:[^\s"'@\/]{1,80}@)?${ONION_HOST}|\b(?:curl|wget|nc|ncat|socat|ssh|scp|sftp|rsync|git|torsocks|torify|proxychains[34]?|fetch|requests\.\w+|urlopen|axios(?:\.\w+)?)\b[^\n]{0,200}?${ONION_HOST}`;
+const UPLOAD_FLAG = String.raw`(?:--data(?:-raw|-binary|-urlencode)?\b|--form\b|--upload-file\b|(?:^|\s)-[dFT]\s|-X\s*POST\b|--post-(?:data|file)\b|\bmethod\s*[:=]\s*['"]?post\b|\.post\()`;
+const PKG_INSTALL_RE = /\b(?:apt(?:-get)?|yum|dnf|apk|pacman|brew|choco|winget|snap|zypper|port|pip[0-9.]*|pipx|uv|npm|pnpm|yarn|gem|cargo|go)\s+(?:-\S+\s+)*(?:install|add|-S|i|get)\b/i;
+const notPackageInstall = (line) => !PKG_INSTALL_RE.test(line);
+const SOCKS_IP_RE = /\bsocks(?:4a?|5h?)?:\/\/(?:[^\s"'@\/]{1,80}@)?(\d{1,3}(?:\.\d{1,3}){3}):\d{2,5}\b|--socks(?:4a?|5)(?:-hostname)?[=\s]+(\d{1,3}(?:\.\d{1,3}){3}):\d{2,5}\b/gi;
+const socksOnPublicAddress = (line) =>
+  [...line.matchAll(SOCKS_IP_RE)].some((m) => {
+    const ip = m[1] ?? m[2];
+    return !LOOPBACK_OR_PRIVATE_HOST_RE.test(ip) && !/^(?:169\.254|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7]))\./.test(ip);
+  });
 
 export const DANGEROUS_SHELL = [
   { name: 'Pipe-to-shell installer (curl … | sh)', re: /\b(curl|wget)\b[^\n|]{0,200}\|\s*(sudo\s+)?(ba|z|k)?sh\b/i, severity: 'CRITICAL' },
@@ -95,6 +118,10 @@ export const DANGEROUS_SHELL = [
   { name: 'Disables TLS / cert verification', re: /(NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*0|GIT_SSL_NO_VERIFY|--no-check-certificate|--insecure\b|verify\s*=\s*False)/i, severity: 'MEDIUM' },
   { name: 'python -c one-liner', re: /python[0-9.]*\s+-c\b/i, severity: 'MEDIUM' },
   { name: 'node -e one-liner', re: /\bnode\s+-e\b/i, severity: 'MEDIUM' },
+  { name: 'Re-evaluates a variable as a prompt string (${var@P}), running any command hidden in it', re: /\$\{[#!]?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]{0,40}\])?@[PE]\}/, severity: 'HIGH' },
+  { name: 'Writes a Python autoload file that runs on every interpreter start (.pth / sitecustomize / usercustomize)', re: /(?:>>?|\btee\b(?:\s+-a)?|\b(?:cp|mv|install)\b(?:\s+-\S+)*\s+\S+)\s+[^\n;&|]{0,120}?(?:(?:site|dist)-packages\/[^\s/'"]+\.pth|(?:sitecustomize|usercustomize)\.py)\b/i, severity: 'HIGH' },
+  { name: "Modifies the coding agent's own application, server or installed files (self-tamper)", re: new RegExp(String.raw`(?:>>?|\btee\b(?:\s+-a)?\s+|\b(?:cp|mv|install|ln|chmod|chown|truncate|patch)\b(?:\s+-\S+)*\s+(?:\S+\s+)?|\b(?:sed|perl)\b[^\n;&|]{0,60}?-\S*i\S*[^\n;&|]{0,60}?\s)['"]?\S{0,80}?(?:\/Applications\/[^/\s'"]*(?:Cursor|Windsurf|Visual Studio Code|VSCodium|Claude|ChatGPT|Codex|Zed|Kiro|Trae)[^/\s'"]*\.app\/Contents\/|\/(?:usr\/share|usr\/lib|opt)\/(?:cursor|code|code-insiders|windsurf|codium|kiro)\/|\.(?:vscode|cursor|windsurf)-server\/(?:bin|cli)\/|node_modules\/(?:@anthropic-ai\/claude-code|@openai\/codex|@google\/gemini-cli|@shomra\/agent)\/|resources\/app\/product\.json)`, 'i'), severity: 'HIGH' },
+  { name: 'Clones a commit hash as a branch name (git serves a same-named branch instead of the pinned commit)', re: /\bgit\s+(?:clone|fetch)\b[^\n;&|]*?(?:--branch[=\s]+|\s-b\s+)['"]?(?:[0-9a-f]{40}|[0-9a-f]{64})\b/i, severity: 'MEDIUM' },
   { name: 'Netcat / socket exfil', re: /\bnc\s+-[a-z]*\b|\bncat\b/i, severity: 'MEDIUM' },
 
   { name: 'Clears recorded shell history (anti-forensics)', re: /\bhistory\s+-c\b|\brm\b[^\n]{0,30}\.(bash|zsh|sh)_history\b|>\s*\S{0,30}\.(bash|zsh|sh)_history\b/i, severity: 'MEDIUM' },
@@ -109,12 +136,23 @@ export const DANGEROUS_SHELL = [
   { name: 'Recursive force delete of the filesystem root (rm -rf /, --no-preserve-root)', re: /(?<!\b(?:docker|podman|nerdctl|kubectl|helm|conda|brew)\s{1,4})\brm\b(?=[^\n;|&]{0,200}?\s(?:-[a-zA-Z]*r[a-zA-Z]*|--recursive)(?![\w-]))(?=[^\n;|&]{0,200}?\s(?:-[a-zA-Z]*f[a-zA-Z]*|--force)(?![\w-]))(?=[^\n;|&]{0,200}(?:--no-preserve-root|\s\/(?:\s|\*|$)))/i, severity: 'CRITICAL' },
   { name: 'Fork bomb (process-exhaustion DoS)', re: /(:|\b[a-z_][a-z0-9_]*)\s*\(\s*\)\s*\{\s*\1\s*[^\n}]*\|\s*\1[^\n}]*&\s*\}\s*;\s*\1/i, severity: 'HIGH' },
   { name: 'Writes over a raw disk device (data destruction)', re: /\b(dd\b[^\n]{0,80}\bof=\/dev\/[sh]d|mkfs(\.\w+)?\s+[^\n]{0,40}\/dev\/|>\s*\/dev\/[sh]d[a-z])/i, severity: 'CRITICAL' },
+  { name: 'Wipes filesystem signatures or the partition table of a disk (wipefs, sgdisk --zap-all)', re: /\b(?:wipefs\b[^\n]{0,40}\s(?:-a|--all)\b[^\n]{0,40}\/dev\/|sgdisk\s+(?:--zap-all|-Z)\b[^\n]{0,40}\/dev\/)/i, severity: 'CRITICAL' },
+  { name: 'Recursive delete from a protected root with find (-delete / -exec rm)', re: FIND_DELETE_RE, severity: 'HIGH', refine: findDeletesProtectedRoot },
+  { name: 'Overwrites keys, credentials, shell history or a disk with shred', re: /\bshred\b[^\n]{0,60}?(?:\/dev\/(?:sd|hd|nvme|xvd|vd|mmcblk)|~\/\.(?:ssh|aws|gnupg|kube)\b|\/etc\/|\bid_(?:rsa|ed25519|ecdsa|dsa)\b|\.bash_history|\.zsh_history|\/var\/log\/)/i, severity: 'HIGH' },
   { name: 'Reads the system password-hash / sudo policy file', re: /\b(cat|less|more|head|tail|strings|xxd|od|grep|awk|sed|cp|scp|tar)\b[^\n]{0,80}\/etc\/(shadow|gshadow|sudoers(\.d)?)\b/i, severity: 'HIGH' },
   { name: 'Deletes a Kubernetes namespace / workload', re: /\bkubectl\b[^\n]{0,80}\bdelete\b[^\n]{0,80}\b(namespace|ns|deployment|statefulset|pvc|persistentvolumeclaim)\b/i, severity: 'MEDIUM' },
   { name: 'Drops a database / schema', re: /\bdrop\s+(database|schema|table)\b/i, severity: 'MEDIUM' },
   { name: 'Disables the audit / logging subsystem', re: /\b(systemctl|service)\s+(stop|disable|mask)\s+\S{0,20}(auditd|rsyslog|syslog|systemd-journald|journald)\b|\bauditctl\s+(-e\s*0|-D)\b|\bsetenforce\s+0\b|\bsystemctl\s+(stop|disable|mask)\s+firewalld\b/i, severity: 'HIGH' },
+  { name: 'Routes a command through Tor (torsocks / torify / proxychains)', re: /(?<![\w.\/-])(?:torsocks|torify|proxychains[34]?)(?![\w.-])(?:\s+-{1,2}[\w-]+(?:[= ](?!-)\S+)?)*\s+(?:sudo\s+)?[\w.\/~$"'-]/i, severity: 'HIGH', refine: notPackageInstall },
+  { name: 'Sends traffic through a local Tor SOCKS proxy (port 9050 / 9150)', re: /\bsocks(?:4a?|5h?)?:\/\/(?:[^\s"'@\/]{1,80}@)?[\w.\-\[\]:]{0,60}:(?:9050|9150)\b|--socks(?:4a?|5)(?:-hostname)?[=\s]+(?:[\w.\-\[\]:]{0,60}:)?(?:9050|9150)\b|\bproxy[\w-]{0,12}\s*[:=]\s*['"]?socks[\w:\/]{0,12}[\w.\-\[\]:]{0,60}:(?:9050|9150)\b/i, severity: 'HIGH' },
+  { name: 'Uploads data to a Tor onion service', re: new RegExp(String.raw`(?:${ONION_REACH})[^\n]{0,200}?${UPLOAD_FLAG}|${UPLOAD_FLAG}[^\n]{0,200}?${ONION_HOST}`, 'i'), severity: 'CRITICAL' },
+  { name: 'Reaches a Tor onion service (.onion)', re: new RegExp(ONION_REACH, 'i'), severity: 'HIGH' },
+  { name: 'Routes traffic through a SOCKS proxy on a public address', re: /\bsocks(?:4a?|5h?)?:\/\/(?:[^\s"'@\/]{1,80}@)?\d{1,3}(?:\.\d{1,3}){3}:\d{2,5}\b|--socks(?:4a?|5)(?:-hostname)?[=\s]+\d{1,3}(?:\.\d{1,3}){3}:\d{2,5}\b/i, severity: 'HIGH', refine: socksOnPublicAddress },
+  { name: 'Installs or starts Tor (anonymizing egress)', re: /\b(?:apt(?:-get)?|yum|dnf|apk|pacman|brew|choco|winget|snap|zypper|port)\s+(?:-\S+\s+)*(?:install|add|-S)\s+(?:-\S+\s+)*(?:[\w.+-]+\s+){0,8}?(?:tor|torsocks|tor-browser|torbrowser-launcher|obfs4proxy)(?![\w.-])|\bpip[0-9.]*\s+install\s+(?:-\S+\s+)*(?:[\w.=<>-]+\s+){0,8}?torpy(?![\w.-])|\bnpm\s+(?:i|install|add)\s+(?:-\S+\s+)*(?:[@\w.\/-]+\s+){0,8}?(?:tor-request|tor-axios|granax)(?![\w.-])|\b(?:systemctl|service)\s+(?:start|enable|restart)\s+tor(?:@\S*)?(?![\w.-])|\bservice\s+tor\s+(?:start|restart)\b|(?<![\w.\/-])tor\s+(?:--SocksPort|--RunAsDaemon|--ControlPort|-f\s+\S*torrc)|\bdocker\s+run\b[^\n]{0,200}?\b(?:dperson\/torproxy|osminogin\/tor-simple|peterdavehello\/tor-socks-proxy|leplusorg\/tor|[\w.-]+\/tor-?(?:proxy|socks(?:-proxy)?))\b/i, severity: 'MEDIUM' },
 
   { name: 'Locally decoded or decrypted blob piped to a shell', re: /\b(?:gpg|openssl\s+enc|xxd\s+-r|uudecode|zcat|gunzip|bunzip2|unxz)\b[^\n|]{0,160}\|\s*(?:sudo\s+)?(?:ba|z|k)?sh\b/i, severity: 'CRITICAL' },
+  { name: 'Removes or switches off the Shomra guard that screens this agent (guard tamper)', re: /\bnpm\s+(?:uninstall|remove|rm|un|r)\b[^\n;&|]{0,40}@shomra\/agent\b|\bshomra\s+mcp\s+guard\b[^\n;&|]{0,40}--uninstall\b|disableAllHooks["']?\s*[:=]\s*true\b|(?:>>?|\btee\b(?:\s+-a)?)\s*['"]?[^\s'"|;&]{0,80}\.shomraignore\b/i, severity: 'HIGH' },
+  { name: 'A git object piped into a shell (a payload stored as a git blob, SkillCloak)', re: /\bgit\s+(?:cat-file|show|unpack-file)\b[^\n|]{0,160}\|\s*(?:sudo\s+)?(?:(?:ba|z|k|da)?sh|python3?|node|perl|ruby)\b/i, severity: 'HIGH' },
   { name: 'Container escape to the host (privileged / host mount / host namespace)', re: /\b(?:docker|podman|nerdctl)\s+(?:run|create|exec)\b[^\n]{0,200}?(?:--privileged\b|--pid[= ]host\b|--ipc[= ]host\b|--userns[= ]host\b|--security-opt[= ]\S{0,40}(?:seccomp[=:]unconfined|apparmor[=:]unconfined)|--cap-add[= ](?:ALL|SYS_ADMIN|SYS_PTRACE|SYS_MODULE)\b|-v\s+\/(?:\s|:)|--volume[= ]\/:|(?:-v|--volume)[= ]\s*\/var\/run\/docker\.sock)/i, severity: 'CRITICAL' },
   { name: 'Enters the host namespace from a container (nsenter / chroot onto a host mount)', re: /\bnsenter\b[^\n]{0,80}(?:-t\s*1\b|--target\s*1\b)|\bchroot\s+\/(?:host|mnt|proc\/1\/root)\b/i, severity: 'CRITICAL' },
   { name: 'Grants cluster-admin in Kubernetes', re: /\bkubectl\b[^\n]{0,120}\b(?:create|apply)\b[^\n]{0,120}\b(?:cluster)?rolebinding\b[^\n]{0,160}(?:--clusterrole[= ]\s*cluster-admin|cluster-admin)\b/i, severity: 'HIGH' },
@@ -126,7 +164,8 @@ export const DANGEROUS_SHELL = [
   { name: 'Preloads a shared library into every process (LD_PRELOAD)', re: /\b(?:LD_PRELOAD|LD_AUDIT|DYLD_INSERT_LIBRARIES)\s*=\s*\S|>>?\s*\/etc\/ld\.so\.preload\b/i, severity: 'HIGH' },
   { name: 'Installs a scheduled or boot-time persistence unit', re: /\bsystemd-run\b[^\n]{0,80}--on-(?:boot|calendar|active|unit)|>>?\s*\/etc\/(?:systemd\/system|cron\.(?:d|daily|hourly)|init\.d)\/\S|\bschtasks\b[^\n]{0,80}\/create\b|\blaunchctl\s+(?:load|bootstrap)\b|\b(?:echo|printf)\b[^\n]{0,120}\|\s*at\s+(?:now|\+|\d)/i, severity: 'MEDIUM' },
   { name: 'Opens a reverse tunnel to a remote host', re: /\bssh\b[^\n]{0,80}\s-\w*R\s*\d{1,5}:[^\n\s]{1,60}|\b(?:ngrok|cloudflared|localtunnel|frpc)\b[^\n]{0,60}\b(?:tcp|http|tunnel)\b/i, severity: 'HIGH' },
-  { name: 'Encodes command output into DNS lookups (exfiltration channel)', re: /(?:^|[\n;&|(]\s*)(?:dig|nslookup|drill|host)\s+(?![-+*/%|&^]?=)[^\n]{0,120}(?:\$\(|`|\$\{)[^\n]{0,80}\.[a-z]{2,}|\b(?:base64|base32|xxd|hexdump|od\s|openssl\s+enc)\b[^\n]{0,140}\b(?:dig|nslookup|drill|host)\s+[^\n]{0,60}\$\w+\.[\w.-]{2,}\.[a-z]{2,}/i, severity: 'HIGH' },
+  { name: 'Encodes command output into DNS lookups (exfiltration channel)', re: /(?:^|[\n;&|(]\s*)(?:dig|nslookup|drill|host(?=\s+(?:[-$`"']|[\w-]+\.[\w-])))\s+(?![-+*/%|&^]?=)[^\n]{0,120}(?:\$\(|`|\$\{)[^\n]{0,80}\.[a-z]{2,}|(?:^|[\n;&|(]\s*)(?:ping6?|traceroute6?|tracepath|getent\s+a?hosts|resolvectl\s+query)\s+[^\n]{0,60}(?:\$\(|`)\s*(?:whoami|id|cat|env|printenv|base(?:64|32)|xxd|uname|echo\s+\$)\b[^\n]{0,80}\.[\w-]+\.[a-z]{2,}|\b(?:base64|base32|xxd|hexdump|od\s|openssl\s+enc)\b[^\n]{0,140}\b(?:dig|nslookup|drill|host)\s+[^\n]{0,60}\$\w+\.[\w.-]{2,}\.[a-z]{2,}/i, severity: 'HIGH' },
+  { name: 'Calls an out-of-band interaction host (blind-injection callback)', re: /(?:^|[\n;&|(`"']\s*|\$\(\s*)(?:curl|wget|nslookup|dig|host|drill|ping6?|nc|ncat|telnet|Invoke-WebRequest|iwr|irm|Resolve-DnsName)\b[^\n]{0,160}?(?<![\w-])(?:oast\.(?:pro|live|site|online|fun|me)|interact\.sh|interactsh\.com|oastify\.com|burpcollaborator\.net|dnslog\.cn|ceye\.io|canarytokens\.com|requestrepo\.com)\b/i, severity: 'MEDIUM' },
   { name: 'Copies credentials or home directories off the machine over ssh', re: new RegExp(String.raw`\b(?:scp|rsync)\b(?=[^\n]{0,200}\s\S{0,40}@[\w.-]+:)(?=[^\n]{0,200}(?:${SENSITIVE_PATH}))` + String.raw`|\btar\b(?=[^\n]{0,160}\|\s*ssh\b)(?=[^\n]{0,160}(?:${SENSITIVE_PATH}))`, 'i'), severity: 'HIGH' },
   { name: 'Flushes the host firewall', re: /\b(?:iptables|ip6tables|nft)\b[^\n]{0,60}(?:-F\b|--flush\b|flush ruleset)|\bufw\s+disable\b|\bnetsh\s+advfirewall\s+set\s+\S+\s+state\s+off\b/i, severity: 'MEDIUM' },
   { name: 'Kills the audit / EDR agent (anti-forensics)', re: /\b(?:pkill|killall|kill)\b[^\n]{0,40}\b(?:auditd|osqueryd?|falcon-sensor|falconctl|wazuh|ossec|filebeat|splunkd|sysmon|crowdstrike|carbonblack|cbagent)\b|\bSet-MpPreference\b[^\n]{0,60}-Disable\w*\s+\$?true/i, severity: 'HIGH' },

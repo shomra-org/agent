@@ -14,6 +14,7 @@ import { cmdLlmProxy } from '../commands/llm-proxy.mjs';
 import { cmdMcp, cmdMcpGuard } from '../commands/mcp.mjs';
 import { cmdMdmScript } from '../commands/mdm-script.mjs';
 import { cmdMemoryScan } from '../commands/memory-scan.mjs';
+import { cmdMemoryRestore } from '../guard/memory-restore.mjs';
 import { cmdModelScan } from '../commands/model-scan.mjs';
 import { cmdModels } from '../commands/models.mjs';
 import { cmdNew } from '../commands/new.mjs';
@@ -55,6 +56,7 @@ export const COMMANDS = {
   'model-scan': (f, p) => cmdModelScan(f, p),
   models: (f, p) => cmdModels(f, p),
   'memory-scan': (f, p) => cmdMemoryScan(f, p),
+  'memory-restore': () => cmdMemoryRestore(),
   redteam: (f) => cmdRedteam(f),
   campaign: (f) => cmdCampaign(f),
   harden: (f) => cmdHarden(f),

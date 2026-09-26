@@ -163,7 +163,8 @@ function registryOverride(tokens) {
 }
 
 function nonRegistrySource(spec, tokens, ecosystem) {
-  const all = [spec, ...tokens];
+  const direct = ecosystem === 'python' ? /^[A-Za-z0-9._-]+(?:\[[^\]]*\])?\s*@\s*(\S+)$/.exec(spec)?.[1] : null;
+  const all = [direct ?? spec, ...tokens];
   const shorthand = ecosystem === 'npm' && /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+(?:#.*)?$/.test(spec) && !/\.(?:[cm]?[jt]s|py|json|sh)$/i.test(spec);
   const hit = all.find((t) => /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|gist:)/i.test(t)) ?? (shorthand ? spec : null);
   if (hit) return { kind: 'git', ref: hit, commitPinned: /[#@][0-9a-f]{40}\b/i.test(hit) };
@@ -212,9 +213,9 @@ export function parseLaunch(command, args) {
     version = at > 0 ? spec.slice(at + 1) : null;
     pkg = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/').replace(/@[\d^~].*$/, '') : spec.split('@')[0];
   } else {
-    const m = /^([A-Za-z0-9._-]+)(?:\[[^\]]*\])?\s*(?:([=<>!~]+)\s*(.+))?$/.exec(spec);
+    const m = /^([A-Za-z0-9._-]+)(?:\[[^\]]*\])?\s*(?:([=<>!~]+|@)\s*(.+))?$/.exec(spec);
     pkg = m ? m[1] : spec;
-    version = m && m[2] === '==' ? (m[3] ?? null) : null;
+    version = m && (m[2] === '==' || m[2] === '@') ? (m[3] ?? null) : null;
   }
   const unpinned = !version || /^(latest|next|canary|\*|x|main|master)$/i.test(version) || !/^[~^]?\d/.test(version);
   return { ecosystem, runner: head, pkg: pkg || null, spec, version, autoInstall, unpinned, source: null, registry };
@@ -304,6 +305,14 @@ export const KNOWN_VULNERABLE_MCP = [
   { ecosystem: 'npm', pkg: '@modelcontextprotocol/inspector', ranges: [{ fixed: '0.14.1' }], cve: 'CVE-2025-49596', severity: 'CRITICAL' },
   { ecosystem: 'npm', pkg: '@modelcontextprotocol/server-filesystem', ranges: [{ fixed: '0.6.3' }, { from: '2025.0.0', fixed: '2025.7.1' }], cve: 'CVE-2025-53109 / CVE-2025-53110', severity: 'HIGH' },
   { ecosystem: 'python', pkg: 'mcp-server-git', ranges: [{ fixed: '2025.12.18' }], cve: 'CVE-2025-68143 / CVE-2025-68144 / CVE-2025-68145', severity: 'HIGH' },
+  { ecosystem: 'python', pkg: 'mcp-atlassian', ranges: [{ fixed: '0.22.0' }], cve: 'CVE-2026-77244 / CVE-2026-77258', severity: 'CRITICAL' },
+  { ecosystem: 'python', pkg: 'mcp-memory-service', ranges: [{ fixed: '10.67.1' }], cve: 'CVE-2026-50027', severity: 'CRITICAL' },
+  { ecosystem: 'npm', pkg: '@contentful/mcp-server', ranges: [{ fixed: '1.7.19' }], cve: 'CVE-2026-53957', severity: 'HIGH' },
+  { ecosystem: 'npm', pkg: '@bytebase/dbhub', ranges: [{ fixed: '0.22.6' }], cve: 'CVE-2026-61788', severity: 'HIGH' },
+  { ecosystem: 'npm', pkg: '@zereight/mcp-gitlab', ranges: [{ fixed: '2.1.30' }], cve: 'GHSA-5648-rgj9-v224', severity: 'HIGH' },
+  { ecosystem: 'python', pkg: 'serena-agent', ranges: [{ fixed: '1.5.2' }], cve: 'CVE-2026-49471', severity: 'HIGH' },
+  { ecosystem: 'npm', pkg: 'functype-mcp-server', ranges: [{ fixed: '1.4.4' }], cve: 'CVE-2026-59176', severity: 'HIGH' },
+  { ecosystem: 'npm', pkg: 'auth-fetch-mcp', ranges: [{ fixed: '3.0.2' }], cve: 'CVE-2026-49857', severity: 'HIGH' },
 ];
 const vparts = (v) => v.replace(/^[v=~^]+/, '').split(/[.+-]/).map((p) => (/^\d+$/.test(p) ? Number(p) : NaN)).filter((n) => !Number.isNaN(n));
 function versionLt(a, b) {
@@ -313,7 +322,8 @@ function versionLt(a, b) {
 }
 export function knownVulnerable(ecosystem, pkg, version) {
   if (!ecosystem || !pkg || !version || !/^[v=]?\d/.test(version)) return null;
-  return KNOWN_VULNERABLE_MCP.find((k) => k.ecosystem === ecosystem && k.pkg === pkg.toLowerCase() &&
+  const name = ecosystem === 'python' ? pkg.toLowerCase().replace(/[-_.]+/g, '-') : pkg.toLowerCase();
+  return KNOWN_VULNERABLE_MCP.find((k) => k.ecosystem === ecosystem && k.pkg === name &&
     k.ranges.some((r) => (!r.from || !versionLt(version, r.from)) && versionLt(version, r.fixed))) ?? null;
 }
 

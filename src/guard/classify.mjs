@@ -52,6 +52,7 @@ export const SHELL_TOOLS_RE = new RegExp(`^(?:${SHELL_TOOL_NAMES.map((n) => n.re
 
 export { argvCommand, heredocPatch, patchTextOf, shellCommandOf } from './command-text.mjs';
 import { patchTextOf, shellCommandOf } from './command-text.mjs';
+import { agentCliSpawn, isSubAgentSpawnTool } from './spawn-signals.mjs';
 
 /** An MCP tool whose NAME says it runs a process - the server's `mcpExecCommand` reads the same leaves. */
 const MCP_EXEC_LEAF = /(?:^|_)(?:exec|execute|run|command|process|shell|terminal|bash|spawn|powershell|cmd)(?:_|$)/i;
@@ -227,9 +228,11 @@ export function guardNeedsServer(tool, input, hasIdentity, opts = {}) {
   }
   if (tool && tool.startsWith('mcp__')) return true;
   if (EGRESS_TOOL_RE.test(tool || '')) return true;
+  if (isSubAgentSpawnTool(tool)) return true;
   if (SHELL_TOOLS_RE.test(tool || '')) {
     const cmd = shellCommandOf(input);
     if (EGRESS_CMD_RE.test(cmd)) return true;
+    if (agentCliSpawn(cmd)) return true;
     if (/\bmcp\s+add\b|claude\s+mcp\b|@modelcontextprotocol\b|\bmcp[-_]server\b/i.test(cmd)) return true;
   }
   const url = input?.url ?? input?.uri ?? input?.href ?? input?.endpoint;

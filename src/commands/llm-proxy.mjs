@@ -4,6 +4,7 @@ import { exitNotConfigured } from '../core/exit-codes.mjs';
 import { bold, cyan, dim, green, red, yellow } from '../core/terminal.mjs';
 import { VERSION } from '../core/version.mjs';
 import { resolveAgentIdentityHandle } from './agent-identity.mjs';
+import { keyedFetch } from '../core/keyed-fetch.mjs';
 
 export const LLM_PROVIDERS = ['openai', 'anthropic', 'gemini', 'groq', 'mistral', 'xai', 'deepseek', 'openrouter', 'together'];
 
@@ -17,7 +18,27 @@ function newSessionId() {
   return `proxy-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function forwardHeaders(incoming, { apiKey, actor, machineId, sessionId, project, agentId }) {
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
+
+function hostnameOf(value) {
+  const v = String(value ?? '').trim().toLowerCase();
+  if (!v) return '';
+  if (v.startsWith('[')) return v.slice(0, v.indexOf(']') + 1);
+  return v.replace(/:\d+$/, '');
+}
+
+export function localClientOnly(headers = {}) {
+  if (!LOOPBACK_HOSTS.has(hostnameOf(headers.host))) return false;
+  const origin = headers.origin;
+  if (origin == null || origin === '') return true;
+  try {
+    return LOOPBACK_HOSTS.has(hostnameOf(new URL(origin).host));
+  } catch {
+    return false;
+  }
+}
+
+export function forwardHeaders(incoming, { apiKey, actor, machineId, sessionId, project, agentId }) {
   const headers = { ...incoming };
   for (const name of HOP_BY_HOP_REQUEST_HEADERS) delete headers[name];
 
@@ -27,7 +48,7 @@ function forwardHeaders(incoming, { apiKey, actor, machineId, sessionId, project
   headers['x-shomra-source'] = 'shomra llm-proxy';
   if (!headers['x-shomra-session']) headers['x-shomra-session'] = sessionId;
   if (project) headers['x-shomra-project'] = project;
-  if (agentId && !headers['x-shomra-agent']) headers['x-shomra-agent'] = agentId;
+  if (agentId) headers['x-shomra-agent'] = agentId;
   return headers;
 }
 
@@ -72,6 +93,12 @@ function logCall(provider, request, suffix, status) {
 
 function createProxyHandler({ url, headerContext, providerPattern }) {
   return async (request, response) => {
+    if (!localClientOnly(request.headers)) {
+      sendJson(response, 403, {
+        error: { message: 'Refused: the Shomra LLM proxy only serves clients on this machine. The Host and any Origin must be loopback, which stops a web page from reaching it through DNS rebinding.' },
+      });
+      return;
+    }
     const requestPath = String(request.url).replace(/^\/llm(?=\/)/, '');
     const match = requestPath.match(providerPattern);
     if (!match) {
@@ -88,7 +115,7 @@ function createProxyHandler({ url, headerContext, providerPattern }) {
 
     let upstream;
     try {
-      upstream = await fetch(`${url}${route}`, {
+      upstream = await keyedFetch(`${url}${route}`, {
         method: request.method,
         headers,
         body: BODYLESS_METHODS.includes(request.method) ? undefined : body,

@@ -13,15 +13,18 @@ import { artifactKindFor } from './artifact-paths.mjs';
 import { gateMachine } from '../core/api-client.mjs';
 import { VERSION } from '../core/version.mjs';
 import { loadConfig, resolveSettings } from '../core/config.mjs';
+import { workloadCredential } from '../core/workload-identity.mjs';
 import { classifyConsequence, downrankCodeContext, grade, localScan } from '../detect/guard-signals.mjs';
 import { WRITE_TOOLS, callSubjectTypes, guardNeedsServer, guardTargetPath, guardText } from './classify.mjs';
-import { emitGuardAsk, emitGuardDeny } from './emit.mjs';
+import { confirmationNote, emitGuardAsk, emitGuardDeny, stoppedNote } from './emit.mjs';
 import { guardPathAllowlisted } from './ignore.mjs';
 import { screenModelLoad } from './model-load.mjs';
 import { normalizeGuardInput } from './normalize.mjs';
-import { envFlag, resolveAgentFlag } from './options.mjs';
+import { envFlag, guardWait, resolveAgentFlag } from './options.mjs';
 import { recordSelftest, selftestField } from './selftest-marker.mjs';
 import { buildGuardBody, reportGuardDecision } from './report.mjs';
+import { guardHookTamper, guardStateTamper, hookTamperReason, refuseOrAsk, tamperReason } from './self-protect.mjs';
+import { keyedFetch } from '../core/keyed-fetch.mjs';
 
 const ALLOW_VERDICT = { verdict: 'ALLOW', top: null, findings: [] };
 
@@ -158,7 +161,7 @@ async function requestServerDecision({ url, apiKey, agentId, body, agent, strict
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), guardTimeoutMs());
   try {
-    const response = await fetch(`${url}/gate/tool-call`, {
+    const response = await keyedFetch(`${url}/gate/tool-call`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -213,7 +216,7 @@ function enforceServerDecision(agent, decision) {
     emitGuardAsk(agent, decision.reason || 'Held for approval by Shomra - waiting on a reviewer. Retry once it’s approved.');
   }
   if (decision?.decision === 'BLOCK') {
-    emitGuardDeny(agent, decision.reason || 'Blocked by Shomra security policy.');
+    emitGuardDeny(agent, decision.reason || 'Blocked by Shomra security policy.', confirmationNote(decision.confirmation), stoppedNote(decision.stopped));
   }
 }
 
@@ -244,10 +247,14 @@ export function postContentField(tool, input, normalized, read = boundedRead) {
 
 export async function cmdToolGuard(flags) {
   const agent = resolveAgentFlag(flags);
-  const agentId = resolveAgentIdentityHandle(flags);
   const strict = envFlag('SHOMRA_GUARD_STRICT');
   const alwaysEscalate = envFlag('SHOMRA_GUARD_ALWAYS_ESCALATE');
-  const { apiKey, url } = resolveSettings(loadConfig());
+  const settings = resolveSettings(loadConfig());
+  const { url } = settings;
+  const agentId =
+    resolveAgentIdentityHandle(flags) ??
+    (await workloadCredential({ url, onError: (e) => process.stderr.write(`shomra: keyless sign-in failed - ${e?.message ?? e}\n`) }));
+  const apiKey = settings.apiKey || (agentId?.startsWith('shm_agt_') ? agentId : undefined);
 
   const normalized = normalizeGuardInput(agent, readHookPayload());
   const tool = (normalized.tool_name ?? '').trim();
@@ -258,6 +265,22 @@ export async function cmdToolGuard(flags) {
     recordSelftest({ stage: 'local-block', tool, reason: local.top?.label ?? 'dangerous tool call' });
     await reportGuardDecision(url, apiKey, agentId, buildGuardBody(normalized, agent, 'BLOCK', local.top?.label));
     emitGuardDeny(agent, `Blocked on-machine by Shomra: ${local.top?.label || 'dangerous tool call'}.`);
+  }
+
+  const tamper = guardStateTamper(tool, input, { cwd: normalized.cwd });
+  if (tamper) {
+    const reason = tamperReason(tamper);
+    await reportGuardDecision(url, apiKey, agentId, buildGuardBody(normalized, agent, 'FLAG', 'Edits the Shomra guard’s own state'));
+    if (refuseOrAsk(agent, strict) === 'deny') emitGuardDeny(agent, `Blocked on-machine by Shomra: ${reason}`);
+    emitGuardAsk(agent, reason);
+  }
+
+  const hookTamper = guardHookTamper(tool, input, { cwd: normalized.cwd });
+  if (hookTamper) {
+    const reason = hookTamperReason(hookTamper);
+    await reportGuardDecision(url, apiKey, agentId, buildGuardBody(normalized, agent, 'FLAG', 'Switches off the Shomra guard hook'));
+    if (refuseOrAsk(agent, strict) === 'deny') emitGuardDeny(agent, `Blocked on-machine by Shomra: ${reason}`);
+    emitGuardAsk(agent, reason);
   }
 
   await screenModelLoad(agent, tool, input, url);
@@ -329,6 +352,7 @@ export async function cmdToolGuard(flags) {
       ...post,
       ...selftest,
       ...(selftest.selftest ? {} : { guard_ledger: sendLedger() }),
+      ...guardWait(),
     },
   });
 

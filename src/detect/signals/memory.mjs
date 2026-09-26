@@ -118,52 +118,66 @@ const PASSIVE_SEND_RE =
   /\b(?:are|is|was|were|been|being|get|gets|got)\s+(?:\w+\s+){0,2}?(?:published|posted|sent|shipped|forwarded|transferred|delivered|uploaded|transmitted|reported)\b/i;
 
 const EXFIL_RULES = [
-  { re: /\b(exfiltrate|smuggle)\b(?![-_])\s+\S|\b(?:execut\w*|run\w*|perform\w*|inject\w*|launch\w*|trigger\w*|verify|invoke\w*|start\w*)\b[^.\n]{0,40}\b(?:data\s+)?(?:exfiltration|smuggling)\b|\b(exfiltrating|smuggling)\s+(?:the |all |any |this |these |your |our |their )?(?:env(?:ironment)?|secrets?|credentials?|tokens?|api[- ]?keys?|keys?|passwords?|data|files?|contents?|conversations?|history|context|\.env|\.ssh)\b/i, label: 'exfiltration', severity: 'CRITICAL', descGuard: true },
+  { re: /\b(exfiltrate|smuggle)\b(?![-_])\s+\S|\b(?:execut(?:e|es|ed|ing)|run(?:s|ning)?|perform(?:s|ed|ing)?|inject(?:s|ed|ing)?|launch(?:es|ed|ing)?|trigger(?:s|ed|ing)?|verify|invok(?:e|es|ed|ing)|start(?:s|ed|ing)?)\b[^.\n]{0,40}\b(?:data\s+)?(?:exfiltration|smuggling)\b|\b(exfiltrating|smuggling)\s+(?:the |all |any |this |these |your |our |their )?(?:env(?:ironment)?|secrets?|credentials?|tokens?|api[- ]?keys?|keys?|passwords?|data|files?|contents?|conversations?|history|context|\.env|\.ssh)\b/i, label: 'exfiltration', severity: 'CRITICAL', descGuard: true },
   { re: /(?<!\b(?:the|a|an|no|any|this|that|of)\s)\bleak\b(?!\s+(?:memory|memories|resources?|handles?|descriptors?|sockets?|connections?|goroutines?|threads?|references?|buffers?))[^.\n]{0,60}(?:\b(?:content|data|secret|file|credential|key|token|password|env|private[- ]?key|id_rsa|api[- ]?key)|\.ssh)\b/i, label: 'leak-secrets', severity: 'CRITICAL', descGuard: true },
 
   { re: /\b(base64|hex|rot13|gzip|xor|url[- ]?encod)\w*\b[^.\n]{0,50}\b(before|then|prior to|and\s+then|and\s+immediately)\b[^.\n]{0,25}\b(send|post|upload|transmit|exfil|deliver|beacon|forward|transfer)\w*/i, label: 'obfuscate-before-send', severity: 'CRITICAL', descGuard: true },
-  { re: /\b(silent(ly)?|quietly|covertly|secretly|stealthily|discreetly)\b[^.\n]{0,70}\b(send|post|upload|collect|encode|transmit|copy|forward|read|leak|deliver|beacon|transfer)(?:ing)?\b(?=[^.\n]{0,80}(?:\b(?:env(?:ironment)?|secrets?|credentials?|tokens?|api[- ]?keys?|keys?|passwords?|cookies?|data|files?|contents?|conversations?|history|context|output|transcript|prompt|clipboard|id_rsa|private[- ]?key|database|dump|it|them|everything)\b|\.env|\.ssh|https?:\/\/))/i, label: 'covert-action', severity: 'CRITICAL', descGuard: true },
-  { re: /\b(send|post|upload|transmit|forward|deliver|beacon|report|ship|push|transfer)(?:s|es|ed|ing|ted|ping)?\b(?:[^.\n]|\.(?!\s)){0,80}\b(https?:\/\/\S+|(?:s3|gs|az|ftp|sftp|smb|webdav)s?:\/\/\S+|attacker|c2\b|command[- ]and[- ]control|remote (server|host|endpoint)|external (server|host|endpoint|url|site|service))/i, label: 'send-to-external', severity: 'HIGH' },
+  { re: /\b(silent(ly)?|quietly|covertly|secretly|stealthily|discreetly)\b[^.\n;:—–()]{0,70}\b(send|post|upload|collect|encode|transmit|copy|forward|read|leak|deliver|beacon|transfer)(?:ing)?\b(?=[^.\n]{0,80}(?:\b(?:env(?:ironment)?|secrets?|credentials?|tokens?|api[- ]?keys?|keys?|passwords?|cookies?|data|files?|contents?|conversations?|history|context|output|transcript|prompt|clipboard|id_rsa|private[- ]?key|database|dump|it|them|everything)\b|\.env|\.ssh|https?:\/\/))/i, label: 'covert-action', severity: 'CRITICAL', descGuard: true },
+  { re: /\b(send|post|upload|transmit|forward|deliver|beacon|report|ship|push|transfer)(?:s|es|ed|ing|ted|ping)?\b(?:[^.\n]|\.(?!\s)){0,80}\b(https?:\/\/[\w[]\S*|(?:s3|gs|az|ftp|sftp|smb|webdav)s?:\/\/\S+|to\s+(?:the\s+|an?\s+|our\s+|their\s+)?(?:attacker|c2\b|command[- ]and[- ]control|remote (?:server|host|endpoint)|external (?:server|host|endpoint|url|site|service))|(?:attacker|c2)@[\w-]|@(?:[\w-]+\.){0,3}(?:attacker|evil|c2)\b)/i, label: 'send-to-external', severity: 'HIGH' },
 
   {
-    re: /\b(?:read|open|cat|load|import|source|inspect|include|copy|dump|print|show)\b(?:[^.\n]|\.(?!\s)){0,50}(?:~?\/?\.ssh\/(?:id_[a-z0-9]+|config)(?!\.pub)|~?\/?\.aws\/credentials|~?\/?\.kube\/config|~?\/?\.gnupg|\bid_(?:rsa|ed25519|dsa)\b(?!\.pub)|~?\/?\.npmrc|~?\/?\.netrc|\/etc\/shadow|(?:^|[\s'"`(])\.env(?:\.[\w-]+)?\b)/i,
+    re: /(?:\b(?:read|open|cat|load|import|inspect|include|copy|dump|print|show)\b|(?<![.\w$])\bsource(?=\s+[~./$"'`]|\s*=\s*["'`]?file:))(?:[^.\n]|\.(?!\s)){0,50}(?:~?\/?\.ssh\/(?:id_[a-z0-9]+|config)(?!\.pub)|~?\/?\.aws\/credentials|~?\/?\.kube\/config|~?\/?\.gnupg|\bid_(?:rsa|ed25519|dsa)\b(?!\.pub)|~?\/?\.npmrc|~?\/?\.netrc|\/etc\/shadow|(?:^|[\s'"`(])\.env(?:\.[\w-]+)?\b)/i,
     label: 'read-credential-path',
     severity: 'HIGH',
     descGuard: true,
   },
 ];
 
+const GLOBAL_CLONES = new WeakMap();
+
+function* matchesIn(re, line) {
+  let g = GLOBAL_CLONES.get(re);
+  if (!g) GLOBAL_CLONES.set(re, (g = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`)));
+  g.lastIndex = 0;
+  let m;
+  for (let n = 0; n < 8 && (m = g.exec(line)); n++) {
+    yield m;
+    if (!m[0]) g.lastIndex++;
+  }
+}
+
 function scanDirectives(units) {
   const sabotage = new Map(), exfil = new Map();
   for (const { text: line } of units) {
     for (const r of SABOTAGE_RULES) {
-      const m = r.re.exec(line);
-      if (!m) continue;
-      if (r.guarded && negatedAround(line, m.index, m[0].length)) continue;
-      if (r.guarded && isDescriptiveLine(line)) continue;
-      if (r.guarded && citationGoverns(line, m.index)) continue;
-      if (r.guarded && quotedMention(line, m.index)) continue;
-      if (r.context && !r.context.test(line)) continue;
-      if (!sabotage.has(r.label)) sabotage.set(r.label, line);
+      if (sabotage.has(r.label) || (r.context && !r.context.test(line))) continue;
+      for (const m of matchesIn(r.re, line)) {
+        if (r.guarded && negatedAround(line, m.index, m[0].length)) continue;
+        if (r.guarded && isDescriptiveLine(line)) continue;
+        if (r.guarded && citationGoverns(line, m.index)) continue;
+        if (r.guarded && quotedMention(line, m.index)) continue;
+        sabotage.set(r.label, line);
+        break;
+      }
     }
     for (const r of EXFIL_RULES) {
-      const m = r.re.exec(line);
-      if (!m) continue;
-
-      if (negatedAround(line, m.index, m[0].length)) continue;
-      if (r.descGuard && isDescriptiveLine(line)) continue;
-      if (r.descGuard && citationGoverns(line, m.index)) continue;
-      if (r.descGuard && (quotedMention(line, m.index) || describesAt(line, m.index))) continue;
-      if (r.descGuard && isRiskTableRow(line)) continue;
-      if (r.label === 'send-to-external' && LOCAL_URL_RE.test(line) && !/\b(attacker|c2|command[- ]and[- ]control|external|evil)\b/i.test(line)) continue;
-      if (r.label === 'send-to-external' && m.index != null && insideMarkdownLinkLabel(line, m.index)) continue;
-      if (r.label === 'send-to-external' && m.index != null) {
-        const around = line.slice(Math.max(0, m.index - 24), m.index + 24);
-        if (SEND_AS_NOUN_RE.test(around) || PASSIVE_SEND_RE.test(around)) continue;
-        if (urlIsMarkdownTarget(line, m[0]) && !EXFIL_OBJECT_RE.test(m[0])) continue;
+      if (exfil.has(r.label)) continue;
+      for (const m of matchesIn(r.re, line)) {
+        if (negatedAround(line, m.index, m[0].length)) continue;
+        if (r.descGuard && isDescriptiveLine(line)) continue;
+        if (r.descGuard && citationGoverns(line, m.index)) continue;
+        if (r.descGuard && (quotedMention(line, m.index) || describesAt(line, m.index))) continue;
+        if (r.descGuard && isRiskTableRow(line)) continue;
+        if (r.label === 'send-to-external' && LOCAL_URL_RE.test(line) && !/\b(attacker|c2|command[- ]and[- ]control|external|evil)\b/i.test(line)) continue;
+        if (r.label === 'send-to-external' && m.index != null && insideMarkdownLinkLabel(line, m.index)) continue;
+        if (r.label === 'send-to-external' && m.index != null) {
+          const around = line.slice(Math.max(0, m.index - 24), m.index + 24);
+          if (SEND_AS_NOUN_RE.test(around) || PASSIVE_SEND_RE.test(around)) continue;
+          if (urlIsMarkdownTarget(line, m[0]) && !EXFIL_OBJECT_RE.test(m[0])) continue;
+        }
+        exfil.set(r.label, r.severity);
+        break;
       }
-      const prev = exfil.get(r.label);
-      if (!prev || (prev === 'HIGH' && r.severity === 'CRITICAL')) exfil.set(r.label, r.severity);
     }
   }
   return { sabotage, exfil };
@@ -319,12 +333,24 @@ function reportIncidents(text, { isInstruction, units, flat }, push) {
   }
 }
 
+const NETWORK_WORD_RE = new RegExp(
+  `(?<![-\\w])(?:${NETWORK_VERBS.filter((w) => w !== 'email').map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![-\\w])`,
+  'i',
+);
+const EMAIL_VERB_RE =
+  /(?<![-\w])e-?mail\s+(?:it|them|this|that|these|those|the|a|an|all|every|any|my|your|our|their|me|us|him|her)\b|\bto\s+e-?mail\b/i;
+
+function reachesNetwork(text) {
+  const prose = text.replace(/`[^`\n]*`/g, ' ');
+  return NETWORK_WORD_RE.test(prose) || EMAIL_VERB_RE.test(prose);
+}
+
 function reportToxicFlow(text, { noun, units }, push) {
   if (!IMPERATIVE.test(text)) return;
   const line = units.filter((u) => !u.code).map((u) => u.text).find((candidate) => IMPERATIVE.test(candidate)
     && !NEGATION_GUARD.test(candidate)
     && hasWordFrom(candidate, SENSITIVE_READ)
-    && hasWordFrom(candidate, NETWORK_VERBS)
+    && reachesNetwork(candidate)
     && !isDescriptiveLine(candidate));
   if (!line) return;
   push(

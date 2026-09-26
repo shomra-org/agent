@@ -1,6 +1,7 @@
 import { gateMachine } from '../core/api-client.mjs';
 import { breakerReset, breakerTrip, guardTimeoutMs } from '../core/circuit-breaker.mjs';
 import { detectEnv } from '../gate/environment.mjs';
+import { keyedFetch } from '../core/keyed-fetch.mjs';
 
 const LISTING_REPORT_TIMEOUT_MS = 2000;
 
@@ -8,7 +9,7 @@ async function postJson(url, apiKey, body, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, {
+    return await keyedFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Shomra-Key': apiKey, Connection: 'close' },
       body: JSON.stringify(body),
