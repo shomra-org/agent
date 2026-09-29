@@ -38,6 +38,8 @@ export function citationGoverns(segment, offset) {
 }
 
 const ELLIPSIS_RE = /…|\.\.\./;
+const QUOTED_ELLIPSIS_RE = /(["'])[^"'\n]{0,200}?(?:…|\.\.\.)[^"'\n]{0,200}?\1/g;
+const TRAILING_ELLIPSIS_RE = /\s{0,4}(?:…|\.\.\.)[\s"'`)\]}]{0,8}$/;
 
 const ENUMERATION_RE = /[([][^)\]]*,[^)\]]*,[^)\]]*[)\]]|:\s*(?:[\w.-]+(?:\s+-\w+)?,\s*){2,}/;
 
@@ -76,7 +78,7 @@ export function isDocumentationLine(line, offset) {
 
   const win = windowAround(line, offset);
   if (REGEX_PATTERN_RE.test(win)) return true;
-  if (ELLIPSIS_RE.test(win)) return true;
+  if (ELLIPSIS_RE.test(win.replace(QUOTED_ELLIPSIS_RE, '$1$1').replace(TRAILING_ELLIPSIS_RE, ''))) return true;
   if (offset != null && insideCodeSpan(line, offset) && isDescriptiveLine(win)) return true;
   if (ENUMERATION_RE.test(win) && !IMPERATIVE.test(win)) return true;
   return isDescriptiveLine(win);

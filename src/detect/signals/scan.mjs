@@ -2,7 +2,7 @@ import { RISKY_CONFIG_MARKERS, riskyConfigHit } from './config-markers.mjs';
 import { detectCredentialHarvest } from './credential-harvest.mjs';
 import { egressHost } from './egress.mjs';
 import { detectExecutionHijack } from './execution-hijack.mjs';
-import { DESCRIBED_VERB_PHRASES, INJECTION_PHRASES, INJECTION_REGEXES, INVISIBLE_CHARS_RE, bulkDeleteIsRoutine, describedVerb, precededByNegation, describesRatherThanInstructs } from './injection.mjs';
+import { DESCRIBED_VERB_PHRASES, INJECTION_PHRASES, INJECTION_REGEXES, INVISIBLE_CHARS_RE, bulkDeleteIsRoutine, describedVerb, disguisedWords, precededByNegation, describesRatherThanInstructs } from './injection.mjs';
 import { lineAt, locate } from './lines.mjs';
 import { codeMask, deobfuscate } from './masking.mjs';
 import { PII_PATTERNS, RESERVED_IPV4, SECRET_PATTERNS, VERSION_CONTEXT, isPlaceholderSecret, luhnValid } from './secrets.mjs';
@@ -47,6 +47,8 @@ export function localScan(text, opts = {}) {
       findings.push({ label, severity: 'HIGH', category: 'injection', ...locate(t, re, mask) });
     }
     if (INVISIBLE_CHARS_RE.test(t)) findings.push({ label: 'Invisible / zero-width characters', severity: 'MEDIUM', category: 'injection', ...locate(t, INVISIBLE_CHARS_RE, mask) });
+    const disguised = disguisedWords(t);
+    if (disguised.length >= 2) findings.push({ label: 'Words disguised with lookalike letters from another alphabet', severity: 'MEDIUM', category: 'injection', ...locate(t, disguised[0], mask) });
   }
   if (cats.includes('secret')) {
     for (const { name, re } of SECRET_PATTERNS) { const m = t.match(re); if (m && (/private key/i.test(name) || !isPlaceholderSecret(m[0]))) findings.push({ label: `Live credential: ${name}`, severity: 'CRITICAL', category: 'secret', ...locate(t, re, mask) }); }

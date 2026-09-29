@@ -28,6 +28,35 @@ export function targetsExternalNetwork(line) {
   });
 }
 
+const HARMLESS_SUBST_RE = /^\s{0,4}(?:date|uuidgen|seq|expr|basename|dirname|printf\s{1,4}["'%]|openssl\s{1,4}rand|shuf\s{1,4}-i|mktemp)\b/;
+
+function networkSubstitutionIsHarmless(line) {
+  const at = line.search(/\b(?:curl|wget|invoke-restmethod|invoke-webrequest|irm|iwr)\b/i);
+  const rest = at < 0 ? line : line.slice(at);
+  if (/<\(|`/.test(rest)) return false;
+  const subs = [...rest.matchAll(/\$\((?!\()/g)];
+  if (!subs.length) return /\$\(\(/.test(rest);
+  return subs.every((m) => HARMLESS_SUBST_RE.test(rest.slice((m.index ?? 0) + 2, (m.index ?? 0) + 60)));
+}
+
+const PROFILE_FILE_RE = /(?:>>?|\btee\b(?:\s{1,4}-a)?)\s{0,4}["']?(?:~\/|\$HOME\/|\$\{HOME\}\/)?\.(?:bashrc|zshrc|bash_profile|profile|zprofile|zshenv)\b/i;
+const HARMLESS_PROFILE_LINE_RE = /^\s{0,8}(?:echo|printf)\s{1,4}(?:-e\s{1,4})?["']\s{0,4}(?:export\s{1,4}[A-Za-z_]\w{0,63}=(?:"(?:[^"$`\\]|\$\{?(?:HOME|PATH|PWD|USER|GOPATH|CARGO_HOME|PYENV_ROOT|NVM_DIR|BUN_INSTALL|PNPM_HOME)\}?){0,200}"|'[^']{0,200}'|[^\s"'$`;|&]{0,200})\s{0,4}["']|autoload\s{1,4}-U\s{1,4}compinit|compinit|source\s{1,4}<\(\s{0,4}[\w.-]{1,40}\s{1,4}completion\b|eval\s{1,4}"\$\(\s{0,4}[\w.-]{1,40}\s{1,4}(?:init|shellenv|hook|shell-init|activate)\b)|^\s{0,8}[\w.-]{1,40}\s{1,4}(?:shell-init|init\s{1,4}(?:bash|zsh|fish)|completion\s{1,4}(?:bash|zsh|fish)|shellenv)\b/i;
+const RISKY_PROFILE_PAYLOAD_RE = /\b(?:LD_PRELOAD|DYLD_\w{1,40}|PROMPT_COMMAND|BASH_ENV|NODE_OPTIONS|PYTHONSTARTUP|PERL5OPT|RUBYOPT)\b|\b\w{0,40}(?:BASE_URL|API_BASE|API_URL|ENDPOINT|PROXY)\b|https?:\/\/|\balias\b|curl|wget|\bnc\b|\/tmp\/|\/dev\/shm|base64|authorized_keys|id_rsa|crontab/i;
+
+function harmlessProfileAppend(line) {
+  return PROFILE_FILE_RE.test(line) && HARMLESS_PROFILE_LINE_RE.test(line) && !RISKY_PROFILE_PAYLOAD_RE.test(line);
+}
+
+const DYNAMIC_EVAL_ARG_RE = /\$\(|\$\{?[A-Za-z_]|`|\bf["']|\b(?:decode|b64decode|base64|atob|fromCharCode|unescape|requests?\.|urlopen|fetch|curl|wget|input|argv|stdin|compile|read|open|chr|join|reverse|replace|getattr|globals|__import__|zlib|marshal|codecs|unhexlify|fromhex)\b|\\(?:x[0-9a-f]{2}|u[0-9a-f]{4}|[0-7]{3})|\[::-1\]|\.text\b|["'`]\s{0,4}\+|\+\s{0,4}["'`A-Za-z_]|^\(\s{0,4}[A-Za-z_][\w.]{0,60}\s{0,4}[),]/i;
+
+function evalArgumentIsDynamic(line) {
+  const m = /(?<![-.\w$>:`"'\/])(?:eval|exec)\s{0,4}(?=[("`'])/i.exec(line);
+  return !m || DYNAMIC_EVAL_ARG_RE.test(line.slice(m.index + m[0].length));
+}
+
+const TEMPISH_RM_TARGET_RE = /^\$\{?(?:tmp|temp|tmpdir|tmp_?dir|temp_?dir|tmp_?file|tmp_?zip|scratch|work_?dir|build_?dir|cache_?dir|staging_?dir|out_?dir|dist_?dir)\w{0,40}\}?(?:\/[\w.*-]{0,80}){0,6}$/i;
+const HOME_APP_SUBDIR_RE = /^(?:~|\$HOME|\$\{HOME\})\/\.(?:cache\/|(?!(?:ssh|aws|gnupg|kube|docker|password-store|mozilla|thunderbird|electrum|bitcoin|ethereum|config\/(?:google-chrome|chromium|BraveSoftware|solana)|local\/share\/keyrings)(?:\/|$))[\w.-]{1,60}\/[\w.-])/;
+
 const RM_RF_RE = /(?<!\b(?:docker|podman|nerdctl|kubectl|helm|conda|brew)\s{1,4})\brm\b(?=[^\n;|&]{0,200}?\s(?:-[a-zA-Z]*r[a-zA-Z]*|--recursive)(?![\w-]))(?=[^\n;|&]{0,200}?\s(?:-[a-zA-Z]*f[a-zA-Z]*|--force)(?![\w-]))/i;
 
 export function rmTargetClass(line) {
@@ -39,14 +68,14 @@ export function rmTargetClass(line) {
     .split(/&&|\|\||[;|>&]/)[0]
     .split(/\s+/)
     .filter((t) => t && t !== '--' && !t.startsWith('-'))
-    .map((t) => t.replace(/^["']|["']$/g, ''));
+    .map((t) => t.replace(/^["']+|["']+$/g, ''));
 
   if (!targets.length) {
     const after = m[2] ?? '';
     return /^\s*(?:[,)\]}?!"'`.]|$)/.test(after) ? 'local' : 'catastrophic';
   }
 
-  if (targets.some((t) => CATASTROPHIC_RM_TARGET_RE.test(t) && !BENIGN_ABSOLUTE_RM_RE.test(t))) return 'catastrophic';
+  if (targets.some((t) => CATASTROPHIC_RM_TARGET_RE.test(t) && !BENIGN_ABSOLUTE_RM_RE.test(t) && !TEMPISH_RM_TARGET_RE.test(t) && !HOME_APP_SUBDIR_RE.test(t))) return 'catastrophic';
   return targets.every((t) => EPHEMERAL_RM_TARGET_RE.test(t) || BENIGN_ABSOLUTE_RM_RE.test(t)) ? 'ephemeral' : 'local';
 }
 
@@ -85,6 +114,8 @@ const socksOnPublicAddress = (line) =>
     return !LOOPBACK_OR_PRIVATE_HOST_RE.test(ip) && !/^(?:169\.254|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7]))\./.test(ip);
   });
 
+export const COIN_MINER_RE = /\bstratum2?\+(?:tcp|ssl|tls):\/\/|\b(?:[\w-]{1,30}\.)?(?:supportxmr|minexmr|xmrpool|moneroocean|hashvault|c3pool|nanopool|2miners|f2pool|herominers|minergate|nicehash|unmineable|monerohash|xmrfast|dwarfpool|ethermine|antpool|slushpool)\.(?:com|org|net|pro|stream|eu|io|me)\b|--donate-level\b|--cpu-max-threads-hint\b|["']donate-level["']\s{0,3}:|["']nicehash["']\s{0,3}:\s{0,3}(?:true|false)\b|(?<![\w])[48][0-9AB][1-9A-HJ-NP-Za-km-z]{93}(?![\w])|CoinHive\.(?:Anonymous|User|Token)\b|\bcoin-?hive(?:\.min)?\.js\b|coin-hive\.com\/lib|crypto-loot\.com\/lib|\bwebminepool\.com\b|\bcoinimp\.com\/scripts|(?:\.\/|\/(?:tmp|dev\/shm|var\/tmp)\/[\w.\/-]{0,60}?)(?:xmrig(?:-proxy)?|xmr-stak(?:-rx|-cpu)?|cpuminer(?:-opt|-multi)?|minerd|ccminer|cgminer|bfgminer|ethminer|lolminer|nbminer|phoenixminer|srbminer(?:-multi)?|teamredminer|nanominer|kawpowminer|nheqminer)(?![\w-])|(?<![\w.-])(?:xmrig(?:-proxy)?|xmr-stak(?:-rx|-cpu)?|cpuminer(?:-opt|-multi)?|minerd|ccminer|cgminer|bfgminer|ethminer|lolminer|nbminer|phoenixminer|srbminer(?:-multi)?|teamredminer|nanominer|kawpowminer|nheqminer)(?![\w-])(?=[^\n]{0,120}(?:['\"\s]-o\b|--url\b|--user\b|['\"\s]-u\b|--config\b|--threads\b|--background\b|['\"\s]-B\b|\.tar\.gz|\.zip\b|releases\/download|\/tmp\/|\bnohup\b|\bchmod\b))/i;
+
 export const DANGEROUS_SHELL = [
   { name: 'Pipe-to-shell installer (curl … | sh)', re: /\b(curl|wget)\b[^\n|]{0,200}\|\s*(sudo\s+)?(ba|z|k)?sh\b/i, severity: 'CRITICAL' },
   { name: 'PowerShell download-and-run (iwr/curl … | iex)', re: /\b(iwr|curl|wget|invoke-webrequest|invoke-restmethod|irm)\b[^\n|]{0,200}\|\s*(iex|invoke-expression)\b/i, severity: 'CRITICAL' },
@@ -96,9 +127,11 @@ export const DANGEROUS_SHELL = [
     name: 'Command output piped into a network call',
     re: /\b(curl|wget|invoke-restmethod|invoke-webrequest|irm|iwr)\b[^\n]{0,220}(\$\(|<\(|`[^`\n]*(?:\b(?:cat|ls|whoami|id|env|printenv|uname|hostname|pwd|base64|echo|head|tail|find|grep|awk|sed|curl|wget|nc|python\d?|node|perl|ruby|php|git|aws|kubectl|openssl)\b|\/(?:etc|var|tmp|home|root|usr|proc)\/|\$\w|\s-{1,2}\w)[^`\n]*`)/i,
     severity: 'HIGH',
+    refine: (l) => !networkSubstitutionIsHarmless(l),
   },
   { name: 'Fetches from a raw IP address', re: /\b(curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n]{0,220}https?:\/\/\d{1,3}(\.\d{1,3}){3}/i, severity: 'HIGH', refine: targetsExternalNetwork },
-  { name: 'Writes to shell profile / SSH keys / crontab', re: /(>>?\s*(?:~\/|\$HOME\/|\/etc\/)?\.(bashrc|zshrc|bash_profile|profile)\b|>>?\s*\/etc\/profile\b|(tee|echo|cat|printf)\b[^\n]{0,80}(\.bashrc|\.zshrc|\.bash_profile|\.profile|authorized_keys)|>>?\s*[^\n]{0,40}authorized_keys|crontab\s+(-|[^\n]{0,40}<)|id_rsa\b[^\n]{0,20}(>|cp|scp|curl|cat))/i, severity: 'HIGH' },
+  { name: 'Writes to shell profile / SSH keys / crontab', re: /(>>?\s*(?:~\/|\$HOME\/|\/etc\/)?\.(bashrc|zshrc|bash_profile|profile)\b|>>?\s*\/etc\/profile\b|(tee|echo|cat|printf)\b[^\n]{0,80}(\.bashrc|\.zshrc|\.bash_profile|\.profile|authorized_keys)|>>?\s*[^\n]{0,40}authorized_keys|crontab\s+(-(?![lerv]\b)|[^\n]{0,40}<)|id_rsa\b[^\n]{0,20}(>|cp|scp|curl|cat))/i, severity: 'HIGH', refine: (l) => !harmlessProfileAppend(l) },
+  { name: 'Adds a setting to a shell profile', re: PROFILE_FILE_RE, severity: 'LOW', refine: harmlessProfileAppend },
 
   {
     name: 'World-writable permissions on the filesystem root (chmod -R 777 /)',
@@ -113,7 +146,7 @@ export const DANGEROUS_SHELL = [
   { name: 'Recursive force delete of a protected path (rm -rf)', re: RM_RF_RE, severity: 'HIGH', refine: (l) => rmTargetClass(l) === 'catastrophic' },
   { name: 'Recursive force delete (rm -rf)', re: RM_RF_RE, severity: 'MEDIUM', refine: (l) => rmTargetClass(l) === 'local' },
 
-  { name: 'Inline eval / exec of a string', re: /(?<![-.\w$>:`"'\/])(eval|exec)\s*(?!\((?:[^()\n]{0,160}\)\s*\{|\s*_?[A-Za-z$][\w$]{0,64}\s*\??\s*:))[("`']/i, severity: 'HIGH' },
+  { name: 'Inline eval / exec of a string', re: /(?<![-.\w$>:`"'\/])(eval|exec)\s*(?!\((?:[^()\n]{0,160}\)\s*\{|\s*_?[A-Za-z$][\w$]{0,64}\s*\??\s*:))[("`']/i, severity: 'HIGH', refine: evalArgumentIsDynamic },
   { name: 'Pipes an env dump to the network', re: /(?<![.\w$-])(env|printenv|set)\b(?![.:=\w])(?!\s*[:=])[^\n|]{0,80}(?<!\|)\|(?!\|)[^\n]{0,80}(curl\b|wget\b|nc\b|https?\b)/i, severity: 'HIGH' },
   { name: 'Disables TLS / cert verification', re: /(NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*0|GIT_SSL_NO_VERIFY|--no-check-certificate|--insecure\b|verify\s*=\s*False)/i, severity: 'MEDIUM' },
   { name: 'python -c one-liner', re: /python[0-9.]*\s+-c\b/i, severity: 'MEDIUM' },
@@ -163,7 +196,10 @@ export const DANGEROUS_SHELL = [
   { name: 'Grants an account administrator group membership', re: /\b(?:usermod|gpasswd)\b[^\n]{0,60}-a?[GM]\s*\S{0,20}\b(?:sudo|wheel|admin|root|docker|adm)\b|\b(?:useradd|adduser)\b[^\n]{0,80}-G\s*\S{0,30}\b(?:sudo|wheel|admin|root|docker)\b|\bnet\s+localgroup\b[^\n]{0,60}\badministrators?\b[^\n]{0,40}\/add\b|\bdscl\b[^\n]{0,80}-append\b[^\n]{0,60}\badmin\b/i, severity: 'MEDIUM' },
   { name: 'Preloads a shared library into every process (LD_PRELOAD)', re: /\b(?:LD_PRELOAD|LD_AUDIT|DYLD_INSERT_LIBRARIES)\s*=\s*\S|>>?\s*\/etc\/ld\.so\.preload\b/i, severity: 'HIGH' },
   { name: 'Installs a scheduled or boot-time persistence unit', re: /\bsystemd-run\b[^\n]{0,80}--on-(?:boot|calendar|active|unit)|>>?\s*\/etc\/(?:systemd\/system|cron\.(?:d|daily|hourly)|init\.d)\/\S|\bschtasks\b[^\n]{0,80}\/create\b|\blaunchctl\s+(?:load|bootstrap)\b|\b(?:echo|printf)\b[^\n]{0,120}\|\s*at\s+(?:now|\+|\d)/i, severity: 'MEDIUM' },
-  { name: 'Opens a reverse tunnel to a remote host', re: /\bssh\b[^\n]{0,80}\s-\w*R\s*\d{1,5}:[^\n\s]{1,60}|\b(?:ngrok|cloudflared|localtunnel|frpc)\b[^\n]{0,60}\b(?:tcp|http|tunnel)\b/i, severity: 'HIGH' },
+  { name: 'Opens a reverse tunnel to a remote host', re: /\bssh\b[^\n]{0,80}\s-\w*R\s*\d{1,5}:[^\n\s]{1,60}|\b(?:ngrok|localtunnel|frpc|bore)\b[^\n]{0,60}\btcp\b|\b(?:ngrok|cloudflared|localtunnel|frpc)\b[^\n]{0,80}(?::|\s)(?:22|3389|5900|2375|2376|5432|3306|6379|27017|9200|11211)\b/i, severity: 'HIGH' },
+  { name: 'Exposes a local web server through a public tunnel', re: /\b(?:ngrok|cloudflared|localtunnel|frpc)\b[^\n]{0,60}\b(?:http|tunnel)\b/i, severity: 'MEDIUM' },
+  { name: 'Runs a payload read from a DNS TXT record', re: /\b(?:dig|nslookup|host|drill|kdig|delv)\b[^\n|]{0,120}\btxt\b[^\n]{0,200}\|\s{0,3}(?:sudo\s{1,3})?(?:(?:ba|z|k|da)?sh|python[\d.]{0,4}|perl|ruby|node|php)\b(?![^\n|]{0,40}\.(?:py|pl|rb|js|php)\b)|\b(?:eval|source)\s{1,3}[\"']?\$\(\s{0,3}(?:dig|nslookup|host|drill|kdig|delv)\b[^)\n]{0,160}\btxt\b|\b(?:ba|z|k|da)?sh\s{1,3}(?:-c\s{1,3}[\"']?\$\(|<\(\s{0,3})\s{0,3}(?:dig|nslookup|host|drill|kdig|delv)\b[^)\n]{0,160}\btxt\b|\b(?:iex|invoke-expression)\b[^\n]{0,160}\bresolve-dnsname\b[^\n]{0,120}-type\s{1,3}txt\b|\bresolve-dnsname\b[^\n]{0,120}-type\s{1,3}txt\b[^\n]{0,160}\|\s{0,3}(?:iex|invoke-expression)\b|\b(?:exec|eval)\s{0,3}\([^\n]{0,200}\b(?:dns\.resolver\.(?:resolve|query)|resolveTxt)\b[^\n]{0,160}\\?[\"']txt\\?[\"']/i, severity: 'CRITICAL' },
+  { name: 'Runs a cryptocurrency miner or points one at a mining pool', re: COIN_MINER_RE, severity: 'HIGH' },
   { name: 'Encodes command output into DNS lookups (exfiltration channel)', re: /(?:^|[\n;&|(]\s*)(?:dig|nslookup|drill|host(?=\s+(?:[-$`"']|[\w-]+\.[\w-])))\s+(?![-+*/%|&^]?=)[^\n]{0,120}(?:\$\(|`|\$\{)[^\n]{0,80}\.[a-z]{2,}|(?:^|[\n;&|(]\s*)(?:ping6?|traceroute6?|tracepath|getent\s+a?hosts|resolvectl\s+query)\s+[^\n]{0,60}(?:\$\(|`)\s*(?:whoami|id|cat|env|printenv|base(?:64|32)|xxd|uname|echo\s+\$)\b[^\n]{0,80}\.[\w-]+\.[a-z]{2,}|\b(?:base64|base32|xxd|hexdump|od\s|openssl\s+enc)\b[^\n]{0,140}\b(?:dig|nslookup|drill|host)\s+[^\n]{0,60}\$\w+\.[\w.-]{2,}\.[a-z]{2,}/i, severity: 'HIGH' },
   { name: 'Calls an out-of-band interaction host (blind-injection callback)', re: /(?:^|[\n;&|(`"']\s*|\$\(\s*)(?:curl|wget|nslookup|dig|host|drill|ping6?|nc|ncat|telnet|Invoke-WebRequest|iwr|irm|Resolve-DnsName)\b[^\n]{0,160}?(?<![\w-])(?:oast\.(?:pro|live|site|online|fun|me)|interact\.sh|interactsh\.com|oastify\.com|burpcollaborator\.net|dnslog\.cn|ceye\.io|canarytokens\.com|requestrepo\.com)\b/i, severity: 'MEDIUM' },
   { name: 'Copies credentials or home directories off the machine over ssh', re: new RegExp(String.raw`\b(?:scp|rsync)\b(?=[^\n]{0,200}\s\S{0,40}@[\w.-]+:)(?=[^\n]{0,200}(?:${SENSITIVE_PATH}))` + String.raw`|\btar\b(?=[^\n]{0,160}\|\s*ssh\b)(?=[^\n]{0,160}(?:${SENSITIVE_PATH}))`, 'i'), severity: 'HIGH' },

@@ -1,3 +1,4 @@
+import { coinMiner, startupPersistence } from './rules-persistence.mjs';
 export const PY_RULES = [
   {
     id: 'python.dangerous_sinks',
@@ -271,6 +272,8 @@ export const PY_RULES = [
     remediation: 'Remove the literal and load the key from an environment variable / secret manager at runtime. Rotate the exposed key immediately.',
     cwe: 'CWE-798',
   },
+  ...startupPersistence('python'),
+  coinMiner('python'),
   {
     id: 'python.env_exfil',
     title: 'Reads environment / secrets',
