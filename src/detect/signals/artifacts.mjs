@@ -21,7 +21,7 @@ function scalarValue(val) {
 }
 
 function foldScalar(style, parts) {
-  const lines = parts.map((l) => l.replace(/\s+$/, ''));
+  const lines = parts.map((l) => l.trimEnd());
   while (lines.length && !lines[lines.length - 1]) lines.pop();
   if (style === 'plain') return lines.map((l) => l.trim()).filter(Boolean).join(' ');
   const pad = Math.min(...lines.filter(Boolean).map((l) => l.length - l.trimStart().length));
