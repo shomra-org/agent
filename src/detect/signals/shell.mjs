@@ -30,10 +30,20 @@ export function targetsExternalNetwork(line) {
 
 const HARMLESS_SUBST_RE = /^\s{0,4}(?:date|uuidgen|seq|expr|basename|dirname|printf\s{1,4}["'%]|openssl\s{1,4}rand|shuf\s{1,4}-i|mktemp)\b/;
 
+const SHELL_GAP_RE = /["'=|;&<>]|\s-{1,2}\w|:\/\//;
+const PROSE_GAP_RE = /[A-Za-z]{2,40},?[ \t]{1,8}[A-Za-z]{2,40}[ \t]/;
+
 function networkSubstitutionIsHarmless(line) {
   const at = line.search(/\b(?:curl|wget|invoke-restmethod|invoke-webrequest|irm|iwr)\b/i);
   const rest = at < 0 ? line : line.slice(at);
-  if (/<\(|`/.test(rest)) return false;
+  if (/<\(/.test(rest)) return false;
+  const tick = rest.indexOf('`');
+  if (tick !== -1) {
+    if (/\$\(/.test(rest)) return false;
+    const space = rest.search(/\s/);
+    const gap = space !== -1 && space < tick ? rest.slice(space, tick) : '';
+    return !!gap && !SHELL_GAP_RE.test(gap) && PROSE_GAP_RE.test(`${gap} `);
+  }
   const subs = [...rest.matchAll(/\$\((?!\()/g)];
   if (!subs.length) return /\$\(\(/.test(rest);
   return subs.every((m) => HARMLESS_SUBST_RE.test(rest.slice((m.index ?? 0) + 2, (m.index ?? 0) + 60)));
