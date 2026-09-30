@@ -14,7 +14,25 @@ const MUTATING_LEAVES = new Set(['move_file', 'delete_file', 'remove_file', 'ren
 const HOOK_FILE_RE = /(?:^|[\\/])(?:\.claude[\\/]settings(?:\.local)?\.json|\.codex[\\/]hooks\.json|\.gemini[\\/]settings\.json|\.cursor[\\/]hooks\.json|\.codeium[\\/]windsurf[\\/]hooks\.json|\.windsurf[\\/]hooks\.json|\.copilot[\\/]hooks[\\/][^\\/]+\.json|\.github[\\/]hooks[\\/][^\\/]+\.json|\.cline[\\/]hooks\.json)$/i;
 const IGNORE_FILE_RE = /(?:^|[\\/])\.shomraignore$/i;
 const DISABLE_HOOKS_RE = /["']?disableAllHooks["']?\s*:\s*true\b/i;
-const GUARD_ENV_RE = /["']?SHOMRA_(?:GUARD_LOCAL|GUARD_IGNORE|MODEL_GUARD|MCP_SCREEN|URL|GUARD_TIMEOUT_MS|GUARD_BREAKER_MS)["']?\s*:/i;
+const GUARD_ENV_RE = /["']?SHOMRA_(?:GUARD_LOCAL|GUARD_IGNORE|MODEL_GUARD|MCP_SCREEN|URL|GUARD_TIMEOUT_MS|GUARD_BREAKER_MS)["']?\s*:|\bSHOMRA_(?:GUARD_LOCAL|GUARD_IGNORE|MODEL_GUARD|MCP_SCREEN|URL|GUARD_TIMEOUT_MS|GUARD_BREAKER_MS)=/gi;
+const HOOK_COMMAND_RE = /"command"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+const CHAINED_SHELL_RE = /[;&|`<>()]|\$\(/;
+
+function guardEnvCount(text) {
+  return String(text).match(GUARD_ENV_RE)?.length ?? 0;
+}
+
+function chainedGuardCount(text) {
+  let n = 0;
+  for (const m of String(text).matchAll(HOOK_COMMAND_RE)) {
+    const cmd = m[1];
+    if (!SHOMRA_ANY_HOOK_RE.test(cmd)) continue;
+    const lead = /^\s*((?:[A-Za-z_]\w*=\S*\s+)*)/.exec(cmd)?.[1] ?? '';
+    const foreignEnv = [...lead.matchAll(/([A-Za-z_]\w*)=/g)].some((a) => !/^SHOMRA_/i.test(a[1]));
+    if (CHAINED_SHELL_RE.test(cmd) || foreignEnv) n++;
+  }
+  return n;
+}
 
 function mutatesPaths(tool) {
   const name = String(tool ?? '');
@@ -104,7 +122,8 @@ export function guardHookTamper(tool, input = {}, { cwd = process.cwd(), home = 
     if (next === null) note(p, 'rewrites');
     else if (!SHOMRA_ANY_HOOK_RE.test(next)) note(p, 'removes-hook');
     else if (DISABLE_HOOKS_RE.test(next) && !DISABLE_HOOKS_RE.test(current)) note(p, 'disables-hooks');
-    else if (GUARD_ENV_RE.test(next) && !GUARD_ENV_RE.test(current)) note(p, 'guard-env');
+    else if (guardEnvCount(next) > guardEnvCount(current)) note(p, 'guard-env');
+    else if (chainedGuardCount(next) > chainedGuardCount(current)) note(p, 'chains-hook');
   }
   return hits.length ? { paths: hits.map((h) => h.path).slice(0, 5), why: hits[0].why } : null;
 }
@@ -113,6 +132,7 @@ const HOOK_TAMPER_WHY = {
   'removes-hook': 'removes the Shomra guard hook from',
   'disables-hooks': 'sets disableAllHooks, which stops every hook including the Shomra guard, in',
   'guard-env': 'sets a SHOMRA_ variable that switches off or re-points the guard in',
+  'chains-hook': 'wraps the Shomra guard hook in other commands, which then run on every screened call, in',
   rewrites: 'rewrites, with no way to check the Shomra guard hook survives,',
   'ignore-list': 'edits the list of paths the Shomra guard skips,',
 };
