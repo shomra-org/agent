@@ -28,7 +28,7 @@ export function targetsExternalNetwork(line) {
   });
 }
 
-const HARMLESS_SUBST_RE = /^\s{0,4}(?:date|uuidgen|seq|expr|basename|dirname|printf\s{1,4}["'%]|openssl\s{1,4}rand|shuf\s{1,4}-i|mktemp)\b/;
+const HARMLESS_SUBST_RE = /^\s{0,4}(?:(?:date|uuidgen|seq|expr|basename|dirname|printf\s{1,4}["'%]|openssl\s{1,4}rand|shuf\s{1,4}-i|mktemp)\b|echo\s{1,4}"?\$\{?[A-Za-z_]\w{0,63}\}?"?\s{0,4}\|\s{0,4}(?:jq\s{1,4}(?:-[A-Za-z]{1,4}\s{1,4}){0,3}["']?@uri|sed\s{1,4}'s\/ \/\+\/g'|tr\s{1,4}' ' '\+'))/;
 
 function pythonOneLinerIsImportCheck(line) {
   const m = /python[0-9.]{0,8}\s{1,8}-c\s{1,8}(["'])([^"'\n]{1,400})\1/i.exec(line);
@@ -42,13 +42,20 @@ function pythonOneLinerIsImportCheck(line) {
 const SHELL_GAP_RE = /["'=|;&<>]|\s-{1,2}\w|:\/\//;
 const PROSE_GAP_RE = /[A-Za-z]{2,40},?[ \t]{1,8}[A-Za-z]{2,40}[ \t]/;
 
+const NET_TOOL_RE = /\b(?:curl|wget|invoke-restmethod|invoke-webrequest|irm|iwr)\b/i;
+
 function networkSubstitutionIsHarmless(line) {
-  const at = line.search(/\b(?:curl|wget|invoke-restmethod|invoke-webrequest|irm|iwr)\b/i);
+  const tool = NET_TOOL_RE.exec(line);
+  const at = tool ? tool.index : -1;
   const rest = at < 0 ? line : line.slice(at);
   if (/<\(/.test(rest)) return false;
   const tick = rest.indexOf('`');
   if (tick !== -1) {
     if (/\$\(/.test(rest)) return false;
+    if (tool && at > 0 && line[at - 1] === '`' && tick === tool[0].length) {
+      const after = line.slice(at + tick + 1);
+      return !NET_TOOL_RE.test(after) || networkSubstitutionIsHarmless(after);
+    }
     const space = rest.search(/\s/);
     const gap = space !== -1 && space < tick ? rest.slice(space, tick) : '';
     return !!gap && !SHELL_GAP_RE.test(gap) && PROSE_GAP_RE.test(`${gap} `);
