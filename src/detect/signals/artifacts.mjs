@@ -14,12 +14,36 @@ export function toToolList(v) {
   return String(v).replace(/^\[|\]$/g, '').split(/[,\n]+/).map((t) => t.replace(/^["']|["']$/g, '').trim()).filter(Boolean);
 }
 
+const BLOCK_SCALAR_RE = /^[|>](?:[+-]?[1-9]?|[1-9][+-])$/;
+
+function scalarValue(val) {
+  return val.startsWith('[') ? toToolList(val) : val.replace(/^["']|["']$/g, '');
+}
+
+function foldScalar(style, parts) {
+  const lines = parts.map((l) => l.replace(/\s+$/, ''));
+  while (lines.length && !lines[lines.length - 1]) lines.pop();
+  if (style === 'plain') return lines.map((l) => l.trim()).filter(Boolean).join(' ');
+  const pad = Math.min(...lines.filter(Boolean).map((l) => l.length - l.trimStart().length));
+  const body = lines.map((l) => l.slice(Number.isFinite(pad) ? pad : 0)).join('\n');
+  return style === '>' ? body.replace(/([^\n])\n(?=[^\n])/g, '$1 ') : body;
+}
+
 export function frontmatter(text) {
-  const m = /^﻿?---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text || '');
+  const m = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text || '');
   if (!m) return {};
   const data = {};
   let key = null;
+  let scalar = null;
+  const flush = () => {
+    if (scalar && (scalar.style !== 'plain' || scalar.parts.length > 1)) {
+      data[scalar.key] = scalar.style === 'plain' ? scalarValue(foldScalar('plain', scalar.parts)) : foldScalar(scalar.style[0], scalar.parts);
+    }
+    scalar = null;
+  };
   for (const raw of m[1].split(/\r?\n/)) {
+    if (scalar && (/^\s/.test(raw) || !raw.trim())) { scalar.parts.push(raw); continue; }
+    flush();
     if (!raw.trim() || raw.trim().startsWith('#')) continue;
     const li = /^\s*-\s+(.*)$/.exec(raw);
     if (li && key) { (Array.isArray(data[key]) ? data[key] : (data[key] = [])).push(li[1].trim().replace(/^["']|["']$/g, '')); continue; }
@@ -27,8 +51,11 @@ export function frontmatter(text) {
     if (!kv) continue;
     key = kv[1];
     const val = kv[2].trim();
-    data[key] = val === '' ? (data[key] ?? null) : val.startsWith('[') ? toToolList(val) : val.replace(/^["']|["']$/g, '');
+    if (val === '') data[key] = data[key] ?? null;
+    else if (BLOCK_SCALAR_RE.test(val)) { data[key] = ''; scalar = { key, style: val, parts: [] }; }
+    else { data[key] = scalarValue(val); scalar = { key, style: 'plain', parts: [val] }; }
   }
+  flush();
   return data;
 }
 
