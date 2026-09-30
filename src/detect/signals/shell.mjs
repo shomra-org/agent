@@ -52,8 +52,8 @@ function networkSubstitutionIsHarmless(line) {
   const tick = rest.indexOf('`');
   if (tick !== -1) {
     if (/\$\(/.test(rest)) return false;
-    if (tool && at > 0 && line[at - 1] === '`' && tick === tool[0].length) {
-      const after = line.slice(at + tick + 1);
+    if (tool && at > 0 && line[at - 1] === '`') {
+      const after = rest.slice(tick + 1);
       return !NET_TOOL_RE.test(after) || networkSubstitutionIsHarmless(after);
     }
     const space = rest.search(/\s/);
