@@ -30,6 +30,15 @@ export function targetsExternalNetwork(line) {
 
 const HARMLESS_SUBST_RE = /^\s{0,4}(?:date|uuidgen|seq|expr|basename|dirname|printf\s{1,4}["'%]|openssl\s{1,4}rand|shuf\s{1,4}-i|mktemp)\b/;
 
+function pythonOneLinerIsImportCheck(line) {
+  const m = /python[0-9.]{0,8}\s{1,8}-c\s{1,8}(["'])([^"'\n]{1,400})\1/i.exec(line);
+  if (!m) return false;
+  return m[2].split(';').map((s) => s.trim()).filter(Boolean).every((stmt) =>
+    /^import [\w.]{1,80}(?:\s{0,4},\s{0,4}[\w.]{1,80}){0,8}$/.test(stmt) ||
+    /^from [\w.]{1,80} import [\w., ]{1,200}$/.test(stmt) ||
+    /^print\s{0,4}\(\s{0,4}[\w.]{1,80}(?:\(\s{0,4}\))?\s{0,4}\)$/.test(stmt));
+}
+
 const SHELL_GAP_RE = /["'=|;&<>]|\s-{1,2}\w|:\/\//;
 const PROSE_GAP_RE = /[A-Za-z]{2,40},?[ \t]{1,8}[A-Za-z]{2,40}[ \t]/;
 
@@ -159,7 +168,7 @@ export const DANGEROUS_SHELL = [
   { name: 'Inline eval / exec of a string', re: /(?<![-.\w$>:`"'\/])(eval|exec)\s*(?!\((?:[^()\n]{0,160}\)\s*\{|\s*_?[A-Za-z$][\w$]{0,64}\s*\??\s*:))[("`']/i, severity: 'HIGH', refine: evalArgumentIsDynamic },
   { name: 'Pipes an env dump to the network', re: /(?<![.\w$-])(env|printenv|set)\b(?![.:=\w])(?!\s*[:=])[^\n|]{0,80}(?<!\|)\|(?!\|)[^\n]{0,80}(curl\b|wget\b|nc\b|https?\b)/i, severity: 'HIGH' },
   { name: 'Disables TLS / cert verification', re: /(NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*0|GIT_SSL_NO_VERIFY|--no-check-certificate|--insecure\b|verify\s*=\s*False)/i, severity: 'MEDIUM' },
-  { name: 'python -c one-liner', re: /python[0-9.]*\s+-c\b/i, severity: 'MEDIUM' },
+  { name: 'python -c one-liner', re: /python[0-9.]*\s+-c\b/i, severity: 'MEDIUM', refine: (l) => !pythonOneLinerIsImportCheck(l) },
   { name: 'node -e one-liner', re: /\bnode\s+-e\b/i, severity: 'MEDIUM' },
   { name: 'Re-evaluates a variable as a prompt string (${var@P}), running any command hidden in it', re: /\$\{[#!]?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]{0,40}\])?@[PE]\}/, severity: 'HIGH' },
   { name: 'Writes a Python autoload file that runs on every interpreter start (.pth / sitecustomize / usercustomize)', re: /(?:>>?|\btee\b(?:\s+-a)?|\b(?:cp|mv|install)\b(?:\s+-\S+)*\s+\S+)\s+[^\n;&|]{0,120}?(?:(?:site|dist)-packages\/[^\s/'"]+\.pth|(?:sitecustomize|usercustomize)\.py)\b/i, severity: 'HIGH' },
