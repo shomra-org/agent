@@ -19,6 +19,7 @@ import { WRITE_TOOLS, callSubjectTypes, guardNeedsServer, guardTargetPath, guard
 import { confirmationNote, emitGuardAsk, emitGuardDeny, stoppedNote } from './emit.mjs';
 import { guardPathAllowlisted } from './ignore.mjs';
 import { screenModelLoad } from './model-load.mjs';
+import { screenSkillInvocation } from './skill-check.mjs';
 import { normalizeGuardInput } from './normalize.mjs';
 import { envFlag, guardWait, resolveAgentFlag } from './options.mjs';
 import { recordSelftest, selftestField } from './selftest-marker.mjs';
@@ -293,6 +294,8 @@ export async function cmdToolGuard(flags) {
     if (unscreenedSevere(normalized, tool, input)) askUnscreened(agent, 'Shomra is not configured on this machine');
     process.exit(0);
   }
+
+  await screenSkillInvocation({ agent, tool, input, normalized, url, apiKey: settings.apiKey, agentId, strict });
 
   await recordMemoryWrite({ url, apiKey, tool, input, normalized });
 

@@ -288,6 +288,17 @@ Three channels are screened:
 | **Prompt** | `UserPromptSubmit` (Claude Code) / `beforeSubmitPrompt` (Cursor) | what **you** paste, before it leaves the machine |
 | **Plan** | `PreToolUse` on `ExitPlanMode` (Claude Code) | nothing - it *informs*. See [`shomra plan`](#shomra-plan--threat-model-what-the-agent-is-about-to-build) |
 
+**Skills are checked when they are invoked (Claude Code).** The `Skill` tool is
+in the tool-call matcher, so when the agent loads a skill the hook resolves it to
+its `SKILL.md` - project `.claude/skills/<name>/`, `~/.claude/skills/<name>/`, or
+an installed plugin's `skills/` for `plugin:name` - and sends it, with the names
+of the files it bundles, to the same gate `shomra gate` uses. A BLOCK refuses the
+call, so a skill your org denied in the Artifact Registry does not run. Verdicts
+are cached on the machine by content for 10 minutes, so an unchanged skill is
+checked once. A skill that cannot be found on disk is not blocked; with
+`SHOMRA_GUARD_STRICT=1` a skill the gate could not be reached to check is refused.
+Re-run `shomra install-hook` to add `Skill` to an existing install's matcher.
+
 ### Proving it is actually in path - `shomra selftest`
 
 An installed hook is not a covered one. The matcher in a settings file decides

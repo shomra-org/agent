@@ -270,6 +270,12 @@ const RUNTIME_FIREWALL = () => `${bold('RUNTIME FIREWALL (multi-agent)')}
   identity / governance / flow engine, with a short timeout + a circuit breaker
   that skips a known-down backend. Fail-open by default (the local tier is still
   enforcing); SHOMRA_GUARD_STRICT=1 to also fail-closed on the server tier.
+
+  ${bold('Skills (Claude Code).')} When the agent invokes a skill, the hook reads its
+  SKILL.md (project .claude/skills, ~/.claude/skills or an installed plugin) plus
+  the names of the files it bundles and asks the gate - the same check as
+  ${bold('shomra gate')}. A BLOCK refuses the call. Verdicts are cached on the
+  machine by content for 10 minutes; a skill not found on disk is not blocked.
 `;
 
 const EXIT_CODES = () => `${bold('EXIT CODES')}  ${dim('- one convention across every command')}

@@ -93,7 +93,7 @@ test('matcher coverage is read as the vendor reads it - a regex, not a list of l
   assert.equal(matcherCovers('*', 'anything'), true);
   assert.equal(matcherCovers('Bash', 'PowerShell'), false);
   assert.equal(matcherCovers('Bash|[unclosed', 'PowerShell'), false, 'a matcher that cannot compile covers nothing');
-  assert.deepEqual(missingTools('claude', 'Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*').map((m) => m.name), ['PowerShell']);
+  assert.deepEqual(missingTools('claude', 'Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*').map((m) => m.name), ['PowerShell', 'Skill']);
   assert.deepEqual(missingTools('claude', TOOL_GUARD_MATCHERS.claude), []);
   assert.deepEqual(missingTools('gemini', '.*'), [], 'match-all covers every required name');
   assert.deepEqual(missingTools('gemini', 'run_shell_command').map((m) => m.name), ['write_file', 'replace', 'mcp__.*']);
@@ -105,9 +105,10 @@ test('an old install that never learned PowerShell is POROUS, names it, and carr
   const home = fakeHome(claudeSettings('Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*'));
   const row = withHome(home, () => staticCheck('claude'));
   assert.equal(row.state, 'porous');
-  assert.deepEqual(row.missing.map((m) => m.name), ['PowerShell']);
+  assert.deepEqual(row.missing.map((m) => m.name), ['PowerShell', 'Skill']);
   assert.match(row.statement, /PowerShell/);
   assert.match(row.statement, /shell commands/);
+  assert.match(row.statement, /skill invocations/);
   assert.equal(row.fix, 'shomra install-hook --agent claude');
   fs.rmSync(home, { recursive: true, force: true });
 });
