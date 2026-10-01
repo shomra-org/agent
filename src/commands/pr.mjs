@@ -148,7 +148,7 @@ function checkRunSummary({ results, annotations, blocked, flagged, suppressed })
     '',
     '| Artifact | Kind | Verdict | Findings |',
     '| --- | --- | --- | --- |',
-    ...results.map((r) => `| \`${r.path}\` | ${r.kind} | ${r.decision} | ${(r.findings || []).length} |`),
+    ...results.map((r) => `| \`${r.path}\` | ${r.kind} | ${r.decision}${r.suppressionNote ? ` (${r.suppressionNote})` : ''} | ${(r.findings || []).length} |`),
     annotations.length > MAX_ANNOTATIONS ? `\n_Showing first ${MAX_ANNOTATIONS} of ${annotations.length} annotations._` : '',
   ].join('\n');
 }

@@ -88,7 +88,7 @@ async function requestServerVerdicts(prepared, { apiKey, url, env, flags, quiet 
 
 function printResult(result, artifact, source) {
   const colour = result.decision === 'BLOCK' ? red : result.decision === 'FLAG' ? yellow : green;
-  const suppressedNote = result.suppressedCount ? dim(` · ${result.suppressedCount} suppressed`) : '';
+  const suppressedNote = result.suppressedCount ? dim(` · ${result.suppressedCount} suppressed${result.suppressionNote ? ` - ${result.suppressionNote}` : ''}`) : '';
   const pathNote = artifact.rel !== result.name ? ` ${dim(artifact.rel)}` : '';
   const localNote = source === 'local' ? dim(' ·local') : '';
   const findingCount = result.findingCount ?? (result.findings || []).length;
@@ -143,7 +143,7 @@ export async function gateArtifactList(artifacts, { apiKey, url, env, flags, roo
     const base = serverVerdict || localAsGateResult(local, artifact.rel.split('/').pop(), artifact.kind);
     const merged = mergeSastIntoResult(base, sast);
 
-    const raw = { path: artifact.rel, full: artifact.full, kind: artifact.kind, source, ...merged };
+    const raw = { path: artifact.rel, full: artifact.full, kind: artifact.kind, source, ...merged, ...(serverVerdict ? { orgDecision: serverVerdict.decision } : {}) };
     const withSuppressions = suppression.enabled
       ? suppressResult(raw, suppression.rules, suppression.baseline, suppression.lineCache)
       : raw;

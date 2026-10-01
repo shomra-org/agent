@@ -548,7 +548,11 @@ back to the local rules; set `SHOMRA_GUARD_STRICT=1` to refuse instead.
 
 A brand-new gate on a repo with history will flag things. Three layers make
 adoption friction-free - all of them re-grade the artifact, so a fully
-suppressed file drops to ALLOW and never fails the build:
+suppressed file drops to ALLOW and never fails the build. The one exception is
+a BLOCK the backend returned from your **org policy**: repo files can silence
+findings but never lift an org decision, so that artifact stays BLOCK and is
+reported as *ignored locally, still blocked by org policy*. Accept the risk or
+add an exception in the platform instead:
 
 - **`shomra baseline`** records every current finding (line-independent
   fingerprints) in `.shomra/baseline.json` - commit it so the whole team shares

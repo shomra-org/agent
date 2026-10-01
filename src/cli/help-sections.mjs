@@ -126,7 +126,9 @@ const BASELINE_AND_SUPPRESSION = () => `${bold('BASELINE & SUPPRESSION')}  ${dim
     ${dim('.shomraignore')}   a repo file: ${dim('path/glob')} (skip file) or ${dim('path/glob :: title-substring')}
     ${dim('inline comment')}  ${bold('// shomra-ignore')} / ${bold('# shomra-ignore')} on the finding's line or the one above
     ${dim('whole file')}      ${bold('shomra-ignore-file')} in the first lines (works in JSON too)
-  Any suppression re-grades the artifact, so a fully-suppressed file drops to ALLOW.
+  Any suppression re-grades the artifact, so a fully-suppressed file drops to ALLOW -
+  except a BLOCK your org's policy returned: repo files only silence findings, so that
+  stays BLOCK ${dim('(ignored locally, still blocked by org policy)')}. Lift it in the platform.
   ${dim('--no-suppress')} ignores all of the above; ${dim('--no-baseline')} ignores just the baseline.
 `;
 
