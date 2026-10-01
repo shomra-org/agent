@@ -202,6 +202,7 @@ export const SECRET_REFERENCE_RE =
 export const ENCRYPTED_VALUE_RE = /^(?:ENC\[[A-Z0-9_]{3,20},|encrypted:|\$ANSIBLE_VAULT;|-----BEGIN (?:AGE ENCRYPTED FILE|PGP MESSAGE)-----|AgA[A-Za-z0-9+/]{100,})/;
 export const isSecretReference = (v        )          => SECRET_REFERENCE_RE.test(v.trim());
 export const isEncryptedValue = (v        )          => ENCRYPTED_VALUE_RE.test(v.trim());
+const ASSEMBLED_VALUE_RE = /\$\{[^}\s]{1,120}\}|\$\([^)]{1,200}\)/;
 export const IDENTIFIER_SECRET_LABELS = new Set(['Twilio account SID', 'OpenAI project/org']);
 
 function jwtClaims(token        )                                 {
@@ -271,7 +272,7 @@ export function scanSecrets(text                           )              {
 
     if (!quoted && !ENV_VAR_KEY_RE.test(key)) continue;
     if (value.length < 16 || /\s/.test(value)) continue;
-    if (isPlaceholderValue(value) || isSecretReference(value) || isEncryptedValue(value) || NAMES_ITS_ROLE_RE.test(value)) continue;
+    if (isPlaceholderValue(value) || isSecretReference(value) || isEncryptedValue(value) || NAMES_ITS_ROLE_RE.test(value) || ASSEMBLED_VALUE_RE.test(value)) continue;
     const isHex = /^[0-9a-f]+$/i.test(value);
     if (NON_SECRET_SHAPE.some((r, i) => r.test(value) && (i > 0 || HASH_NAMED_KEY_RE.test(key)))) continue;
     const ent = shannonEntropy(value);
