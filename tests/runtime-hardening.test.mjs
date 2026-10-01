@@ -185,3 +185,14 @@ test('the configured agent credential wins over one a local client sends', () =>
   assert.equal(forwardHeaders({ 'x-shomra-agent': 'shm_agt_app' }, { ...ctx, agentId: null })['x-shomra-agent'], 'shm_agt_app');
   assert.equal(forwardHeaders({ 'x-shomra-key': 'caller' }, ctx)['x-shomra-key'], 'org');
 });
+
+test('with no configured agent the proxy forwards a client agent header only when it is a shm_agt_ credential', () => {
+  const ctx = { apiKey: 'org', actor: 'host/user', sessionId: 's', agentId: null };
+  assert.equal('x-shomra-agent' in forwardHeaders({ 'x-shomra-agent': 'billing-bot' }, ctx), false);
+  assert.equal(forwardHeaders({ 'x-shomra-agent': '  shm_agt_app  ' }, ctx)['x-shomra-agent'], 'shm_agt_app');
+  assert.equal('x-shomra-agent' in forwardHeaders({}, ctx), false);
+  assert.equal(forwardHeaders({ 'x-shomra-agent': 'impostor' }, { ...ctx, agentId: 'billing-bot' })['x-shomra-agent'], 'billing-bot');
+  const user = forwardHeaders({ 'x-shomra-user': 'dana@acme.test', 'x-shomra-user-token': 'tok', 'x-shomra-agent': 'billing-bot' }, ctx);
+  assert.equal(user['x-shomra-user'], 'dana@acme.test');
+  assert.equal(user['x-shomra-user-token'], 'tok');
+});

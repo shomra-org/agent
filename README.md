@@ -585,7 +585,7 @@ add an exception in the platform instead:
 | `SHOMRA_API_KEY` | Org API key (overrides config) |
 | `SHOMRA_URL` | Backend URL (overrides config) |
 | `SHOMRA_API_TIMEOUT_MS` | Per-request backend timeout (default 30000) |
-| `SHOMRA_AGENT` | Agent credential (`shm_agt_…`) presented to `llm-proxy` + firewall. A bare handle still works but is only a claim anyone can type |
+| `SHOMRA_AGENT` | Agent credential (`shm_agt_…`) presented to `llm-proxy` + firewall. A bare handle still works but is only a claim anyone can type. Unset, `llm-proxy` forwards a client's own `x-shomra-agent` only when it is a `shm_agt_` credential |
 | `SHOMRA_GATE_CONCURRENCY` | Parallel backend calls in batch gate / model lookups (default 8, 1-32) |
 | `SHOMRA_GH_TOKEN` | GitHub token for `shomra pr` (falls back to `GITHUB_TOKEN`) |
 | `SHOMRA_ENVIRONMENT` | Declare where this runs: `LOCAL` \| `CI` \| `REMOTE`. Set `REMOTE` on a cloud agent runtime whose markers Shomra does not yet detect (Codex cloud, Jules, Cursor background agents, Devin…), so its sessions are not counted as developer machines. ⚠ It may only ever RAISE — it can never relabel a detected cloud container as a laptop. |
