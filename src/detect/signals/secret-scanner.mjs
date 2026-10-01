@@ -213,9 +213,14 @@ export const MAX_SECRET_HITS = 500;
 
 const URL_PLACEHOLDER_PASSWORD_RE =
   /^(?:[$<[{%]|.*(?:passw|secret|change|replace|your|example|placeholder|insecure|dummy|sample|xxx|\*\*\*|todo|fill))/i;
-export function urlCredentialIsPlaceholder(match        )          {
-  const m = /:\/\/([^\s:@/]*):([^\s@/]*)@/.exec(match);
-  return !!m && (URL_PLACEHOLDER_PASSWORD_RE.test(m[2]) || m[2] === m[1]);
+const TRIVIAL_PASSWORD_RE = /^(?:test(?:ing)?|postgres|mysql|maria(?:db)?|mongo|redis|root|admin|dev|local|pass|guest|demo|user|1234|12345|123456|password1?)$/i;
+
+const LOCAL_SERVICE_HOST_RE = /^(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[?::1\]?|[a-z][\w-]{0,30})$/i;
+
+export function urlCredentialIsPlaceholder(match        , after = '')          {
+  const m = /:\/\/([^\s:@/]*):([^\s@/]*)@([^\s/:?#]*)/.exec(match + after);
+  if (!m) return false;
+  return URL_PLACEHOLDER_PASSWORD_RE.test(m[2]) || m[2] === m[1] || (TRIVIAL_PASSWORD_RE.test(m[2]) && LOCAL_SERVICE_HOST_RE.test(m[3]));
 }
 
 export function scanSecrets(text                           )              {
@@ -236,7 +241,7 @@ export function scanSecrets(text                           )              {
 
       if (m[0].length < 200 && !/private key/i.test(name) && isPlaceholderValue(m[0])) continue;
       if (isPublicByDesign(name, m[0])) continue;
-      if ((name === 'Database URL with password' || name === 'Credential in URL') && urlCredentialIsPlaceholder(m[0])) continue;
+      if ((name === 'Database URL with password' || name === 'Credential in URL') && urlCredentialIsPlaceholder(m[0], s.slice(at + m[0].length, at + m[0].length + 80))) continue;
       claimed.push([at, at + m[0].length]);
       out.push({ name, match: m[0], index: at, kind: 'named', tier: 'structure' });
     }

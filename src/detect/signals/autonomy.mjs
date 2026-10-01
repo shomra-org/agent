@@ -29,6 +29,25 @@ function inCodeComment(line, at) {
   return m != null && m.index != null && at > m.index;
 }
 
+const LIST_ITEM_RE = /^\s{0,8}(?:[-*+]|\d{1,3}[.)])\s/;
+
+const IMPERATIVE_ITEM_RE = /^\s{0,8}(?:[-*+]|\d{1,3}[.)])\s+(?:please\s+)?(?:ignore|disable|bypass|override|turn|switch|work|circumvent|disregard|skip|run|execute|delete|remove|send|upload|never|always|do|don'?t)\b/i;
+
+const CONSEQUENCE_LEADIN_RE =
+  /\b(?:this|that|it|which|doing\s+so|these|they)\s+(?:allows?|enables?|lets?|permits?|means?|causes?|risks?|leads?\s+to|results?\s+in|opens?\s+(?:the\s+door\s+to|up))\b[^\n]{0,60}:\s*$|\b(?:risks?|problems?|consequences?|dangers?|threats?|symptoms?|anti-?patterns?|what\s+(?:can|could)\s+go\s+wrong)\b[^\n]{0,40}:\s*$/i;
+
+const OBLIGATION_RE = /\b(?:must|should|shall|needs?\s+to|ha(?:ve|s)\s+to|(?:is|are)\s+(?:required|expected|supposed)\s+to)\b/i;
+
+function underConsequenceList(lines, i) {
+  if (!LIST_ITEM_RE.test(lines[i]) || IMPERATIVE_ITEM_RE.test(lines[i]) || OBLIGATION_RE.test(lines[i])) return false;
+  for (let j = i - 1; j >= Math.max(0, i - 30); j--) {
+    const l = lines[j];
+    if (!l.trim() || LIST_ITEM_RE.test(l)) continue;
+    return CONSEQUENCE_LEADIN_RE.test(l);
+  }
+  return false;
+}
+
 export function localAutonomy(text) {
   const body = String(text ?? '');
   if (!body.trim()) return [];
@@ -38,6 +57,7 @@ export function localAutonomy(text) {
   for (let i = 0; i < lines.length && out.length < 12; i++) {
     const line = lines[i];
     if (!line || line.length > 2000) continue;
+    if (underConsequenceList(lines, i)) continue;
     for (const rule of AUTONOMY_RULES) {
       if (seen.has(rule.label)) continue;
       const m = rule.re.exec(line);
