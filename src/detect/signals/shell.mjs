@@ -85,8 +85,19 @@ const HOME_APP_SUBDIR_RE = /^(?:~|\$HOME|\$\{HOME\})\/\.(?:cache\/|(?!(?:ssh|aws
 
 const RM_RF_RE = /(?<!\b(?:docker|podman|nerdctl|kubectl|helm|conda|brew)\s{1,4})\brm\b(?=[^\n;|&]{0,200}?\s(?:-[a-zA-Z]*r[a-zA-Z]*|--recursive)(?![\w-]))(?=[^\n;|&]{0,200}?\s(?:-[a-zA-Z]*f[a-zA-Z]*|--force)(?![\w-]))/i;
 
-export function rmTargetClass(line) {
-  if (/\brm\s+-{1,2}[a-zA-Z][\w-]*\s*["'`,)\]}?!](?![\w./~$*-])/.test(line)) return 'local';
+const BARE_VAR_TARGET_RE = /^\$\{?([A-Za-z_]\w{0,63})\}?$/;
+
+const HOME_VAR_RE = /^(?:HOME|USERPROFILE|ZDOTDIR|XDG_\w+_HOME)$/i;
+
+const ROOT_ASSIGN_RE = /\b([A-Za-z_]\w{0,63})\s{0,2}=\s{0,2}["']?(?:~|\/(?=[\s"'*;]|$)|\$\{?(?:HOME|USERPROFILE)\}?)/gm;
+
+function unnamedInProse(target, assigned) {
+  const m = BARE_VAR_TARGET_RE.exec(target.replace(/^["'`]{1,8}|["'`.,;:)]{1,8}$/g, ''));
+  return !!m && !HOME_VAR_RE.test(m[1]) && !assigned.has(m[1]);
+}
+
+export function rmTargetClass(line, prose) {
+  if (/\brm\s+-{1,2}[a-zA-Z][\w-]*\*?\s*["'`,)\]}?!](?![\w./~$*-])/.test(line)) return 'local';
   const m = /\brm\s+((?:--?[a-zA-Z][\w-]*\s+)+)(.*)$/.exec(line);
   if (!m) return 'catastrophic';
 
@@ -101,7 +112,7 @@ export function rmTargetClass(line) {
     return /^\s*(?:[,)\]}?!"'`.]|$)/.test(after) ? 'local' : 'catastrophic';
   }
 
-  if (targets.some((t) => CATASTROPHIC_RM_TARGET_RE.test(t) && !BENIGN_ABSOLUTE_RM_RE.test(t) && !TEMPISH_RM_TARGET_RE.test(t) && !HOME_APP_SUBDIR_RE.test(t))) return 'catastrophic';
+  if (targets.some((t) => CATASTROPHIC_RM_TARGET_RE.test(t) && !BENIGN_ABSOLUTE_RM_RE.test(t) && !TEMPISH_RM_TARGET_RE.test(t) && !HOME_APP_SUBDIR_RE.test(t) && !(prose && unnamedInProse(t, prose)))) return 'catastrophic';
   return targets.every((t) => EPHEMERAL_RM_TARGET_RE.test(t) || BENIGN_ABSOLUTE_RM_RE.test(t)) ? 'ephemeral' : 'local';
 }
 
@@ -142,6 +153,21 @@ const socksOnPublicAddress = (line) =>
 
 export const COIN_MINER_RE = /\bstratum2?\+(?:tcp|ssl|tls):\/\/|\b(?:[\w-]{1,30}\.)?(?:supportxmr|minexmr|xmrpool|moneroocean|hashvault|c3pool|nanopool|2miners|f2pool|herominers|minergate|nicehash|unmineable|monerohash|xmrfast|dwarfpool|ethermine|antpool|slushpool)\.(?:com|org|net|pro|stream|eu|io|me)\b|--donate-level\b|--cpu-max-threads-hint\b|["']donate-level["']\s{0,3}:|["']nicehash["']\s{0,3}:\s{0,3}(?:true|false)\b|(?<![\w])[48][0-9AB][1-9A-HJ-NP-Za-km-z]{93}(?![\w])|CoinHive\.(?:Anonymous|User|Token)\b|\bcoin-?hive(?:\.min)?\.js\b|coin-hive\.com\/lib|crypto-loot\.com\/lib|\bwebminepool\.com\b|\bcoinimp\.com\/scripts|(?:\.\/|\/(?:tmp|dev\/shm|var\/tmp)\/[\w.\/-]{0,60}?)(?:xmrig(?:-proxy)?|xmr-stak(?:-rx|-cpu)?|cpuminer(?:-opt|-multi)?|minerd|ccminer|cgminer|bfgminer|ethminer|lolminer|nbminer|phoenixminer|srbminer(?:-multi)?|teamredminer|nanominer|kawpowminer|nheqminer)(?![\w-])|(?<![\w.-])(?:xmrig(?:-proxy)?|xmr-stak(?:-rx|-cpu)?|cpuminer(?:-opt|-multi)?|minerd|ccminer|cgminer|bfgminer|ethminer|lolminer|nbminer|phoenixminer|srbminer(?:-multi)?|teamredminer|nanominer|kawpowminer|nheqminer)(?![\w-])(?=[^\n]{0,120}(?:['\"\s]-o\b|--url\b|--user\b|['\"\s]-u\b|--config\b|--threads\b|--background\b|['\"\s]-B\b|\.tar\.gz|\.zip\b|releases\/download|\/tmp\/|\bnohup\b|\bchmod\b))/i;
 
+const RM_PROTECTED = { name: 'Recursive force delete of a protected path (rm -rf)', re: RM_RF_RE, severity: 'HIGH', refine: (l) => rmTargetClass(l) === 'catastrophic' };
+
+const RM_LOCAL = { name: 'Recursive force delete (rm -rf)', re: RM_RF_RE, severity: 'MEDIUM', refine: (l) => rmTargetClass(l) === 'local' };
+
+export function proseSignals(text) {
+  const assigned = new Set([...String(text ?? '').matchAll(ROOT_ASSIGN_RE)].map((m) => m[1]));
+  return DANGEROUS_SHELL.map((sig) =>
+    sig === RM_PROTECTED
+      ? { ...sig, refine: (l) => rmTargetClass(l, assigned) === 'catastrophic' }
+      : sig === RM_LOCAL
+        ? { ...sig, refine: (l) => rmTargetClass(l, assigned) === 'local' }
+        : sig,
+  );
+}
+
 export const DANGEROUS_SHELL = [
   { name: 'Pipe-to-shell installer (curl … | sh)', re: /\b(curl|wget)\b[^\n|]{0,200}\|\s*(sudo\s+)?(ba|z|k)?sh\b/i, severity: 'CRITICAL' },
   { name: 'PowerShell download-and-run (iwr/curl … | iex)', re: /\b(iwr|curl|wget|invoke-webrequest|invoke-restmethod|irm)\b[^\n|]{0,200}\|\s*(iex|invoke-expression)\b/i, severity: 'CRITICAL' },
@@ -169,15 +195,15 @@ export const DANGEROUS_SHELL = [
     re: /\bchmod\b(?=[^\n;|&]{0,200}(?:\b0?[0-7][0-7][2367]\b|a\+rwx|a=rwx|o\+w|ugo\+rwx))(?=[^\n;|&]{0,200}(?:~(?:\s|$|\/\.)|\$HOME\b|\/etc\b|\/root\b|\/usr\b|\/var\b|\/boot\b|\.ssh\b|id_rsa\b|authorized_keys\b|\.aws\b|\.gnupg\b|\.kube\b))/i,
     severity: 'HIGH',
   },
-  { name: 'Recursive force delete of a protected path (rm -rf)', re: RM_RF_RE, severity: 'HIGH', refine: (l) => rmTargetClass(l) === 'catastrophic' },
-  { name: 'Recursive force delete (rm -rf)', re: RM_RF_RE, severity: 'MEDIUM', refine: (l) => rmTargetClass(l) === 'local' },
+  RM_PROTECTED,
+  RM_LOCAL,
 
   { name: 'Inline eval / exec of a string', re: /(?<![-.\w$>:`"'\/])(eval|exec)\s*(?!\((?:[^()\n]{0,160}\)\s*\{|\s*_?[A-Za-z$][\w$]{0,64}\s*\??\s*:))[("`']/i, severity: 'HIGH', refine: evalArgumentIsDynamic },
   { name: 'Pipes an env dump to the network', re: /(?<![.\w$-])(env|printenv|set)\b(?![.:=\w])(?!\s*[:=])[^\n|]{0,80}(?<!\|)\|(?!\|)[^\n]{0,80}(curl\b|wget\b|nc\b|https?\b)/i, severity: 'HIGH' },
   { name: 'Disables TLS / cert verification', re: /(NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*0|GIT_SSL_NO_VERIFY|--no-check-certificate|--insecure\b|verify\s*=\s*False)/i, severity: 'MEDIUM' },
   { name: 'python -c one-liner', re: /python[0-9.]*\s+-c\b/i, severity: 'MEDIUM', refine: (l) => !pythonOneLinerIsImportCheck(l) },
   { name: 'node -e one-liner', re: /\bnode\s+-e\b/i, severity: 'MEDIUM' },
-  { name: 'Re-evaluates a variable as a prompt string (${var@P}), running any command hidden in it', re: /\$\{[#!]?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]{0,40}\])?@[PE]\}/, severity: 'HIGH' },
+  { name: 'Re-evaluates a variable as a prompt string (${var@P}), running any command hidden in it', re: /\$\{[#!]?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]{0,40}\])?@[PE]\}/, severity: 'HIGH', refine: (l) => [...l.matchAll(/\$\{[#!]?([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]\n]{0,40}\])?@[PE]\}/g)].some((m) => !/^(?:parameter|param|var|variable)$/i.test(m[1])) },
   { name: 'Writes a Python autoload file that runs on every interpreter start (.pth / sitecustomize / usercustomize)', re: /(?:>>?|\btee\b(?:\s+-a)?|\b(?:cp|mv|install)\b(?:\s+-\S+)*\s+\S+)\s+[^\n;&|]{0,120}?(?:(?:site|dist)-packages\/[^\s/'"]+\.pth|(?:sitecustomize|usercustomize)\.py)\b/i, severity: 'HIGH' },
   { name: "Modifies the coding agent's own application, server or installed files (self-tamper)", re: new RegExp(String.raw`(?:>>?|\btee\b(?:\s+-a)?\s+|\b(?:cp|mv|install|ln|chmod|chown|truncate|patch)\b(?:\s+-\S+)*\s+(?:\S+\s+)?|\b(?:sed|perl)\b[^\n;&|]{0,60}?-\S*i\S*[^\n;&|]{0,60}?\s)['"]?\S{0,80}?(?:\/Applications\/[^/\s'"]*(?:Cursor|Windsurf|Visual Studio Code|VSCodium|Claude|ChatGPT|Codex|Zed|Kiro|Trae)[^/\s'"]*\.app\/Contents\/|\/(?:usr\/share|usr\/lib|opt)\/(?:cursor|code|code-insiders|windsurf|codium|kiro)\/|\.(?:vscode|cursor|windsurf)-server\/(?:bin|cli)\/|node_modules\/(?:@anthropic-ai\/claude-code|@openai\/codex|@google\/gemini-cli|@shomra\/agent)\/|resources\/app\/product\.json)`, 'i'), severity: 'HIGH' },
   { name: 'Clones a commit hash as a branch name (git serves a same-named branch instead of the pinned commit)', re: /\bgit\s+(?:clone|fetch)\b[^\n;&|]*?(?:--branch[=\s]+|\s-b\s+)['"]?(?:[0-9a-f]{40}|[0-9a-f]{64})\b/i, severity: 'MEDIUM' },
