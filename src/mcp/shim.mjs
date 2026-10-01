@@ -226,7 +226,12 @@ function forwardListing({ message, method, server, deniedTools, settings, agent 
 
 function createServerFilter({ pending, server, deniedTools, settings, agent, ctx }) {
   return createLineFramer(serial(async (message, line) => {
-    if (!message) {
+    const answers = !!message && (message.result !== undefined || message.error !== undefined);
+    if (answers && typeof message.method === 'string') {
+      note(`mcp-guard: "${server}" sent a message that is both a request and a response; it was dropped.`);
+      return;
+    }
+    if (!answers) {
       process.stdout.write(`${line}\n`);
       return;
     }
