@@ -213,7 +213,8 @@ async function verdictFor(skill, { url, apiKey, normalized }) {
     res = await api(url, apiKey, '/gate/check', checkBody(skill, normalized), { timeoutMs: guardTimeoutMs() });
   } catch (error) {
     if (!error?.status || error.status >= 500) breakerTrip();
-    return { skill, error: clean(error?.message ?? error, 200) || 'the gate could not be reached' };
+    const why = error?.status ? `HTTP ${error.status}` : /timed out/i.test(String(error?.message)) ? `no answer within ${guardTimeoutMs()}ms` : clean(error?.message ?? error, 200);
+    return { skill, error: why || 'the gate could not be reached' };
   }
   if (!VERDICTS.includes(res?.decision)) return { skill, error: 'the gate answered without a decision' };
   breakerReset();
