@@ -11,6 +11,8 @@ const ARTIFACT_BASENAME_RE =
 const PROP_WRITE_VERB_RE =
   /\b(write|writes|writing|create|creates|creating|recreate|recreates|restore|restores|reinstall|reinstalls|add|adds|adding|append|appends|appending|install|installs|installing|copy|copies|copying|save|saves|saving|drop|drops|place|places|generate|generates|scaffold|scaffolds|overwrite|overwrites|patch|patches|update|updates|cp|mv|tee|mkdir)\b|(?:^|[\s"'`])>>?\s*['"`]?[\w./~$-]/i;
 
+const PROP_TOOL_LIST_RE = /\b(?:read|edit|bash|write|grep|glob|ls|search|fetch|list)(?:\/(?:read|edit|bash|write|grep|glob|ls|search|fetch|list)){1,8}\b/gi;
+
 const PROP_IMPERATIVE_RE =
   /(?:^|\n)\s*(?:[-*+]\s+|\d+[.)]\s+|\$\s+)?(?:then\s+|first\s+|now\s+|also\s+|to\s+\w+,\s*)?(write|create|recreate|restore|reinstall|add|append|install|copy|save|place|generate|scaffold|overwrite|patch|drop|echo|cat|cp|mv|tee|mkdir|printf)\b/i;
 
@@ -54,7 +56,7 @@ export function localPropagation(content, { path = '', kind } = {}) {
     const m = ARTIFACT_BASENAME_RE.exec(line);
     const agentPath = propPathIn(line);
     if (!m && !agentPath) continue;
-    if (!PROP_WRITE_VERB_RE.test(line)) continue;
+    if (!PROP_WRITE_VERB_RE.test(line.replace(PROP_TOOL_LIST_RE, ' '))) continue;
     if (!PROP_IMPERATIVE_RE.test(line) && !PROP_SHELL_WRITE_RE.test(line) && isDocumentationLine(line)) continue;
 
     const target = trimPropTarget(agentPath ?? m[0]);

@@ -38,6 +38,8 @@ export function citationGoverns(segment, offset) {
 }
 
 const ELLIPSIS_RE = /…|\.\.\./;
+const QUOTED_ELLIPSIS_RE = /(["'])[^"'\n]{0,200}?(?:…|\.\.\.)[^"'\n]{0,200}?\1/g;
+const TRAILING_ELLIPSIS_RE = /\s{0,4}(?:…|\.\.\.)[\s"'`)\]}]{0,8}$/;
 
 const ENUMERATION_RE = /[([][^)\]]*,[^)\]]*,[^)\]]*[)\]]|:\s*(?:[\w.-]+(?:\s+-\w+)?,\s*){2,}/;
 
@@ -76,7 +78,7 @@ export function isDocumentationLine(line, offset) {
 
   const win = windowAround(line, offset);
   if (REGEX_PATTERN_RE.test(win)) return true;
-  if (ELLIPSIS_RE.test(win)) return true;
+  if (ELLIPSIS_RE.test(win.replace(QUOTED_ELLIPSIS_RE, '$1$1').replace(TRAILING_ELLIPSIS_RE, ''))) return true;
   if (offset != null && insideCodeSpan(line, offset) && isDescriptiveLine(win)) return true;
   if (ENUMERATION_RE.test(win) && !IMPERATIVE.test(win)) return true;
   return isDescriptiveLine(win);
@@ -91,12 +93,40 @@ const NEGATED_GUARD_RE = /\b(?:never|do not|don'?t|no need to|without|skip)\s[\w
 
 const COORDINATE_TAIL_RE = /(?:\b(?:and|or|but|then|also)\b|[,;])\s*$/i;
 
+const VERB_NEGATION_RE = /\b(?:never|do not|don'?t|cannot|can'?t|must not|mustn'?t|should not|shouldn'?t|avoid|avoids|avoiding|refuse to|refrain from)\b/gi;
+
+const BARE_VERB_LIST_RE = /^\s*(?:[a-z]+(?:[-'’][a-z]+)?(?:\s+(?:it|them|this|that))?(?:\s*,\s*(?:(?:or|and|nor)\s+)?|\s+(?:or|and|nor)\s+))+$/i;
+
+function negatesVerbList(before) {
+  let end = -1;
+  for (const m of before.matchAll(VERB_NEGATION_RE)) end = (m.index ?? 0) + m[0].length;
+  return end !== -1 && BARE_VERB_LIST_RE.test(before.slice(end));
+}
+
+const DASH_BREAK_RE = /\s[-–]{1,2}\s|\s?—\s?/g;
+
+const DASH_PIVOT_RE = /^\s*(?:just|simply|instead|rather|always)\b/i;
+
+const DASH_ORDER_RE =
+  /^\s*(?:(?:just|simply|instead|rather|always)\b[\s,]+)?(?:run|execute|exec|invoke|call|use|paste|copy|type|enter|install|download|fetch|curl|wget|pipe|add|append|write|put|send|post)\b/i;
+
+function dashStartsNewOrder(scope) {
+  const breaks = [...scope.matchAll(DASH_BREAK_RE)];
+  if (!breaks.length) return false;
+  const last = breaks[breaks.length - 1];
+  const rest = scope.slice((last.index ?? 0) + last[0].length);
+  if (PROHIBITION_MARKER_RE.test(rest)) return false;
+  if (DASH_PIVOT_RE.test(rest)) return true;
+  return breaks.length % 2 === 1 && DASH_ORDER_RE.test(rest);
+}
+
 export function prohibitsAt(line, offset) {
   if (!line) return false;
   const at = offset == null || offset < 0 ? line.length : Math.min(offset, line.length);
   const before = line.slice(Math.max(0, at - 90), at);
-  if (!PROHIBITION_MARKER_RE.test(before)) return false;
-  if (COORDINATE_TAIL_RE.test(before)) return false;
+  const scope = PROHIBITION_MARKER_RE.exec(before);
+  if (!scope || dashStartsNewOrder(scope[0])) return false;
+  if (COORDINATE_TAIL_RE.test(before) && !negatesVerbList(before)) return false;
   if (NEGATED_GUARD_RE.test(before)) return false;
   return !DOUBLE_NEGATIVE_RE.test(before);
 }

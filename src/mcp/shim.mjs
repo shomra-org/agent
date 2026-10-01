@@ -11,6 +11,7 @@ import { createLineFramer, refusal, sendBlockedInitialize, writeMessage } from '
 import { LISTING_KEY, RESULT_METHODS, screenListing, screenResult, screenToolCallArguments } from './screening.mjs';
 import { resolveAgentIdentityHandle } from '../commands/agent-identity.mjs';
 import { resolveScreenMode, screenCallRemote, screenResultRemote, shimSessionId } from './backend-screen.mjs';
+import { SCREENED_SERVER_METHODS, screenServerRequest } from './server-requests.mjs';
 
 export { mcpConfigCandidates, unwrapMcpConfig, wrapMcpConfig } from './config-wrapping.mjs';
 
@@ -224,9 +225,20 @@ function forwardListing({ message, method, server, deniedTools, settings, agent 
   writeMessage({ ...message, result: screened.result });
 }
 
-function createServerFilter({ pending, server, deniedTools, settings, agent, ctx }) {
+function createServerFilter({ child, pending, server, deniedTools, settings, agent, ctx }) {
   return createLineFramer(serial(async (message, line) => {
-    if (!message) {
+    const answers = !!message && (message.result !== undefined || message.error !== undefined);
+    if (answers && typeof message.method === 'string') {
+      note(`mcp-guard: "${server}" sent a message that is both a request and a response; it was dropped.`);
+      return;
+    }
+    if (!answers) {
+      const verdict = message && 'id' in message && SCREENED_SERVER_METHODS.has(message.method) ? screenServerRequest(message) : null;
+      if (verdict?.refused) {
+        child.stdin.write(`${JSON.stringify(refusal(message.id, `Refused by Shomra: ${verdict.reason}.`, { source: 'shomra-mcp-guard', method: message.method, relayed: false }))}\n`);
+        note(`mcp-guard: refused ${message.method} from "${server}": ${verdict.reason}.`);
+        return;
+      }
       process.stdout.write(`${line}\n`);
       return;
     }
@@ -298,7 +310,7 @@ export async function runMcpShim(flags, positional) {
 
   const pending = new Map();
   process.stdin.on('data', createClientFilter({ child, pending, server: name, ctx }));
-  child.stdout.on('data', createServerFilter({ pending, server: name, deniedTools, settings, agent, ctx }));
+  child.stdout.on('data', createServerFilter({ child, pending, server: name, deniedTools, settings, agent, ctx }));
   process.stdin.on('end', () => child.stdin.end());
 
   await new Promise(() => {});

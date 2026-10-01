@@ -1,5 +1,5 @@
 export const SUSPICIOUS_EGRESS_HOSTS = [
-  'webhook.site', 'requestbin', 'pipedream.net', 'ngrok.io', 'ngrok-free.app', 'ngrok.app',
+  'webhook.site', 'requestbin', 'requestbin.com', 'requestbin.net', 'pipedream.net', 'ngrok.io', 'ngrok-free.app', 'ngrok.app',
   'trycloudflare.com', 'serveo.net', 'localhost.run', 'interact.sh', 'oastify.com', 'oast.pro',
   'oast.fun', 'oast.live', 'oast.site', 'oast.online', 'oast.me', 'interactsh.com', 'burpcollaborator.net', 'canarytokens.com', 'beeceptor.com', 'requestcatcher.com',
   'c-net.org', 'pastebin.com', 'paste.ee', 'hastebin.com', 'dpaste.com', 'dpaste.org', 'ix.io',

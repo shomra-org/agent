@@ -27,6 +27,12 @@ export const SECRET_PATTERNS                                 = [
   { name: 'Fireworks API key', re: /\bfw_[A-Za-z0-9]{20,}/ },
   { name: 'xAI API key', re: /\bxai-[A-Za-z0-9]{40,}/ },
   { name: 'LangSmith API key', re: /\blsv2_(?:pt|sk)_[A-Za-z0-9]{24,}_[A-Za-z0-9]{8,}/ },
+  { name: 'Langfuse secret key', re: /\bsk-lf-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/ },
+  { name: 'Helicone API key', re: /\bsk-helicone-(?:[a-z]{2}-)?[a-z0-9]{7}(?:-[a-z0-9]{7}){3}\b/ },
+  {
+    name: 'LLM observability key (named env var)',
+    re: /\b(?:LANGFUSE_SECRET_KEY|HELICONE_API_KEY|WANDB_API_KEY|PORTKEY_API_KEY|ARIZE_API_KEY|TRACELOOP_API_KEY|BRAINTRUST_API_KEY|COMET_API_KEY|OPIK_API_KEY|PROMPTLAYER_API_KEY|HUMANLOOP_API_KEY|LUNARY_SECRET_KEY|LANGWATCH_API_KEY|GALILEO_API_KEY|AGENTOPS_API_KEY)\s*[=:]\s*["']?[A-Za-z0-9_-]{24,}\b/,
+  },
   { name: 'Pinecone API key', re: /\bpcsk_[A-Za-z0-9_]{30,}/ },
   { name: 'OpenRouter API key', re: /\bsk-or-v1-[A-Za-z0-9]{32,}/ },
   { name: 'Discord webhook', re: /\bdiscord(?:app)?\.com\/api\/webhooks\/\d{17,}\/[A-Za-z0-9_-]{40,}/ },
@@ -145,7 +151,9 @@ export const SECRET_KEY_RE =
   /\b(\w*(?:secret|token|passw(?:or)?d|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|auth[_-]?token|private[_-]?key|credential|session[_-]?key|encryption[_-]?key|signing[_-]?key)\w*)\b/i;
 
 const ASSIGNMENT_RE =
-  /([A-Za-z_$][\w.$-]{0,127})[ \t]{0,32}[:=][ \t]{0,32}(?:(["'`])([^"'`\r\n]{12,512})\2|([A-Za-z0-9_./+=~!@#$%^&*?:,-]{12,512}))/g;
+  /([A-Za-z_$][\w.$-]{0,127})["']?[ \t]{0,32}[:=][ \t]{0,32}(?:(["'`])([^"'`\r\n]{12,512})\2|([A-Za-z0-9_./+=~!@#$%^&*?:,-]{12,512}))/g;
+
+const HASH_NAMED_KEY_RE = /sha|commit|rev|digest|hash|checksum|etag|fingerprint|version|build/i;
 
 const ENV_VAR_KEY_RE = /^[A-Z][A-Z0-9_]{2,}$/;
 
@@ -168,7 +176,19 @@ export const NAMES_ITS_ROLE_RE = /passw(?:or)?d|passwd|secret|token|api[_-]?key|
 const ENTROPY_MIN_MIXED = 3.5;
 const ENTROPY_MIN_HEX = 3.0;
 
+function hasCountingRun(v        , min = 10)          {
+  let run = 1;
+  for (let i = 1; i < v.length; i++) {
+    const a = v.charCodeAt(i - 1);
+    const b = v.charCodeAt(i);
+    run = b === a + 1 && /[0-9A-Za-z]/.test(v[i - 1]) && /[0-9A-Za-z]/.test(v[i]) ? run + 1 : 1;
+    if (run >= min) return true;
+  }
+  return false;
+}
+
 export function isPlaceholderValue(v        )          {
+  if (hasCountingRun(v)) return true;
   const low = v.toLowerCase();
   if (/(your|my|the|some|placeholder|example|sample|dummy|test|fake|changeme|redacted|x{3,64}|\.\.\.|todo|replace|insert|here|value|token|secret|key)$/i.test(low)) return true;
   if (/^[x*.\-_0]+$/i.test(v)) return true;
@@ -182,14 +202,46 @@ export const SECRET_REFERENCE_RE =
 export const ENCRYPTED_VALUE_RE = /^(?:ENC\[[A-Z0-9_]{3,20},|encrypted:|\$ANSIBLE_VAULT;|-----BEGIN (?:AGE ENCRYPTED FILE|PGP MESSAGE)-----|AgA[A-Za-z0-9+/]{100,})/;
 export const isSecretReference = (v        )          => SECRET_REFERENCE_RE.test(v.trim());
 export const isEncryptedValue = (v        )          => ENCRYPTED_VALUE_RE.test(v.trim());
+const ASSEMBLED_VALUE_RE = /\$\{[^}\s]{1,120}\}|\$\([^)]{1,200}\)/;
+const BASE64_VALUE_RE = /^[A-Za-z0-9+/_-]{8,}$/;
+
+function encodesANumber(v        )          {
+  if (!BASE64_VALUE_RE.test(v)) return false;
+  const b64 = v.replace(/-/g, '+').replace(/_/g, '/');
+  const bytes = Buffer.from(b64, 'base64');
+  return bytes.toString('base64').replace(/={1,2}$/, '') === b64 && /^\d{6,}$/.test(bytes.toString('latin1'));
+}
 export const IDENTIFIER_SECRET_LABELS = new Set(['Twilio account SID', 'OpenAI project/org']);
+
+function jwtClaims(token        )                                 {
+  const payload = token.split('.')[1];
+  if (!payload || payload.length > 4096) return null;
+  try {
+    const claims = JSON.parse(Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+    return claims && typeof claims === 'object' ? claims : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isPublicByDesign(name        , match        )          {
+  if (IDENTIFIER_SECRET_LABELS.has(name)) return true;
+  if (name !== 'JWT' && name !== 'JSON web token') return false;
+  const claims = jwtClaims(match);
+  return !!claims && claims.role === 'anon' && ((typeof claims.iss === 'string' && /supabase/i.test(claims.iss)) || typeof claims.ref === 'string');
+}
 export const MAX_SECRET_HITS = 500;
 
 const URL_PLACEHOLDER_PASSWORD_RE =
   /^(?:[$<[{%]|.*(?:passw|secret|change|replace|your|example|placeholder|insecure|dummy|sample|xxx|\*\*\*|todo|fill))/i;
-export function urlCredentialIsPlaceholder(match        )          {
-  const m = /:\/\/([^\s:@/]*):([^\s@/]*)@/.exec(match);
-  return !!m && (URL_PLACEHOLDER_PASSWORD_RE.test(m[2]) || m[2] === m[1]);
+const TRIVIAL_PASSWORD_RE = /^(?:test(?:ing)?|postgres|mysql|maria(?:db)?|mongo|redis|root|admin|dev|local|pass|guest|demo|user|1234|12345|123456|password1?)$/i;
+
+const LOCAL_SERVICE_HOST_RE = /^(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[?::1\]?|[a-z][\w-]{0,30})$/i;
+
+export function urlCredentialIsPlaceholder(match        , after = '')          {
+  const m = /:\/\/([^\s:@/]*):([^\s@/]*)@([^\s/:?#]*)/.exec(match + after);
+  if (!m) return false;
+  return URL_PLACEHOLDER_PASSWORD_RE.test(m[2]) || m[2] === m[1] || (TRIVIAL_PASSWORD_RE.test(m[2]) && LOCAL_SERVICE_HOST_RE.test(m[3]));
 }
 
 export function scanSecrets(text                           )              {
@@ -209,7 +261,8 @@ export function scanSecrets(text                           )              {
       if (overlaps(at, at + m[0].length)) continue;
 
       if (m[0].length < 200 && !/private key/i.test(name) && isPlaceholderValue(m[0])) continue;
-      if ((name === 'Database URL with password' || name === 'Credential in URL') && urlCredentialIsPlaceholder(m[0])) continue;
+      if (isPublicByDesign(name, m[0])) continue;
+      if ((name === 'Database URL with password' || name === 'Credential in URL') && urlCredentialIsPlaceholder(m[0], s.slice(at + m[0].length, at + m[0].length + 80))) continue;
       claimed.push([at, at + m[0].length]);
       out.push({ name, match: m[0], index: at, kind: 'named', tier: 'structure' });
     }
@@ -227,9 +280,9 @@ export function scanSecrets(text                           )              {
 
     if (!quoted && !ENV_VAR_KEY_RE.test(key)) continue;
     if (value.length < 16 || /\s/.test(value)) continue;
-    if (isPlaceholderValue(value) || isSecretReference(value) || isEncryptedValue(value) || NAMES_ITS_ROLE_RE.test(value)) continue;
-    if (NON_SECRET_SHAPE.some((r) => r.test(value))) continue;
+    if (isPlaceholderValue(value) || isSecretReference(value) || isEncryptedValue(value) || NAMES_ITS_ROLE_RE.test(value) || ASSEMBLED_VALUE_RE.test(value) || encodesANumber(value)) continue;
     const isHex = /^[0-9a-f]+$/i.test(value);
+    if (NON_SECRET_SHAPE.some((r, i) => r.test(value) && (i > 0 || HASH_NAMED_KEY_RE.test(key)))) continue;
     const ent = shannonEntropy(value);
     if (ent < (isHex ? ENTROPY_MIN_HEX : ENTROPY_MIN_MIXED)) continue;
     claimed.push([at, at + value.length]);

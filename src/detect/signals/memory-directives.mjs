@@ -575,10 +575,20 @@ function trustGrant({ t, u, noun, isInstruction, add }         )       {
   );
 }
 
+function waiverWindow(t        , at        )         {
+  const lead = t.slice(Math.max(0, at - 120), at);
+  const from = Math.max(lead.lastIndexOf('. '), lead.lastIndexOf('\n'), lead.lastIndexOf('"')) + 1;
+  const rest = t.slice(at, at + 200);
+  const stop = rest.search(/\n\s*\n|["']\s*[,}\]\n]/);
+  return lead.slice(from) + (stop === -1 ? rest : rest.slice(0, stop));
+}
+
 function consentWaiver({ t, u, noun, isInstruction, add }         )       {
   const waiver = CONSENT_WAIVER_RE.exec(t);
-  if (!waiver || !WAIVER_SCOPE_RE.test(t) || isDescriptiveLine(t) || citationGoverns(t, waiver.index)) return;
-  const danger = WAIVER_DANGER_RE.test(t);
+  if (!waiver || isDescriptiveLine(t) || citationGoverns(t, waiver.index)) return;
+  const scope = waiverWindow(t, waiver.index);
+  if (!WAIVER_SCOPE_RE.test(scope)) return;
+  const danger = WAIVER_DANGER_RE.test(scope);
   add(
     'consent-waiver',
     'PROMPT_INJECTION',

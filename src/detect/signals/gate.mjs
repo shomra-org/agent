@@ -71,7 +71,8 @@ export function localGate(content, { kind, path } = {}) {
 
     for (const f of localScan(content || '', { categories: ['config'] }).findings) push(f.severity, f.label, undefined, f.line);
   } else {
-    const scan = localScan(content || '', { categories: ['shell', 'injection', 'secret', 'config', 'egress', 'pii'] });
+    const prose = ['skill', 'command', 'subagent'].includes(kind) || ((kind === 'auto' || kind === undefined) && /\.mdx?$/i.test(String(path ?? '')));
+    const scan = localScan(content || '', { categories: ['shell', 'injection', 'secret', 'config', 'egress', 'pii'], prose });
     const graded = isSourceFile(path) ? downrankCodeContext(scan.findings) : scan.findings;
     const manifest = kind === 'plugin' || kind === 'tool-manifest' || PLUGIN_MANIFEST_RE.test(String(path ?? '').replace(/\\/g, '/')) || TOOL_MANIFEST_RE.test(String(path ?? '').replace(/\\/g, '/'));
     const lines = manifest ? String(content || '').split(/\r?\n/) : [];
@@ -111,7 +112,7 @@ export function localGate(content, { kind, path } = {}) {
   if (['skill', 'command', 'subagent', 'auto', undefined].includes(kind)) {
     const fm = frontmatter(content || '');
     const grants = [...toToolList(fm['allowed-tools']), ...toToolList(fm.tools), ...toToolList(fm.allowedTools)];
-    if (grants.some(isWildcardGrant)) push('HIGH', 'Wildcard tool grant (grants every capability)', 'Replace the wildcard with an explicit least-privilege tool list.');
+    if (grants.some(isWildcardGrant)) push(kind === 'subagent' ? 'MEDIUM' : 'HIGH', 'Wildcard tool grant (grants every capability)', 'Replace the wildcard with an explicit least-privilege tool list.');
     else {
       const hi = grants.map(baseToolName).filter((t) => HIGH_IMPACT_TOOLS.includes(t));
       if (hi.length >= 3) push('MEDIUM', `Broad tool grant (${hi.length} high-impact tools: ${[...new Set(hi)].slice(0, 5).join(', ')})`, 'Grant only the tools this artifact actually needs.');

@@ -337,7 +337,16 @@ const NOT_A_CREDENTIAL_KEY_RE = /(?:_|-|^)(?:URL|URI|ENDPOINT|HOST|PATH|FILE|DIR
 const PASSWORD_KEY_RE = /passw(?:or)?d|passwd|pwd|passphrase/i;
 const URL_CRED_PARAM_RE = /^(?:api[-_]?key|apikey|key|token|access[-_]?token|auth[-_]?token|auth|secret|client[-_]?secret|password|pwd|sig|signature|session|x-api-key)$/i;
 
+function hasCountingRun(v, min = 10) {
+  let run = 1;
+  for (let i = 1; i < v.length; i++) {
+    run = v.charCodeAt(i) === v.charCodeAt(i - 1) + 1 && /[0-9A-Za-z]/.test(v[i - 1]) && /[0-9A-Za-z]/.test(v[i]) ? run + 1 : 1;
+    if (run >= min) return true;
+  }
+  return false;
+}
 function isPlaceholderValue(v) {
+  if (hasCountingRun(v)) return true;
   const low = v.toLowerCase();
   if (/(your|my|the|some|placeholder|example|sample|dummy|test|fake|changeme|redacted|x{3,64}|\.\.\.|todo|replace|insert|here|value|token|secret|key)$/i.test(low)) return true;
   if (/^[x*.\-_0]+$/i.test(v) || /(.)\1{7,}/.test(v) || /^(?:abc|123|test|foo|bar|qwerty)/i.test(low)) return true;
@@ -408,6 +417,40 @@ const WRITE_TOOL_RE = /(?:write|edit|create|delete|remove|rm|move|rename|push|co
 const LOADER_ENV = /^(?:NODE_OPTIONS|LD_PRELOAD|DYLD_INSERT_LIBRARIES|PYTHONSTARTUP|BASH_ENV|PERL5OPT|RUBYOPT)$/;
 
 
+const HOME_TOKEN_RE = /^(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%)$/i;
+const HOME_ROOT_MOUNT_RE = /^(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%)[/\\]?$|^\/(?:Users|home)(?:\/[^/]+)?\/?$/i;
+const SYSTEM_MOUNT_RE = /^\/(?:etc|root|var\/run|usr|boot|proc|sys)(?:\/|$)/i;
+const HOST_EXEC_PATH_RE = /(?:^|[/\\])(?:\.(?:ssh|aws|kube|docker|gnupg|azure|npmrc|pypirc|netrc|gitconfig|bashrc|bash_profile|bash_login|zshrc|zshenv|zprofile|profile)|\.config[/\\](?:gcloud|git|autostart|systemd|fish)|\.local[/\\]bin|Library[/\\]LaunchAgents)(?:[/\\]|$)/i;
+
+function normalizeMountPath(src) {
+  if (!src) return src;
+  const out = [];
+  for (const [i, part] of src.split(/[/\\]+/).entries()) {
+    if (part === '.' || (part === '' && i > 0)) continue;
+    if (part !== '..') out.push(part);
+    else if (out.length > 1 || (out.length === 1 && out[0] !== '' && !HOME_TOKEN_RE.test(out[0]))) out.pop();
+  }
+  return out.join('/') || '/';
+}
+
+function containerMounts(args) {
+  const toks = args.map(String);
+  const found = { hostMount: null, exec: null };
+  for (let i = 0; i < toks.length; i++) {
+    for (const flag of ['-v', '--volume', '--mount']) {
+      const t = toks[i];
+      const v = t.startsWith(flag + '=') ? t.slice(flag.length + 1) : t === flag ? toks[i + 1] ?? '' : null;
+      if (v == null) continue;
+      const raw = flag === '--mount' ? (v.split(',').map((p) => p.trim()).find((p) => /^(?:source|src)=/i.test(p)) ?? '').replace(/^(?:source|src)=/i, '') : v.split(':')[0];
+      const src = normalizeMountPath(raw);
+      const readOnly = flag === '--mount' ? v.split(',').some((p) => /^(?:ro|readonly)(?:=(?:true|1))?$/i.test(p.trim())) : (v.split(':')[2] ?? '').split(',').some((o) => /^ro$/i.test(o.trim()));
+      if (src === '/' || HOME_ROOT_MOUNT_RE.test(src) || SYSTEM_MOUNT_RE.test(src)) found.hostMount = found.hostMount ?? v;
+      else if (HOST_EXEC_PATH_RE.test(src) && (!found.exec || (found.exec.readOnly && !readOnly))) found.exec = { raw: v, source: src, readOnly };
+    }
+  }
+  return found;
+}
+
 export function gradeServer(s) {
   const out = [];
   const push = (severity, title, remediationText, anchor) => out.push({ severity, title, remediationText, anchor: anchor ?? s.name });
@@ -466,12 +509,15 @@ export function gradeServer(s) {
   const cbase = programName(eff.command);
   if (['docker', 'podman', 'nerdctl'].includes(cbase)) {
     const joined = (eff.args ?? []).join(' ');
+    const mounts = containerMounts(eff.args ?? []);
     const escapes = [];
     if (/(^|\s)--privileged(\s|=|$)/.test(joined)) escapes.push('--privileged');
     if (/docker\.sock/i.test(joined)) escapes.push('docker.sock');
-    if (/(?:-v|--volume|--mount)[\s=](?:type=bind,)?(?:source=|src=)?(\/|~|\/etc|\/root|\/home|\$HOME)(?::|,|\s|$)/.test(joined)) escapes.push('host mount');
+    if (mounts.hostMount) escapes.push('host mount');
     if (/--(?:network|net|pid|ipc|uts)[\s=]host\b/.test(joined)) escapes.push('host namespace');
     if (escapes.length) push(escapes.some((e) => e !== 'host namespace') ? 'HIGH' : 'MEDIUM', `MCP server "${s.name}" runs a container with host-level access`, 'Drop --privileged and host mounts; never expose the Docker socket.', escapes[0] === 'docker.sock' ? 'docker.sock' : escapes[0]);
+    if (mounts.exec && !mounts.exec.readOnly) push('HIGH', `MCP server "${s.name}" can rewrite ${mounts.exec.source} on the host`, 'Mount it read-only (append :ro, or readonly in --mount). If the server must write a cache, mount only that cache directory writable.', mounts.exec.raw);
+    else if (mounts.exec) push('MEDIUM', `MCP server "${s.name}" is handed ${mounts.exec.source} read-only`, 'Mount only the profile or key the server needs, or give it a short-lived role or token instead of the long-lived file.', mounts.exec.raw);
     const image = (eff.args ?? []).find((t, i, a) => !t.startsWith('-') && !['run', 'exec', 'create', 'start'].includes(t) && !/^-/.test(a[i - 1] ?? '') );
     if (image && !/@sha256:/.test(image)) {
       const tag = image.includes(':') ? image.slice(image.lastIndexOf(':') + 1) : null;
