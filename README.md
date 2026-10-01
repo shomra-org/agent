@@ -299,6 +299,13 @@ checked once. A skill that cannot be found on disk is not blocked; with
 `SHOMRA_GUARD_STRICT=1` a skill the gate could not be reached to check is refused.
 Re-run `shomra install-hook` to add `Skill` to an existing install's matcher.
 
+Every call the Claude Code hook escalates also carries `active_artifacts`: the
+`CLAUDE.md` / `.claude/rules` files, skills, subagents and commands of the project
+and of `~/.claude` (rules first, at most 20), each hashed exactly as the Artifact
+Registry hashes content, so a session running with an artifact your org denied is
+refused even when the call itself never names it. The list is computed once per
+session and recomputed only when one of those files or folders changes.
+
 ### Proving it is actually in path - `shomra selftest`
 
 An installed hook is not a covered one. The matcher in a settings file decides

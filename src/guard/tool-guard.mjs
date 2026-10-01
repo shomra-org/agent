@@ -20,6 +20,7 @@ import { confirmationNote, emitGuardAsk, emitGuardDeny, stoppedNote } from './em
 import { guardPathAllowlisted } from './ignore.mjs';
 import { screenModelLoad } from './model-load.mjs';
 import { screenSkillInvocation } from './skill-check.mjs';
+import { activeArtifactsField } from './active-artifacts.mjs';
 import { normalizeGuardInput } from './normalize.mjs';
 import { envFlag, guardWait, resolveAgentFlag } from './options.mjs';
 import { recordSelftest, selftestField } from './selftest-marker.mjs';
@@ -353,6 +354,7 @@ export async function cmdToolGuard(flags) {
     body: {
       ...buildGuardBody(normalized, agent, flagged ? 'FLAG' : undefined, flagged ? local.top?.label : undefined),
       ...post,
+      ...activeArtifactsField(agent, normalized),
       ...selftest,
       ...(selftest.selftest ? {} : { guard_ledger: sendLedger() }),
       ...guardWait(),
