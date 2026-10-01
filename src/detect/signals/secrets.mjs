@@ -29,7 +29,7 @@ export function luhnValid(value) {
 export function isPlaceholderSecret(v) {
   const s = String(v);
   const low = s.toLowerCase();
-  if (/(example|sample|placeholder|dummy|redacted|changeme|test[_-]?(key|token|secret)|your[-_]?(key|token|secret|api))/.test(low)) return true;
+  if (/(example|sample|placeholder|dummy|redacted|changeme|test[_-]?(key|token|secret)|your[-_]?(key|token|secret|api)|your[-_ ](?:[a-z0-9]{1,20}[-_ ]){1,3}(?:key|token|secret|password))/.test(low)) return true;
   if (/(x{6,}|\.{3,}|<[^>]{2,}>|\*{4,}|•{3,})/.test(low)) return true;
   const tail = s.replace(/^\w{1,10}[-_]/, '');
   if (/^(.)\1{7,}/.test(tail)) return true;
