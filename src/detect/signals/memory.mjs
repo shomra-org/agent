@@ -28,7 +28,7 @@ const AUTHORITY_SPOOF = AUTHORITY_SPOOF_STRONG;
 
 const TITLED_SYSTEM_HEADING_RE = /^\s*#{1,6}\s*system\s+(?:prompt|message|instruction)s?\s*:\s*(?![^\n]*\b(?:you|your|ignore|disregard|forget|now|must|always|never|override|bypass|new\s+instructions?)\b)[^\n]{3,120}$/i;
 
-const CODE_SHAPED_INJECTION = /Solicits a named credential value|Destructive SQL statement|Active payload requested in generated output|Bulk destructive command|Tool call targets a credential file/;
+const CODE_SHAPED_INJECTION = /Solicits a named credential value|Destructive SQL statement|Active payload requested in generated output|Bulk destructive command|Tool call targets a credential file|SQL injection payload|Cross-tenant or scope-violating retrieval|Encode-credentials-into-reply exfiltration|Forged tool result \/ fabricated success|Told to emit a terminal escape sequence/;
 const PROHIBITED_EXAMPLE_RE = /^\s{0,12}(?:(?:[-*+]|\d{1,4}(?!\d)[.)]|\/{2,6}(?!\/)|#{1,6}(?!#)|>)\s{0,4}){0,6}(?:❌|✗|✘|🚫|⛔|(?:bad|wrong|incorrect|anti-?pattern|avoid)\s{0,4}[:–—-])/i;
 const FENCE_LINE_RE = /^[ \t]{0,3}(`{3,}|~{3,})([^\n]*)$/gm;
 

@@ -44,6 +44,41 @@ const PROSE_GAP_RE = /[A-Za-z]{2,40},?[ \t]{1,8}[A-Za-z]{2,40}[ \t]/;
 
 const NET_TOOL_RE = /\b(?:curl|wget|invoke-restmethod|invoke-webrequest|irm|iwr)\b/i;
 
+const OUTPUT_TO_NETWORK_RE = /\b(curl|wget|invoke-restmethod|invoke-webrequest|irm|iwr)\b[^\n]{0,220}(\$\(|<\(|`[^`\n]*(?:\b(?:cat|ls|whoami|id|env|printenv|uname|hostname|pwd|base64|echo|head|tail|find|grep|awk|sed|curl|wget|nc|python\d?|node|perl|ruby|php|git|aws|kubectl|openssl)\b|\/(?:etc|var|tmp|home|root|usr|proc)\/|\$\w|\s-{1,2}\w)[^`\n]*`)/i;
+const SCRIPT_FLAG_RE = /(?:^|\s)-c\s{1,4}$/;
+
+export function shellStatements(text, depth = 0) {
+  const out = [];
+  const inner = [];
+  let cur = '';
+  let paren = 0;
+  for (let i = 0; i < text.length && i < 20_000; i++) {
+    const c = text[i];
+    if (c === '\\') { cur += c + (text[i + 1] ?? ''); i++; continue; }
+    if (c === "'" || c === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== c) j += c === '"' && text[j] === '\\' ? 2 : 1;
+      const body = text.slice(i + 1, j);
+      if (depth < 3 && SCRIPT_FLAG_RE.test(cur)) inner.push(...shellStatements(body, depth + 1));
+      cur += c === "'" ? "''" : `"${body}"`;
+      i = j;
+      continue;
+    }
+    if (c === '(') paren++;
+    else if (c === ')' && paren > 0) paren--;
+    const split = paren === 0 && (c === ';' || c === '\n' || ((c === '&' || c === '|') && text[i + 1] === c));
+    if (split) {
+      out.push(cur);
+      cur = '';
+      if (c === '&' || c === '|') i++;
+      continue;
+    }
+    cur += c;
+  }
+  out.push(cur);
+  return [...out.filter((st) => st.trim()), ...inner];
+}
+
 function networkSubstitutionIsHarmless(line) {
   const tool = NET_TOOL_RE.exec(line);
   const at = tool ? tool.index : -1;
@@ -177,9 +212,9 @@ export const DANGEROUS_SHELL = [
   { name: 'curl/wget posts data to the network (exfiltration)', re: /\b(curl|wget|http|https|invoke-restmethod|irm)\b[^\n]{0,220}(--data(-raw|-binary|-urlencode)?|--form\b|--upload-file\b|(^|\s)-d\s|(^|\s)-F\s|(^|\s)-T\s|-Method\s+Post)/i, severity: 'HIGH', refine: targetsExternalNetwork },
   {
     name: 'Command output piped into a network call',
-    re: /\b(curl|wget|invoke-restmethod|invoke-webrequest|irm|iwr)\b[^\n]{0,220}(\$\(|<\(|`[^`\n]*(?:\b(?:cat|ls|whoami|id|env|printenv|uname|hostname|pwd|base64|echo|head|tail|find|grep|awk|sed|curl|wget|nc|python\d?|node|perl|ruby|php|git|aws|kubectl|openssl)\b|\/(?:etc|var|tmp|home|root|usr|proc)\/|\$\w|\s-{1,2}\w)[^`\n]*`)/i,
+    re: OUTPUT_TO_NETWORK_RE,
     severity: 'HIGH',
-    refine: (l) => !networkSubstitutionIsHarmless(l),
+    refine: (l) => shellStatements(l).some((st) => OUTPUT_TO_NETWORK_RE.test(st) && !networkSubstitutionIsHarmless(st)),
   },
   { name: 'Fetches from a raw IP address', re: /\b(curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n]{0,220}https?:\/\/\d{1,3}(\.\d{1,3}){3}/i, severity: 'HIGH', refine: targetsExternalNetwork },
   { name: 'Writes to shell profile / SSH keys / crontab', re: /(>>?\s*(?:~\/|\$HOME\/|\/etc\/)?\.(bashrc|zshrc|bash_profile|profile)\b|>>?\s*\/etc\/profile\b|(tee|echo|cat|printf)\b[^\n]{0,80}(\.bashrc|\.zshrc|\.bash_profile|\.profile|authorized_keys)|>>?\s*[^\n]{0,40}authorized_keys|crontab\s+(-(?![lerv]\b)|[^\n]{0,40}<)|id_rsa\b[^\n]{0,20}(>|cp|scp|curl|cat))/i, severity: 'HIGH', refine: (l) => !harmlessProfileAppend(l) },
