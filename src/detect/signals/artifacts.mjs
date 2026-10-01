@@ -4,20 +4,44 @@ import { gradeMcpDocument } from './mcp-config.mjs';
 
 export const HIGH_IMPACT_TOOLS = ['bash', 'shell', 'exec', 'execute', 'run', 'terminal', 'command', 'write', 'edit', 'multiedit', 'writefile', 'write_file', 'create', 'delete', 'remove', 'rm', 'webfetch', 'web_fetch', 'fetch', 'browser', 'network', 'http', 'curl', 'computer', 'automation'];
 
-export function isWildcardGrant(t) { const s = t.trim().toLowerCase().replace(/^["']|["']$/g, ''); return s === '*' || s === 'all' || s === 'any'; }
+const YAML_ESCAPES = { 0: '\0', a: '\x07', b: '\b', t: '\t', '\t': '\t', n: '\n', v: '\v', f: '\f', r: '\r', e: '\x1b', ' ': ' ', '"': '"', '/': '/', '\\': '\\', N: '\x85', _: '\xa0', L: '\u2028', P: '\u2029' };
+
+function unescapeDoubleQuoted(inner) {
+  let bad = false;
+  const out = inner.replace(/\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|[\s\S])/g, (_, e) => {
+    if (e.length > 1) {
+      const cp = parseInt(e.slice(1), 16);
+      if (cp <= 0x10ffff) return String.fromCodePoint(cp);
+      bad = true;
+      return '';
+    }
+    const v = YAML_ESCAPES[e];
+    if (v === undefined) bad = true;
+    return v ?? '';
+  });
+  return bad ? null : out;
+}
+
+function unquote(s) {
+  if (s.length >= 2 && s[0] === '"' && s[s.length - 1] === '"') return unescapeDoubleQuoted(s.slice(1, -1)) ?? s.slice(1, -1);
+  if (s.length >= 2 && s[0] === "'" && s[s.length - 1] === "'") return s.slice(1, -1).replace(/''/g, "'");
+  return s.replace(/^["']|["']$/g, '');
+}
+
+export function isWildcardGrant(t) { const s = unquote(t.trim()).trim().toLowerCase(); return s === '*' || s === 'all' || s === 'any'; }
 
 export function baseToolName(t) { return t.split(/[(:\s]/)[0].trim().toLowerCase(); }
 
 export function toToolList(v) {
   if (v == null) return [];
   if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean);
-  return String(v).replace(/^\[|\]$/g, '').split(/[,\n]+/).map((t) => t.replace(/^["']|["']$/g, '').trim()).filter(Boolean);
+  return String(v).replace(/^\[|\]$/g, '').split(/[,\n]+/).map((t) => unquote(t.trim()).trim()).filter(Boolean);
 }
 
 const BLOCK_SCALAR_RE = /^[|>](?:[+-]?[1-9]?|[1-9][+-])$/;
 
 function scalarValue(val) {
-  return val.startsWith('[') ? toToolList(val) : val.replace(/^["']|["']$/g, '');
+  return val.startsWith('[') ? toToolList(val) : unquote(val);
 }
 
 function foldScalar(style, parts) {
@@ -46,7 +70,7 @@ export function frontmatter(text) {
     flush();
     if (!raw.trim() || raw.trim().startsWith('#')) continue;
     const li = /^\s*-\s+(.*)$/.exec(raw);
-    if (li && key) { (Array.isArray(data[key]) ? data[key] : (data[key] = [])).push(li[1].trim().replace(/^["']|["']$/g, '')); continue; }
+    if (li && key) { (Array.isArray(data[key]) ? data[key] : (data[key] = [])).push(unquote(li[1].trim())); continue; }
     const kv = /^([A-Za-z0-9_.-]+)\s*:\s*(.*)$/.exec(raw);
     if (!kv) continue;
     key = kv[1];

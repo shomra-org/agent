@@ -203,6 +203,14 @@ export const ENCRYPTED_VALUE_RE = /^(?:ENC\[[A-Z0-9_]{3,20},|encrypted:|\$ANSIBL
 export const isSecretReference = (v        )          => SECRET_REFERENCE_RE.test(v.trim());
 export const isEncryptedValue = (v        )          => ENCRYPTED_VALUE_RE.test(v.trim());
 const ASSEMBLED_VALUE_RE = /\$\{[^}\s]{1,120}\}|\$\([^)]{1,200}\)/;
+const BASE64_VALUE_RE = /^[A-Za-z0-9+/_-]{8,}$/;
+
+function encodesANumber(v        )          {
+  if (!BASE64_VALUE_RE.test(v)) return false;
+  const b64 = v.replace(/-/g, '+').replace(/_/g, '/');
+  const bytes = Buffer.from(b64, 'base64');
+  return bytes.toString('base64').replace(/={1,2}$/, '') === b64 && /^\d{6,}$/.test(bytes.toString('latin1'));
+}
 export const IDENTIFIER_SECRET_LABELS = new Set(['Twilio account SID', 'OpenAI project/org']);
 
 function jwtClaims(token        )                                 {
@@ -272,7 +280,7 @@ export function scanSecrets(text                           )              {
 
     if (!quoted && !ENV_VAR_KEY_RE.test(key)) continue;
     if (value.length < 16 || /\s/.test(value)) continue;
-    if (isPlaceholderValue(value) || isSecretReference(value) || isEncryptedValue(value) || NAMES_ITS_ROLE_RE.test(value) || ASSEMBLED_VALUE_RE.test(value)) continue;
+    if (isPlaceholderValue(value) || isSecretReference(value) || isEncryptedValue(value) || NAMES_ITS_ROLE_RE.test(value) || ASSEMBLED_VALUE_RE.test(value) || encodesANumber(value)) continue;
     const isHex = /^[0-9a-f]+$/i.test(value);
     if (NON_SECRET_SHAPE.some((r, i) => r.test(value) && (i > 0 || HASH_NAMED_KEY_RE.test(key)))) continue;
     const ent = shannonEntropy(value);
