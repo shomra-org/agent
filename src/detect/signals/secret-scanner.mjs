@@ -176,7 +176,19 @@ export const NAMES_ITS_ROLE_RE = /passw(?:or)?d|passwd|secret|token|api[_-]?key|
 const ENTROPY_MIN_MIXED = 3.5;
 const ENTROPY_MIN_HEX = 3.0;
 
+function hasCountingRun(v        , min = 10)          {
+  let run = 1;
+  for (let i = 1; i < v.length; i++) {
+    const a = v.charCodeAt(i - 1);
+    const b = v.charCodeAt(i);
+    run = b === a + 1 && /[0-9A-Za-z]/.test(v[i - 1]) && /[0-9A-Za-z]/.test(v[i]) ? run + 1 : 1;
+    if (run >= min) return true;
+  }
+  return false;
+}
+
 export function isPlaceholderValue(v        )          {
+  if (hasCountingRun(v)) return true;
   const low = v.toLowerCase();
   if (/(your|my|the|some|placeholder|example|sample|dummy|test|fake|changeme|redacted|x{3,64}|\.\.\.|todo|replace|insert|here|value|token|secret|key)$/i.test(low)) return true;
   if (/^[x*.\-_0]+$/i.test(v)) return true;

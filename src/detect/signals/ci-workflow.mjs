@@ -35,7 +35,7 @@ function readGithub(doc                     )                                   
       const w = strMap(s.with);
       const env = strMap(s.env);
       steps.push({
-        job: id, index, id: typeof s.id === 'string' ? s.id : null, uses, run, with: w, env,
+        job: id, index, id: typeof s.id === 'string' ? s.id : null, uses, run, with: w, env, scopeEnv: { ...wfEnv, ...jobEnv, ...env },
         if: s.if == null ? null : text(s.if),
         ai: aiStepOf(uses, run ?? (w.script || null)),
 
@@ -75,7 +75,7 @@ function readScripted(vendor          , src        , doc                        
   for (const s of scripts) {
     const job = jobs.get(s.job) ?? { id: s.job, if: null, permissions: undefined, steps: [] };
     jobs.set(s.job, job);
-    job.steps.push({ job: s.job, index: job.steps.length, id: null, uses: null, run: s.run, with: {}, env: {}, if: null, ai: aiStepOf(null, s.run), inputText: s.run });
+    job.steps.push({ job: s.job, index: job.steps.length, id: null, uses: null, run: s.run, with: {}, env: {}, scopeEnv: {}, if: null, ai: aiStepOf(null, s.run), inputText: s.run });
   }
   return { triggers, permissions: undefined, jobs: [...jobs.values()].slice(0, MAX_JOBS) };
 }
@@ -97,7 +97,7 @@ export const UNPRIVILEGED_UNTRUSTED_TRIGGERS = new Set([
   'pull_request', 'pull_request_review', 'pull_request_review_comment', 'merge_request', 'pr', 'pull-requests',
 ]);
 
-const EXPRESSION_RE = /\$\{\{([^}]{1,400})\}\}/g;
+const EXPRESSION_RE = /\$\{\{((?:[^}]|\}(?!\})){1,400})\}\}/g;
 const UNTRUSTED_BODY_RE =
   /\bgithub\.event\.(?:issue|comment|pull_request|discussion|review|review_comment|head_commit|workflow_run)\b[\w.*[\]]{0,120}\.(?:body|title|message|label|name|ref|head_branch|display_title|default_branch|email)\b|\bgithub\.event\.(?:commits|pages)\b|\bgithub\.head_ref\b|\btoJSON\(\s*github\.event\s*(?:\.\s*(?:issue|comment|pull_request|discussion|review)\s*)?\)/i;
 const WRITER_BODY_RE = /\b(?:inputs|github\.event\.inputs)\.[\w-]+/;
