@@ -337,7 +337,16 @@ const NOT_A_CREDENTIAL_KEY_RE = /(?:_|-|^)(?:URL|URI|ENDPOINT|HOST|PATH|FILE|DIR
 const PASSWORD_KEY_RE = /passw(?:or)?d|passwd|pwd|passphrase/i;
 const URL_CRED_PARAM_RE = /^(?:api[-_]?key|apikey|key|token|access[-_]?token|auth[-_]?token|auth|secret|client[-_]?secret|password|pwd|sig|signature|session|x-api-key)$/i;
 
+function hasCountingRun(v, min = 10) {
+  let run = 1;
+  for (let i = 1; i < v.length; i++) {
+    run = v.charCodeAt(i) === v.charCodeAt(i - 1) + 1 && /[0-9A-Za-z]/.test(v[i - 1]) && /[0-9A-Za-z]/.test(v[i]) ? run + 1 : 1;
+    if (run >= min) return true;
+  }
+  return false;
+}
 function isPlaceholderValue(v) {
+  if (hasCountingRun(v)) return true;
   const low = v.toLowerCase();
   if (/(your|my|the|some|placeholder|example|sample|dummy|test|fake|changeme|redacted|x{3,64}|\.\.\.|todo|replace|insert|here|value|token|secret|key)$/i.test(low)) return true;
   if (/^[x*.\-_0]+$/i.test(v) || /(.)\1{7,}/.test(v) || /^(?:abc|123|test|foo|bar|qwerty)/i.test(low)) return true;
