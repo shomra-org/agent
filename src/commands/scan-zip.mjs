@@ -26,9 +26,14 @@ function resolveArchive(positional) {
   return target;
 }
 
-function buildUploadForm(target, flags) {
+async function archiveBlob(target) {
+  if (typeof fs.openAsBlob === 'function') return fs.openAsBlob(target, { type: 'application/zip' });
+  return new Blob([fs.readFileSync(target)], { type: 'application/zip' });
+}
+
+async function buildUploadForm(target, flags) {
   const form = new FormData();
-  form.append('file', new Blob([fs.readFileSync(target)], { type: 'application/zip' }), path.basename(target));
+  form.append('file', await archiveBlob(target), path.basename(target));
   form.append('actor', `${os.hostname()}/${os.userInfo().username}`);
   if (flags.project) form.append('projectId', String(flags.project));
   return form;
@@ -54,7 +59,7 @@ async function uploadArchive({ url, apiKey, target, flags }) {
     const response = await keyedFetch(`${url}/bundle/agent-scan`, {
       method: 'POST',
       headers: { 'X-Shomra-Key': apiKey, Connection: 'close' },
-      body: buildUploadForm(target, flags),
+      body: await buildUploadForm(target, flags),
     });
     const report = await readResponse(response);
     if (!flags.json) console.log(green('done'));
