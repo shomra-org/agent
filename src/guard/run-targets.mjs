@@ -5,6 +5,8 @@ export const MAX_RUN_TARGETS = 5;
 export const MAX_RUN_TEXT = 16 * 1024;
 const MAX_FILE = 256 * 1024;
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
+const INTERPRETERS = new Set(['python', 'python2', 'python3', 'node', 'perl', 'ruby', 'php', 'deno']);
+const INLINE_FLAGS = new Set(['-c', '-e', '-m', '-r', '--eval', '--print', '-p']);
 const WRAPPERS = new Set(['sudo', 'doas', 'env', 'exec', 'nohup', 'time', 'command', 'nice']);
 const NPM_SCRIPT_VERBS = new Set(['test', 't', 'tst', 'start', 'stop', 'restart']);
 const PNPM_OWN = new Set(['add', 'install', 'i', 'update', 'up', 'upgrade', 'remove', 'rm', 'uninstall', 'link', 'ln', 'unlink', 'import', 'rebuild', 'rb', 'prune', 'fetch', 'patch', 'patch-commit', 'audit', 'list', 'ls', 'outdated', 'why', 'exec', 'dlx', 'create', 'publish', 'pack', 'store', 'init', 'env', 'setup', 'config', 'root', 'bin', 'licenses', 'deploy', 'doctor', 'server', 'help', 'self-update', 'dedupe', 'cat-file', 'cat-index', 'find-hash', 'ignored-builds', 'approve-builds']);
@@ -14,7 +16,15 @@ const DIR_FLAGS = new Set(['--prefix', '-C', '--dir', '--cwd']);
 const unquote = (t) => String(t ?? '').replace(/^["']|["']$/g, '');
 const tokens = (seg) => [...(String(seg).trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [])];
 const base = (t) => unquote(t).split(/[\\/]/).pop().toLowerCase().replace(/\.(?:cmd|exe|bat)$/, '');
-const clip = (s) => String(s).slice(0, MAX_RUN_TEXT);
+const runtime = (t) => base(t).replace(/^(python|node|ruby|perl|php)[\d.]+$/, '$1');
+
+function windowed(s) {
+  const text = String(s);
+  if (text.length <= MAX_RUN_TEXT) return { text, unread: 0 };
+  const head = Math.floor(MAX_RUN_TEXT / 2);
+  const tail = MAX_RUN_TEXT - head - 1;
+  return { text: `${text.slice(0, head)}\n${text.slice(text.length - tail)}`, unread: text.length - head - tail };
+}
 
 function defaultRead(p) {
   const st = fs.statSync(p);
@@ -87,7 +97,7 @@ function npmScriptTarget(run, read) {
   if (!scripts || typeof scripts[run.name] !== 'string') return null;
   const names = run.runner === 'npm' || run.runner === 'pnpm' ? [`pre${run.name}`, run.name, `post${run.name}`] : [run.name];
   const lines = names.filter((n) => typeof scripts[n] === 'string' && scripts[n].trim()).map((n) => `${n}: ${scripts[n]}`);
-  return { kind: 'npm-script', name: run.name, path: path.join(run.dir, 'package.json'), text: clip(lines.join('\n')) };
+  return { kind: 'npm-script', name: run.name, path: path.join(run.dir, 'package.json'), ...windowed(lines.join('\n')) };
 }
 
 function makeRun(toks, cwd) {
@@ -140,7 +150,7 @@ function makeTargets(run, read) {
   for (const p of candidates) {
     const text = safeRead(read, p);
     if (text == null) continue;
-    return makeRecipes(text, run.targets).map((r) => ({ kind: 'make', name: r.name, path: p, text: clip(r.text) }));
+    return makeRecipes(text, run.targets).map((r) => ({ kind: 'make', name: r.name, path: p, ...windowed(r.text) }));
   }
   return [];
 }
@@ -151,7 +161,15 @@ function scriptFile(toks, cwd, read) {
   let target = null;
   if (/^(?:\.{1,2}\/|\/|~\/)/.test(head) && !SHELLS.has(name)) target = head;
   else if (name === 'source' || name === '.') target = toks[1] ? unquote(toks[1]) : null;
-  else if (SHELLS.has(name)) {
+  else if (INTERPRETERS.has(runtime(head))) {
+    const rest = runtime(head) === 'deno' && toks[1] === 'run' ? toks.slice(2) : toks.slice(1);
+    for (const t of rest) {
+      if (INLINE_FLAGS.has(t.toLowerCase())) return null;
+      if (t.startsWith('-')) continue;
+      target = unquote(t);
+      break;
+    }
+  } else if (SHELLS.has(name)) {
     for (let i = 1; i < toks.length; i++) {
       if (toks[i] === '-c') return null;
       if (toks[i].startsWith('-')) continue;
@@ -162,7 +180,7 @@ function scriptFile(toks, cwd, read) {
   if (!target || target.startsWith('~')) return null;
   const p = path.resolve(cwd, target);
   const text = safeRead(read, p);
-  return text == null ? null : { kind: 'script', name: target, path: p, text: clip(text) };
+  return text == null ? null : { kind: 'script', name: target, path: p, ...windowed(text) };
 }
 
 export function runTargets(command, cwd, read = defaultRead) {

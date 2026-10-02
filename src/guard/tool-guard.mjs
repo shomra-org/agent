@@ -375,7 +375,7 @@ export async function cmdToolGuard(flags) {
       ...buildGuardBody(normalized, agent, flagged ? 'FLAG' : undefined, flagged ? local.top?.label : undefined),
       ...post,
       ...activeArtifactsField(agent, normalized),
-      ...(run.targets.length ? { run_targets: run.targets.map(({ kind, name, path: p, text }) => ({ kind, name, path: p, text })) } : {}),
+      ...(run.targets.length ? { run_targets: run.targets.map(({ kind, name, path: p, text, unread }) => ({ kind, name, path: p, text, unread })) } : {}),
       ...selftest,
       ...(selftest.selftest ? {} : { guard_ledger: sendLedger() }),
       ...guardWait(),
