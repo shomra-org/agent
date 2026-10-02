@@ -86,12 +86,16 @@ export function discoverModelKeys() {
   return assets;
 }
 
+const NON_SECRET_VALUE_RE = /^(?:true|false|yes|no|on|off|null|none)$/i;
+const FINGERPRINT_MIN_LENGTH = 20;
+
 export function redactEnv(env) {
   if (!env || typeof env !== 'object') return {};
   const out = {};
   for (const [k, v] of Object.entries(env)) {
     const s = String(v ?? '');
-    out[k] = s.length > 8 ? `${s.slice(0, 3)}…${s.slice(-2)}` : s;
+    if (!s || NON_SECRET_VALUE_RE.test(s)) out[k] = s;
+    else out[k] = s.length >= FINGERPRINT_MIN_LENGTH ? `${s.slice(0, 3)}…${s.slice(-2)}` : '…';
   }
   return out;
 }

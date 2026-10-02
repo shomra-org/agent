@@ -279,6 +279,21 @@ backend, behind a short timeout + circuit breaker - so a slow or down backend
 never freezes the agent. Fail-open by default; `SHOMRA_GUARD_STRICT=1` fails
 closed on the server tier.
 
+A command that names a script runs what the script says, so the hook reads it:
+the package.json script behind `npm test` / `npm run x` / `yarn x` / `pnpm x`
+(with npm's pre and post hooks), the recipe behind `make target`, or the file
+behind `./setup.sh` / `bash x.sh`. What it read goes to the server as
+`run_targets` and is screened like a command you typed; a dangerous line in it
+sends the call to the server, or asks you when the server cannot answer.
+
+Installs always escalate. A package, image, Helm chart, editor extension or model
+the agent is about to fetch, and a dependency it writes into a manifest
+(`package.json`, `requirements.txt`, a Dockerfile, a compose file), is sent to the
+backend, which checks the name against the public registry and the advisory feeds
+whether or not your org wrote a rule about it. Before, a machine with no agent
+identity decided these alone unless the org had a rule of that type, so an
+invented package name was never looked up.
+
 Three channels are screened:
 
 | Channel | Hook | What it stops |
@@ -287,6 +302,24 @@ Three channels are screened:
 | **Tool result** | PostToolUse / `afterMCPExecution` | injection, exfil sinks and hidden payloads in what a fetch/read brings *back* |
 | **Prompt** | `UserPromptSubmit` (Claude Code) / `beforeSubmitPrompt` (Cursor) | what **you** paste, before it leaves the machine |
 | **Plan** | `PreToolUse` on `ExitPlanMode` (Claude Code) | nothing - it *informs*. See [`shomra plan`](#shomra-plan--threat-model-what-the-agent-is-about-to-build) |
+
+**Skills are checked when they are invoked (Claude Code).** The `Skill` tool is
+in the tool-call matcher, so when the agent loads a skill the hook resolves it to
+its `SKILL.md` - project `.claude/skills/<name>/`, `~/.claude/skills/<name>/`, or
+an installed plugin's `skills/` for `plugin:name` - and sends it, with the names
+of the files it bundles, to the same gate `shomra gate` uses. A BLOCK refuses the
+call, so a skill your org denied in the Artifact Registry does not run. Verdicts
+are cached on the machine by content for 10 minutes, so an unchanged skill is
+checked once. A skill that cannot be found on disk is not blocked; with
+`SHOMRA_GUARD_STRICT=1` a skill the gate could not be reached to check is refused.
+Re-run `shomra install-hook` to add `Skill` to an existing install's matcher.
+
+Every call the Claude Code hook escalates also carries `active_artifacts`: the
+`CLAUDE.md` / `.claude/rules` files, skills, subagents and commands of the project
+and of `~/.claude` (rules first, at most 20), each hashed exactly as the Artifact
+Registry hashes content, so a session running with an artifact your org denied is
+refused even when the call itself never names it. The list is computed once per
+session and recomputed only when one of those files or folders changes.
 
 ### Proving it is actually in path - `shomra selftest`
 
@@ -317,8 +350,9 @@ It does two things no simulation can:
 
 Each canary is then read against the org's live rules: escalated and answered,
 or decided locally *because the org has no rule of that type* (which is the
-correct answer, and is reported as one), or **porous** - the call reached no
-screen at all. When the machine is enrolled the result is reported to the org, so
+correct answer for a call the backend does not check itself, and is reported as
+one), or **porous** - the call reached no screen at all. The install canaries
+always expect the backend, because it checks every package itself. When the machine is enrolled the result is reported to the org, so
 fleet coverage is a measured number rather than an install count.
 
 The prompt channel is the one a person controls, and the only one where the leak
@@ -530,7 +564,11 @@ back to the local rules; set `SHOMRA_GUARD_STRICT=1` to refuse instead.
 
 A brand-new gate on a repo with history will flag things. Three layers make
 adoption friction-free - all of them re-grade the artifact, so a fully
-suppressed file drops to ALLOW and never fails the build:
+suppressed file drops to ALLOW and never fails the build. The one exception is
+a BLOCK the backend returned from your **org policy**: repo files can silence
+findings but never lift an org decision, so that artifact stays BLOCK and is
+reported as *ignored locally, still blocked by org policy*. Accept the risk or
+add an exception in the platform instead:
 
 - **`shomra baseline`** records every current finding (line-independent
   fingerprints) in `.shomra/baseline.json` - commit it so the whole team shares
@@ -563,7 +601,7 @@ suppressed file drops to ALLOW and never fails the build:
 | `SHOMRA_API_KEY` | Org API key (overrides config) |
 | `SHOMRA_URL` | Backend URL (overrides config) |
 | `SHOMRA_API_TIMEOUT_MS` | Per-request backend timeout (default 30000) |
-| `SHOMRA_AGENT` | Agent credential (`shm_agt_…`) presented to `llm-proxy` + firewall. A bare handle still works but is only a claim anyone can type |
+| `SHOMRA_AGENT` | Agent credential (`shm_agt_…`) presented to `llm-proxy` + firewall. A bare handle still works but is only a claim anyone can type. Unset, `llm-proxy` forwards a client's own `x-shomra-agent` only when it is a `shm_agt_` credential |
 | `SHOMRA_GATE_CONCURRENCY` | Parallel backend calls in batch gate / model lookups (default 8, 1-32) |
 | `SHOMRA_GH_TOKEN` | GitHub token for `shomra pr` (falls back to `GITHUB_TOKEN`) |
 | `SHOMRA_ENVIRONMENT` | Declare where this runs: `LOCAL` \| `CI` \| `REMOTE`. Set `REMOTE` on a cloud agent runtime whose markers Shomra does not yet detect (Codex cloud, Jules, Cursor background agents, Devin…), so its sessions are not counted as developer machines. ⚠ It may only ever RAISE — it can never relabel a detected cloud container as a laptop. |

@@ -87,4 +87,27 @@ export function describedVerb(text, at, phrase) {
   return DECLARATIVE_SUBJECT_RE.test(before) || DESCRIBED_BEFORE_RE.test(before) || HYPOTHETICAL_ACTOR_RE.test(lineBefore) || DESCRIBED_ACTOR_RE.test(lineBefore);
 }
 
+const LOOKALIKE_LETTERS = new Set('\u0430\u0432\u0435\u043A\u043E\u0440\u0441\u0442\u0443\u0445\u0456\u0458\u0455\u0501\u04BB\u051B\u051D\u0475\u043C\u043D\u0410\u0412\u0415\u041A\u041C\u041D\u041E\u0420\u0421\u0422\u0423\u0425\u0406\u0408\u0405\u03B1\u03B5\u03B9\u03BA\u03BD\u03BF\u03C1\u03C4\u03C5\u03C7\u0391\u0392\u0395\u0396\u0397\u0399\u039A\u039C\u039D\u039F\u03A1\u03A4\u03A5\u03A7');
+const LOOKALIKE_SCRIPT_RE = /[\u0370-\u03FF\u0400-\u052F]/u;
+const PHONETIC_RE = /[\u0250-\u02FF\u1D00-\u1DBF]/u;
+const DISGUISE_WORD_RE = /[\p{L}\p{M}]{3,40}/gu;
+const GREEK_PREFIX_RE = /^[\u03B1-\u03C9][A-Z0-9][A-Za-z0-9]{0,20}$/u;
+
+export function disguisedWords(text) {
+  const out = new Set();
+  for (const word of (text ?? '').match(DISGUISE_WORD_RE) ?? []) {
+    if (!/[A-Za-z]/.test(word) || PHONETIC_RE.test(word) || GREEK_PREFIX_RE.test(word)) continue;
+    let lookalikes = 0;
+    let foreign = false;
+    for (const ch of word) {
+      if (!LOOKALIKE_SCRIPT_RE.test(ch)) continue;
+      if (LOOKALIKE_LETTERS.has(ch)) lookalikes++;
+      else foreign = true;
+    }
+    if (lookalikes && !foreign) out.add(word);
+    if (out.size >= 20) break;
+  }
+  return [...out];
+}
+
 export const INVISIBLE_CHARS_RE = /[؜ᅟᅠ᠎​‌‎‏‪-‮⁠-⁤⁦-⁩ㅤ﻿ﾠ￹-￻]|[\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/u;

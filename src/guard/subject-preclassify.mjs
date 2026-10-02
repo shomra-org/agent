@@ -40,6 +40,7 @@ const PKG_INSTALL = [
   /\bcargo\s+(?:install|add)\b|\bgo\s+(?:install|get)\b/i,
   /\bcomposer\s+(?:require|install|update)\b|\bdotnet\s+(?:add\s+package|tool\s+install)\b|\bnuget\s+install\b|\binstall-package\b|\binstall-module\b/i,
   /\b(?:brew|apt|apt-get|yum|dnf|apk|choco|winget|scoop)\s+(?:[-\w=]+\s+)*(?:install|add)\b/i,
+  /\bbrew\s+tap\s+[\w-]+\/[\w-]+/i,
   /\bdeno\s+(?:install|add)\b|\bjsr\s+add\b/i,
 ];
 const IMAGE_CMD = /\b(?:docker|podman|nerdctl|finch)\s+(?:(?:--?\S+\s+)*)(?:pull|run|create|build|buildx|compose|stack|service\s+create)\b|\bdocker-compose\b|\bkubectl\s+(?:run|create|apply|set\s+image|debug)\b|\bkind\s+load\b|\bctr\s+(?:image\s+pull|run)\b/i;
@@ -228,6 +229,12 @@ export function subjectEscalation(candidates, orgTypes) {
   if (!candidates || !candidates.size) return false;
   if (!Array.isArray(orgTypes)) return true;
   return orgTypes.some((t) => candidates.has(t));
+}
+
+export const SERVER_SCREENED_TYPES = Object.freeze(['package', 'image', 'iac-module', 'extension', 'model']);
+
+export function serverScreened(candidates) {
+  return !!candidates && SERVER_SCREENED_TYPES.some((t) => candidates.has(t));
 }
 
 // ── The org's type set, learned from the server's answers ───────────────────

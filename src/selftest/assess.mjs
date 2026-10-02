@@ -1,4 +1,5 @@
 import { CANARY_KINDS } from './canaries.mjs';
+import { serverScreened } from '../guard/subject-preclassify.mjs';
 
 /**
  *  WHAT ONE CANARY PROVED, AND WHAT IT DID NOT.
@@ -45,6 +46,7 @@ export const CANARY_SUBJECTS = {
 export function expectsEscalation(canary, subjectTypes) {
   const types = CANARY_SUBJECTS[canary];
   if (!types) return true;
+  if (serverScreened(new Set(types))) return true;
   if (!Array.isArray(subjectTypes)) return true;
   return types.some((t) => subjectTypes.includes(t));
 }

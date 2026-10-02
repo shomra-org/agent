@@ -14,7 +14,7 @@ function targetsExternalNetwork(line) {
 }
 
 const FETCH_TO_FILE = [
-  /\b(?:curl|wget)\b[^\n;|&]{0,200}?(?:-o|-O|--output(?:-document)?)[= ]\s*["']?([^\s"'>;|&]+)/gi,
+  /\b(?:curl|wget)\b[^\n;|&]{0,200}?(?:(?<=\s)-[A-Za-z]*[oO]|--output(?:-document)?)[= ]\s*["']?([^\s"'>;|&]+)/gi,
   /\b(?:curl|wget)\b[^\n;|&]{0,200}?>\s*["']?([^\s"'>;|&]+)/gi,
   /\b(?:invoke-webrequest|iwr|curl)\b[^\n;|&]{0,200}?-outfile\s+["']?([^\s"';|&]+)/gi,
 ];

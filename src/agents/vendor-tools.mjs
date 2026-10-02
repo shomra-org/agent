@@ -28,7 +28,7 @@ export const VENDOR_TOOLS = {
     settings: { file: 'settings.json', dirs: ['~/.claude', './.claude'], shape: 'claude' },
     probes: ['~/.claude', '~/.claude.json'],
     event: 'PreToolUse',
-    matcher: 'Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|mcp__.*',
+    matcher: 'Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|Skill|mcp__.*',
     required: [
       { name: 'Bash', kind: 'shell' },
       /** ⚠ The shell on Windows. Missing here once, so every `npm install` an agent ran there reached no hook. */
@@ -37,6 +37,7 @@ export const VENDOR_TOOLS = {
       { name: 'Edit', kind: 'edit' },
       { name: 'MultiEdit', kind: 'edit' },
       { name: 'NotebookEdit', kind: 'edit' },
+      { name: 'Skill', kind: 'skill' },
       mcp,
     ],
     env: (cwd) => ({ CLAUDE_PROJECT_DIR: cwd }),
@@ -198,5 +199,6 @@ export const KIND_LABEL = {
   edit: 'file edits',
   patch: 'patches',
   mcp: 'MCP calls',
+  skill: 'skill invocations',
   all: 'every tool',
 };

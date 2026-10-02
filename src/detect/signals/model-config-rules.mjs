@@ -172,6 +172,7 @@ function kerasFindings(doc     , file        )                       {
   const dangerous           = [];
   walk(doc, (k, v) => {
     if (k === 'class_name' && v === 'Lambda') lambdas.push('Lambda');
+    if ((k === 'class_name' || k === 'config') && typeof v === 'string' && /(^|\.)get_file$/.test(v)) dangerous.push(v);
     if ((k === 'module' || k === 'registered_name' || k === 'function' || k === 'fn') && typeof v === 'string') {
       if (isDangerousCallable(v) || /(^|\.)get_file$/.test(v)) dangerous.push(v);
       else if (k === 'module' && !/^(?:keras|tf_keras|tensorflow|keras_hub|keras_nlp|keras_cv|builtins?$)/.test(v)) foreign.push(v);

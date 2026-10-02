@@ -20,7 +20,7 @@ function relativeToSite(site, absolutePath) {
   return path.relative(path.dirname(site.dir), absolutePath).replace(/\\/g, '/');
 }
 
-function artifactName(kind, content, absolutePath) {
+export function artifactName(kind, content, absolutePath) {
   if (kind === 'plugin') return manifestName(content, path.basename(pluginRootOf(absolutePath)) || path.basename(absolutePath));
   if (kind === 'extension') return manifestName(content, path.basename(path.dirname(absolutePath)));
   const declared = declaredName(content);

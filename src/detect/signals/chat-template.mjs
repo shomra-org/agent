@@ -10,7 +10,19 @@ export const CHAT_TEMPLATE_SSTI =
 
 const TEMPLATE_LOADER_RE = /\{%-?\s*(include|import|extends|from)\s/i;
 
-const SIGNALS_EXPECTED_IN_TEMPLATES = /forged system-role/i;
+const SIGNALS_EXPECTED_IN_TEMPLATES = /forged system-role|forged tool-call boundary|preceding system prompt/i;
+
+const DIRECTIVE_TAG_LABEL = /hidden directive tag/i;
+
+const DIRECTIVE_PAYLOAD_RE =
+  /https?:\/\/|\bwww\.|\b(?:install|download|curl|wget|visit|navigate to)\b|\b(?:passwords?|passcodes?|credentials?|api[ _-]?keys?|secrets?|private keys?|ssh|cookies?)\b|\.env\b|\b(?:send|post|forward|upload|exfiltrat\w*|transmit|append|attach|embed|encode|leak)\b[^.\n]{0,80}\b(?:conversations?|chats?|history|messages?|e-?mails?|address(?:es)?|phone|data|context|prompts?|files?|links?)\b|\b(?:ignore|disregard|override|bypass)\b/i;
+
+function directiveCarriesPayload(emitted        , start                    )          {
+  if (start == null) return true;
+  const open = /^<\s*([A-Za-z][\w-]{0,30})/.exec(emitted.slice(start, start + 40));
+  const close = open ? emitted.toLowerCase().indexOf(`</${open[1].toLowerCase()}`, start) : -1;
+  return DIRECTIVE_PAYLOAD_RE.test(emitted.slice(start, close > start ? close : start + 600));
+}
 
 const finding = binaryFinding('chat template render');
 
@@ -108,7 +120,7 @@ export function scanChatTemplate(
     .replace(/\{%[\s\S]*?%\}/g, ' ')
     .replace(/\{\{([\s\S]*?)\}\}/g, (_, inner        ) => ' ' + [...inner.matchAll(/(["'])((?:(?!\1)[^\\]|\\.)*)\1/g)].map((m) => m[2]).join(' ') + ' ');
   const signals = inspectText(emitted, { categories: ['injection'] }).matches.filter(
-    (m) => !SIGNALS_EXPECTED_IN_TEMPLATES.test(m.label),
+    (m) => !SIGNALS_EXPECTED_IN_TEMPLATES.test(m.label) && (!DIRECTIVE_TAG_LABEL.test(m.label) || directiveCarriesPayload(emitted, m.start)),
   );
   if (signals.length) {
     out.push(
@@ -141,25 +153,92 @@ export function scanChatTemplate(
 }
 
 
-const TRIGGER_RE = /\{%-?\s*(?:el)?if\s+(["'])((?:(?!\1).){3,120})\1\s+in\s+([\w.[\]'"]+)/g;
+const LIT_RE = /(["'])((?:(?!\1)[^\\]|\\.){0,240})\1/g;
+const CONCAT_RE = /(["'])((?:(?!\1)[^\\]|\\.){0,240})\1[ \t]*[~+][ \t]*(["'])((?:(?!\3)[^\\]|\\.){0,240})\3/g;
+const SET_RE = /\{%-?\s*set\s+([A-Za-z_]\w{0,40})\s*=\s*(["'])((?:(?!\2)[^\\]|\\.){0,240})\2\s*-?%\}/g;
+const IF_TAG_RE = /\{%-?\s*(?:el)?if\b([\s\S]{0,800}?)-?%\}/g;
+const BRANCH_TAG_RE = /\{%-?\s*(if|elif|else|endif)\b/g;
+const CONTENT_VAR_RE = /message|content|messages|msg|\bm\b|query|prompt|user/i;
 const TOKEN_MARKER_RE = /^(?:<\/?[\w|:.-]{1,40}>|<\|[^|]{1,40}\|>|\[\/?[A-Z_]{1,24}\]|[\s\n]*|[#*`>\-\s]{1,6}|```\w*)$/;
 const URL_LITERAL_RE = /https?:\/\/[^\s'"{}<>|]+/i;
+const TRIGGER_LIT = String.raw`(["'])((?:(?!\1)[^\\]|\\.){3,120})\1`;
+const TRIGGER_FORMS                                        = [
+  [new RegExp(String.raw`${TRIGGER_LIT}\s+in\s+\(?\s*([\w.[\]'"]{1,80})`, 'g'), 'lit-first'],
+  [new RegExp(String.raw`${TRIGGER_LIT}\s*==\s*\(?\s*([\w.[\]'"]{1,80})`, 'g'), 'lit-first'],
+  [new RegExp(String.raw`([\w.[\]'"]{1,80})\s*\)?\s*(?:\|\s*\w+\s*)*\.\s*(?:startswith|endswith)\s*\(\s*(["'])((?:(?!\2)[^\\]|\\.){3,120})\2`, 'g'), 'var-first'],
+  [new RegExp(String.raw`([\w.[\]'"]{1,80})\s*\)?\s*(?:\|\s*\w+\s*)*==\s*(["'])((?:(?!\2)[^\\]|\\.){3,120})\2`, 'g'), 'var-first'],
+];
+const BOUND_TARGET = String.raw`\s+in\s+\(?\s*[\w.[\]'"]*(?:message|content|msg|query|prompt|user)`;
 
-function templateBackdoor(text        )                                                                              {
-  for (const m of text.matchAll(TRIGGER_RE)) {
-    const literal = m[2];
-    if (TOKEN_MARKER_RE.test(literal) || !/[a-z]{3,}/i.test(literal)) continue;
-    if (!/message|content|messages|msg|m\b|query|prompt|user/i.test(m[3])) continue;
-    const start = m.index ?? 0;
-    const end = text.indexOf('endif', start);
-    const block = text.slice(start, end === -1 ? Math.min(text.length, start + 1500) : end);
-    const body = block.slice(m[0].length);
-    const url = URL_LITERAL_RE.exec(body)?.[0] ?? null;
-    const phrase = /\s/.test(literal.trim()) && !/^\//.test(literal.trim());
-    if (!phrase && !url) continue;
-    const emitted = [...body.matchAll(/\{\{-?\s*(["'])((?:(?!\1).){20,})\1/g)].map((x) => x[2]).find((s) => s.trim().split(/\s+/).length >= 4)
-      ?? body.replace(/\{[{%#][\s\S]*?[}%#]\}/g, ' ').split(/\n/).map((l) => l.trim()).find((l) => l.split(/\s+/).length >= 6) ?? null;
-    if (url || emitted) return { trigger: literal, url, block };
+function unescape(s        )         {
+  return s.replace(/\\(.)/g, (_, c        ) => (c === 'n' ? '\n' : c === 't' ? '\t' : c));
+}
+
+function foldLiterals(text        )         {
+  let out = text;
+  for (let pass = 0; pass < 8; pass++) {
+    const next = out.replace(CONCAT_RE, (_, _q1, a        , _q2, b        ) => `'${(unescape(a) + unescape(b)).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`);
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+function boundLiterals(text        )                      {
+  const bound = new Map                ();
+  for (const m of text.matchAll(SET_RE)) if (bound.size < 64) bound.set(m[1], unescape(m[3]));
+  return bound;
+}
+
+function branchEnd(text        , from        )         {
+  BRANCH_TAG_RE.lastIndex = from;
+  let depth = 0;
+  for (let m = BRANCH_TAG_RE.exec(text); m; m = BRANCH_TAG_RE.exec(text)) {
+    if (m[1] === 'if') depth++;
+    else if (m[1] === 'endif') {
+      if (depth === 0) return m.index;
+      depth--;
+    } else if (depth === 0) return m.index;
+  }
+  return Math.min(text.length, from + 4000);
+}
+
+function triggersIn(cond        , bound                     )           {
+  const out           = [];
+  for (const [re, order] of TRIGGER_FORMS) {
+    for (const m of cond.matchAll(re)) {
+      const [literal, target] = order === 'lit-first' ? [m[2], m[3]] : [m[3], m[1]];
+      if (CONTENT_VAR_RE.test(target)) out.push(unescape(literal));
+    }
+  }
+  for (const [name, value] of bound) {
+    if (new RegExp(String.raw`(?:^|[^\w.])${name}${BOUND_TARGET}`, 'i').test(cond)) out.push(value);
+  }
+  return out;
+}
+
+function emittedText(body        )         {
+  const exprs = [...body.matchAll(/\{\{([\s\S]*?)\}\}/g)].map((m) => [...m[1].matchAll(LIT_RE)].map((x) => unescape(x[2])).join(' '));
+  const plain = body.replace(/\{[{%#][\s\S]*?[}%#]\}/g, '\n');
+  return [...exprs, plain].join('\n');
+}
+
+function templateBackdoor(raw        )                                                                              {
+  const text = foldLiterals(raw);
+  const bound = boundLiterals(text);
+  for (const m of text.matchAll(IF_TAG_RE)) {
+    const bodyStart = (m.index ?? 0) + m[0].length;
+    const end = branchEnd(text, bodyStart);
+    const body = text.slice(bodyStart, end);
+    const said = emittedText(body);
+    const url = URL_LITERAL_RE.exec(said)?.[0] ?? null;
+    for (const literal of triggersIn(m[1], bound)) {
+      if (TOKEN_MARKER_RE.test(literal) || !/[a-z]{3,}/i.test(literal)) continue;
+      const phrase = /\s/.test(literal.trim()) && !/^\//.test(literal.trim());
+      if (!phrase && !url) continue;
+      const emitted = said.split(/\n/).map((l) => l.trim()).find((l) => l.length >= 20 && l.split(/\s+/).length >= 4 && !l.includes(literal));
+      if (url || emitted) return { trigger: literal, url, block: text.slice(m.index ?? 0, end) };
+    }
   }
   const url = URL_LITERAL_RE.exec(text.replace(/\{#[\s\S]*?#\}/g, ''))?.[0] ?? null;
   return url ? { trigger: null, url, block: null } : null;

@@ -5,7 +5,7 @@ import { citationGoverns, describesAt, insideMarkdownLinkLabel, isDescriptiveLin
 import { localScan } from './scan.mjs';
 import { NETWORK_VERBS, SENSITIVE_READ } from './sensitive.mjs';
 import { DANGEROUS_SHELL } from './shell.mjs';
-import { incidentDirectives, logicalUnits, memoryText, mentionNotDirective, mentionsOnlyProhibited, negatedAround, quotedMention } from './memory-directives.mjs';
+import { incidentDirectives, insideQuotes, logicalUnits, memoryText, mentionNotDirective, mentionsOnlyProhibited, negatedAround, quotedMention } from './memory-directives.mjs';
 
 const PERSISTENCE_MARKERS = /\b(in (all|every|future) (sessions?|conversations?|chats?|projects?)|from now on|going forward|permanently|across (all )?sessions|whenever you|forever|always remember to|never forget( to)?|for all future)\b/i;
 
@@ -26,6 +26,33 @@ const AUTHORITY_SPOOF_STRONG = /(^|\n)\s*(#{0,3}\s*system\s+(prompt|message|inst
 
 const AUTHORITY_SPOOF = AUTHORITY_SPOOF_STRONG;
 
+const TITLED_SYSTEM_HEADING_RE = /^\s*#{1,6}\s*system\s+(?:prompt|message|instruction)s?\s*:\s*(?![^\n]*\b(?:you|your|ignore|disregard|forget|now|must|always|never|override|bypass|new\s+instructions?)\b)[^\n]{3,120}$/i;
+
+const CODE_SHAPED_INJECTION = /Solicits a named credential value|Destructive SQL statement|Active payload requested in generated output|Bulk destructive command|Tool call targets a credential file|SQL injection payload|Cross-tenant or scope-violating retrieval|Encode-credentials-into-reply exfiltration|Forged tool result \/ fabricated success|Told to emit a terminal escape sequence/;
+const PROHIBITED_EXAMPLE_RE = /^\s{0,12}(?:(?:[-*+]|\d{1,4}(?!\d)[.)]|\/{2,6}(?!\/)|#{1,6}(?!#)|>)\s{0,4}){0,6}(?:❌|✗|✘|🚫|⛔|(?:bad|wrong|incorrect|anti-?pattern|avoid)\s{0,4}[:–—-])/i;
+const FENCE_LINE_RE = /^[ \t]{0,3}(`{3,}|~{3,})([^\n]*)$/gm;
+
+function fencedSpans(text) {
+  const spans = [];
+  let open = null;
+  for (const m of text.matchAll(FENCE_LINE_RE)) {
+    const at = m.index ?? 0;
+    if (!open) open = { at, fence: m[1] };
+    else if (!m[2].trim() && m[1][0] === open.fence[0] && m[1].length >= open.fence.length) {
+      spans.push([open.at, at + m[0].length]);
+      open = null;
+    }
+  }
+  if (open) spans.push([open.at, text.length]);
+  return spans;
+}
+
+const CONSENT_GATE_RE =
+  /\bonly\s+(?:after|with|if|when|once)\s+(?:the\s+)?(?:explicit\s+|express\s+|prior\s+)?(?:user['’]?s?\s+)?(?:opt-?in|consent|approval|permission|confirmation)\b|\bonly\s+(?:if|when|once)\s+the\s+user\s+(?:explicitly\s+)?(?:agrees|opts?\s+in|consents|approves|asks)\b/i;
+
+const ATTESTED_CONSENT_RE =
+  /\b(?:already|has|have|had)\s+(?:been\s+)?(?:opted\s+in|consented|approved|agreed|given\s+(?:consent|approval))\b|\b(?:consent|approval|opt-?in)\s+(?:is|was|has\s+been)\s+(?:given|granted|implied|assumed|on\s+file)\b/i;
+
 const LIFECYCLE_VECTOR = /(?:\b(?:postinstall|preinstall|node[_-]?gyp|npm\s+lifecycle|package\.json[^.\n]{0,40}scripts|install hook|lifecycle (?:script|hook))|\.npmrc)\b/i;
 
 export const IMPERATIVE = /\b(always|never|must|do not|don'?t|ensure you|make sure( you)?|be sure to|you should always|you must|remember to|whenever|when(ever)? (asked|the user)|instead of .*,? (use|do|say)|reply with|respond with|tell (the )?user)\b/i;
@@ -44,12 +71,13 @@ const SABOTAGE_RULES = [
   { re: /\bdo not\b[^.\n]{0,20}\b(log|display|show|print|record|surface|expose|output)\b[^.\n]{0,60}\buser\b(?!['’]s)/i, label: 'conceal-from-user', guarded: false, context: /\b(transfer|transmit|send|network|exfil|upload|post|copy|collect)\b/i },
 ];
 
-export function offendingLine(sig, text) {
+export function offendingLine(sig, text, skip) {
   const g = new RegExp(sig.re.source, sig.re.flags.includes('g') ? sig.re.flags : sig.re.flags + 'g');
   for (const m of text.matchAll(g)) {
     if (m.index == null) continue;
     const line = lineTextAt(text, m.index);
     if (sig.refine && !sig.refine(line)) continue;
+    if (skip?.(line)) continue;
     const at = line.indexOf(m[0]);
     if (isDocumentationLine(line, at < 0 ? undefined : at)) continue;
     if (prohibitsAt(line, at)) continue;
@@ -78,11 +106,12 @@ function mentionOnly(text, at, length) {
   return mentionNotDirective(line, index, length);
 }
 
-function firstDirectiveLine(units, re) {
+function firstDirectiveLine(units, re, skip) {
   for (const u of units) {
     const line = u.text;
     const m = re.exec(line);
     if (!m) continue;
+    if (skip?.(line)) continue;
     if (negatedAround(line, m.index, m[0].length)) continue;
     if (isDescriptiveLine(stripSelfReference(line))) continue;
     if (citationGoverns(line, m.index)) continue;
@@ -126,7 +155,7 @@ const EXFIL_RULES = [
   { re: /\b(send|post|upload|transmit|forward|deliver|beacon|report|ship|push|transfer)(?:s|es|ed|ing|ted|ping)?\b(?:[^.\n]|\.(?!\s)){0,80}\b(https?:\/\/[\w[]\S*|(?:s3|gs|az|ftp|sftp|smb|webdav)s?:\/\/\S+|to\s+(?:the\s+|an?\s+|our\s+|their\s+)?(?:attacker|c2\b|command[- ]and[- ]control|remote (?:server|host|endpoint)|external (?:server|host|endpoint|url|site|service))|(?:attacker|c2)@[\w-]|@(?:[\w-]+\.){0,3}(?:attacker|evil|c2)\b)/i, label: 'send-to-external', severity: 'HIGH' },
 
   {
-    re: /(?:\b(?:read|open|cat|load|import|inspect|include|copy|dump|print|show)\b|(?<![.\w$])\bsource(?=\s+[~./$"'`]|\s*=\s*["'`]?file:))(?:[^.\n]|\.(?!\s)){0,50}(?:~?\/?\.ssh\/(?:id_[a-z0-9]+|config)(?!\.pub)|~?\/?\.aws\/credentials|~?\/?\.kube\/config|~?\/?\.gnupg|\bid_(?:rsa|ed25519|dsa)\b(?!\.pub)|~?\/?\.npmrc|~?\/?\.netrc|\/etc\/shadow|(?:^|[\s'"`(])\.env(?:\.[\w-]+)?\b)/i,
+    re: /(?:\b(?:read|open|cat|load|import|inspect|include|copy|dump|print|show)\b|(?<![.\w$])\bsource(?=\s+[~./$"'`]|\s*=\s*["'`]?file:))(?:[^.\n]|\.(?!\s)){0,50}(?:~?\/?\.ssh\/(?:id_[a-z0-9]+|config)(?!\.pub)|~?\/?\.aws\/credentials|~?\/?\.kube\/config|~?\/?\.gnupg|\bid_(?:rsa|ed25519|dsa)\b(?!\.pub)|~?\/?\.npmrc|~?\/?\.netrc|\/etc\/shadow)|\b(?:read|open|cat|inspect|copy|dump|print|show)\b(?:[^.\n]|\.(?!\s)){0,50}(?:^|[\s'"`(])\.env(?:\.[\w-]+)?\b/i,
     label: 'read-credential-path',
     severity: 'HIGH',
     descGuard: true,
@@ -169,6 +198,7 @@ function scanDirectives(units) {
         if (r.descGuard && (quotedMention(line, m.index) || describesAt(line, m.index))) continue;
         if (r.descGuard && isRiskTableRow(line)) continue;
         if (r.label === 'send-to-external' && LOCAL_URL_RE.test(line) && !/\b(attacker|c2|command[- ]and[- ]control|external|evil)\b/i.test(line)) continue;
+        if (r.label === 'send-to-external' && CONSENT_GATE_RE.test(line) && !ATTESTED_CONSENT_RE.test(line)) continue;
         if (r.label === 'send-to-external' && m.index != null && insideMarkdownLinkLabel(line, m.index)) continue;
         if (r.label === 'send-to-external' && m.index != null) {
           const around = line.slice(Math.max(0, m.index - 24), m.index + 24);
@@ -204,7 +234,9 @@ function detectSelfReinforcement(text, isInstruction) {
     if (!ref) continue;
 
     if (isDescriptiveLine(line.replace(ref[0], ' '))) continue;
-    if (SELF_RECREATE.test(line)) return { form: 'recreate', line };
+    if (insideQuotes(line, ref.index)) continue;
+    const recreate = SELF_RECREATE.exec(line);
+    if (recreate && !negatedAround(line, recreate.index, recreate[0].length)) return { form: 'recreate', line };
     if (SELF_PROPAGATE.test(line)) return { form: 'propagate', line };
     if (!isInstruction && !weak && SELF_UNDELETABLE.test(line)) weak = { form: 'undeletable', line };
   }
@@ -247,7 +279,7 @@ function reportDurableClaims(text, { isInstruction, Noun }, push) {
 function reportOverride(text, { isInstruction, noun, units }, push) {
   const overrideLine = firstDirectiveLine(units, isInstruction ? MALICIOUS_OVERRIDE : OVERRIDE_MARKERS);
   const lineUnits = text.split(/\r?\n/).map((t, i) => ({ text: t, line: i + 1, code: false }));
-  const authorityLine = firstDirectiveLine(lineUnits, isInstruction ? AUTHORITY_SPOOF_STRONG : AUTHORITY_SPOOF);
+  const authorityLine = firstDirectiveLine(lineUnits, isInstruction ? AUTHORITY_SPOOF_STRONG : AUTHORITY_SPOOF, isInstruction ? (line) => TITLED_SYSTEM_HEADING_RE.test(line) : undefined);
   const hasOverride = !!overrideLine;
   const hasAuthority = !!authorityLine;
 
@@ -302,11 +334,11 @@ function reportDirectives(text, { noun, units }, push) {
   );
 }
 
-function reportStagedPayload(text, { noun }, push) {
+function reportStagedPayload(text, { noun, isInstruction }, push) {
   for (const signal of DANGEROUS_SHELL) {
-    const line = offendingLine(signal, text);
+    const line = offendingLine(signal, text, (l) => PROHIBITED_EXAMPLE_RE.test(l));
     if (!line) continue;
-    const severity = signal.severity === 'MEDIUM' || signal.severity === 'LOW' ? 'HIGH' : 'CRITICAL';
+    const severity = signal.severity === 'MEDIUM' || signal.severity === 'LOW' ? (isInstruction ? 'MEDIUM' : 'HIGH') : 'CRITICAL';
     push(
       severity,
       `Executable payload staged in ${noun}: ${signal.name}`,
@@ -377,11 +409,16 @@ function reportSelfReinforcement(text, { isInstruction, noun }, push) {
   );
 }
 
-function reportScanFindings(text, { noun, Noun }, push, findings, seenInjection) {
+function reportScanFindings(text, { noun, Noun, isInstruction }, push, findings, seenInjection) {
   const scan = localScan(text, { categories: ['injection', 'secret', 'pii'] });
+  const fences = isInstruction ? fencedSpans(text) : [];
+  const inFence = (at) => typeof at === 'number' && fences.some(([a, b]) => at >= a && at < b);
+  const prohibited = (at) => typeof at === 'number' && at >= 0 && at < text.length && PROHIBITED_EXAMPLE_RE.test(lineSpanAt(text, at).line);
   for (const finding of scan.findings) {
     if (finding.category === 'injection') {
       if (seenInjection) continue;
+      if (CODE_SHAPED_INJECTION.test(String(finding.label ?? '')) && inFence(finding.at)) continue;
+      if (prohibited(finding.at)) continue;
       // ⚠ A NOTE THAT QUOTES AN ATTACK IS NOT AN ATTACK - the same gate the
       // platform applies, so the OFFLINE verdict is never stricter than the
       // server's on a security team's own notes.

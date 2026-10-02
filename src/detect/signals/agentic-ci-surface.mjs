@@ -16,6 +16,9 @@ const BYPASS_RULES                                                              
   { re: /--allow-all-tools\b|(?:^|\s)--allow-all\b/m, label: 'copilot --allow-all-tools', severity: 'HIGH' },
   { re: /--trust-all-tools\b/, label: '--trust-all-tools', severity: 'HIGH' },
   { re: /--yes-always\b/, label: 'aider --yes-always', severity: 'HIGH' },
+  { re: /--dangerously-allow-all\b/, label: 'amp --dangerously-allow-all', severity: 'HIGH' },
+  { re: /--skip-permissions-unsafe\b/, label: 'droid exec --skip-permissions-unsafe', severity: 'HIGH' },
+  { re: /\bGOOSE_MODE\s{0,3}[:=]\s{0,3}['"]?auto\b/, label: 'GOOSE_MODE=auto', severity: 'HIGH' },
   { re: /\b(?:cursor-)?agent\b[^\n]*\s(?:--force|-f)\b/, label: 'cursor agent --force', severity: 'HIGH' },
   { re: /--allowed-?tools[= ]+['"]?[^'"\n]*(?:\bBash\b(?!\()|Bash\(\s*\*?\s*\)|Bash\(\*|["' ,]\*["' ,])/i, label: '--allowedTools with unscoped Bash', severity: 'HIGH' },
   { re: /(?:--ask-for-approval|(?:^|\s)-a)[= ]+['"]?never\b/m, label: 'codex --ask-for-approval never', severity: 'MEDIUM' },
@@ -56,11 +59,42 @@ function whoCanFire(wf            , step        )                               
   return { who: 'open', why: 'no actor condition on the job or step, and the step has no write-access check of its own' };
 }
 
+const GEMINI_EFFECT =
+  'Before the fix, a headless run trusted the checked-out workspace\'s own settings and ignored its tool allow-list under --yolo, so a file in the checkout or an instruction in an issue or comment could run any command - including reading the Git credentials actions/checkout leaves on disk.';
+const GEMINI_ACTION_FLAW            = { pkg: 'google-github-actions/run-gemini-cli', fixed: '0.1.22', advisory: 'GHSA-wpqr-6v78-jr5g', effect: GEMINI_EFFECT };
+const GEMINI_CLI_FLAW            = { pkg: '@google/gemini-cli', fixed: '0.39.1', advisory: 'GHSA-wpqr-6v78-jr5g', effect: GEMINI_EFFECT };
+const CLAUDE_CODE_FLAW            = {
+  pkg: '@anthropic-ai/claude-code',
+  fixed: '2.1.163',
+  from: '0.2.54',
+  advisory: 'CVE-2026-54316',
+  effect:
+    'From 0.2.54 until the fix, WebFetch reached any huggingface.co address without asking, even under a narrowed tool list, and each fetch of an attacker\'s repository is counted there as a download - a way out for anything an injected instruction reads.',
+};
+
+const SEMVER_RE = /^v?(\d+)\.(\d+)\.(\d+)(-[\w.]+)?$/;
+const PINNED_CLI_RE = /(@google\/gemini-cli|@anthropic-ai\/claude-code)@(v?\d+\.\d+\.\d+(?:-[\w.]+)?)(?![\w.-])/g;
+
+function flawedVersion(version                           , flaw           )          {
+  const v = SEMVER_RE.exec((version ?? '').trim().replace(/^['"]|['"]$/g, ''));
+  if (!v) return false;
+  const order = (b        ) => {
+    const o = SEMVER_RE.exec(b) ;
+    for (let i = 1; i <= 3; i++) if (Number(v[i]) !== Number(o[i])) return Number(v[i]) - Number(o[i]);
+    return 0;
+  };
+  return order(flaw.fixed) < 0 && (!flaw.from || order(flaw.from) >= 0);
+}
+
+const cliIgnoresAllowList = (step        ) => step.ai?.product === 'run-gemini-cli' && flawedVersion(step.with.gemini_cli_version, GEMINI_CLI_FLAW);
+
 function unattended(step        )                                                                       {
   const out                                                                       =
     BYPASS_RULES.filter((r) => has(step.inputText, r.re)).map(({ label, severity }) => ({ label, severity }));
   if (step.ai?.product === 'run-gemini-cli' && !/"core"\s*:/.test(step.with.settings ?? '')) {
     out.push({ label: 'run-gemini-cli always runs --yolo, and no settings.tools.core allow-list narrows it', severity: 'HIGH', implicit: true });
+  } else if (cliIgnoresAllowList(step)) {
+    out.push({ label: `Gemini CLI ${step.with.gemini_cli_version.trim()} ignores the settings.tools.core allow-list under --yolo`, severity: 'HIGH', implicit: true });
   }
   if (step.ai?.product === 'ai-inference' && /^true$/i.test((step.with['enable-github-mcp'] ?? '').trim())) {
     out.push({ label: 'ai-inference with enable-github-mcp: true', severity: 'MEDIUM', implicit: true });
@@ -69,7 +103,7 @@ function unattended(step        )                                               
 }
 
 const MODEL_AUTH_INPUTS = new Set(['anthropic_api_key', 'claude_code_oauth_token', 'openai-api-key', 'openai_api_key', 'gemini_api_key', 'google_api_key', 'github_token']);
-const PROVIDER_WORD_RE = /OPENAI|ANTHROPIC|CLAUDE|GEMINI|GOOGLE_AI|GOOGLE_GENERATIVE|MISTRAL|GROQ|OPENROUTER|DEEPSEEK|XAI/i;
+const PROVIDER_WORD_RE = /OPENAI|ANTHROPIC|CLAUDE|GEMINI|COPILOT|GOOGLE_AI|GOOGLE_GENERATIVE|MISTRAL|GROQ|OPENROUTER|DEEPSEEK|XAI/i;
 const isModelAuthInput = (k        ) => MODEL_AUTH_INPUTS.has(k.toLowerCase()) || (PROVIDER_WORD_RE.test(k) && /(?:KEY|TOKEN)$/i.test(k));
 
 const WRITE_TOOL_RE = /\b(?:Write|Edit|MultiEdit|NotebookEdit)\b|\bBash\b(?!\()|Bash\(\s*\*|write_file|replace\b|run_shell_command(?!\()/;
@@ -81,7 +115,7 @@ function capabilityOf(step        )                                             
     return { level: 'restricted', why: 'codex runs with a read-only sandbox' };
   }
   const settings = w.settings ?? '';
-  if (step.ai?.product === 'run-gemini-cli' && /"core"\s*:\s*\[([^\]]*)\]/.test(settings) && !WRITE_TOOL_RE.test(/"core"\s*:\s*\[([^\]]*)\]/.exec(settings) [1])) {
+  if (step.ai?.product === 'run-gemini-cli' && !cliIgnoresAllowList(step) && /"core"\s*:\s*\[([^\]]*)\]/.test(settings) && !WRITE_TOOL_RE.test(/"core"\s*:\s*\[([^\]]*)\]/.exec(settings) [1])) {
     return { level: 'restricted', why: 'settings.tools.core narrows the Gemini tools' };
   }
   const list = /--allowed-?tools[= ]+(?:"([^"]*)"|'([^']*)'|(\S+))/i.exec(step.inputText) ?? /\ballowed_tools:\s*(.+)/i.exec(step.inputText);
@@ -92,7 +126,25 @@ function capabilityOf(step        )                                             
 
 const REPO_WRITE_SCOPES = ['contents', 'pull-requests', 'actions', 'packages', 'deployments', 'security-events', 'checks', 'statuses', 'workflows', 'pages'];
 
+const GH_TOKEN_KEY_RE = /^(?:github[_-]token|gh[_-]token|github[_-]pat|gh[_-]pat)$/i;
+const BUILT_IN_TOKEN_RE = /^\s*\$\{\{\s*(?:secrets\.GITHUB_TOKEN|github\.token)\s*\}\}\s*$/i;
+
+const tokenInputs = (step        ) =>
+  [...Object.entries(step.with), ...Object.entries(step.scopeEnv)].filter(([k, v]) => GH_TOKEN_KEY_RE.test(k) && v.trim());
+
+function storedToken(step        )                                         {
+  if (step.ai?.product === 'copilot') return null;
+  for (const [key, v] of tokenInputs(step)) {
+    const secret = [...v.matchAll(/\bsecrets\.([\w-]+)/g)].map((m) => m[1]).find((s) => !/^GITHUB_TOKEN$/i.test(s));
+    if (secret) return { key, secret };
+  }
+  return null;
+}
+
+const reachedByOutsiders = (ctx          , step        ) => ctx.privileged.length > 0 || untrustedRefs(step.inputText).length > 0;
+
 function narrowToken(wf            , step        )          {
+  if (tokenInputs(step).some(([, v]) => !BUILT_IN_TOKEN_RE.test(v))) return false;
   const perms = jobOf(wf, step).permissions ?? wf.permissions;
   if (perms === 'read-all' || (perms && typeof perms === 'object' && !Object.keys(perms          ).length)) return true;
   if (!perms || typeof perms !== 'object') return false;
@@ -186,12 +238,14 @@ function checkoutFindings(ctx          , step        )                    {
     has(s.run, /\bgh\s+pr\s+checkout\b|git\s+(?:fetch|checkout)[^\n]*(?:refs\/pull\/|\bpull\/|github\.event\.pull_request\.head)/i)
   ));
   if (!checkout) return [];
+  const trusted = /gemini/i.test(step.ai?.product ?? '') && /^['"]?(?:true|1)['"]?$/i.test((step.scopeEnv.GEMINI_TRUST_WORKSPACE ?? '').trim());
   return [{
     class: 'PROMPT_INJECTION',
     severity: 'CRITICAL',
     title: `Workflow "${ctx.a.name}" runs an agent on a pull request's own code with base-repo secrets`,
     detail:
-      `On ${triggers.join(', ')}, step ${checkout.index + 1} checks out the PR head before agent step "${step.id ?? step.ai .product}". The agent then loads that tree's CLAUDE.md / AGENTS.md / .cursor rules, .mcp.json servers and settings as its own configuration - all authored by whoever opened the PR - while holding the base repository's secrets and write token.`,
+      `On ${triggers.join(', ')}, step ${checkout.index + 1} checks out the PR head before agent step "${step.id ?? step.ai .product}". The agent then loads that tree's CLAUDE.md / AGENTS.md / .cursor rules, .mcp.json servers and settings as its own configuration - all authored by whoever opened the PR - while holding the base repository's secrets and write token.` +
+      (trusted ? ' `GEMINI_TRUST_WORKSPACE: true` also tells Gemini CLI to trust that tree, so its `.gemini/` settings and `.env` load before the sandbox starts - the setting Google says is only for trusted input.' : ''),
     remediationText:
       'Run agents that must see PR code on `pull_request` (fork: no secrets), or check the PR out into a subdirectory the agent does not treat as its project root, with project instruction files, MCP config and hooks disabled.',
     remediationTier: 1,
@@ -199,13 +253,23 @@ function checkoutFindings(ctx          , step        )                    {
   }];
 }
 
+const ACTION_METADATA_OUTPUT_RE = /^(?:execution_file|conclusion|branch_name|github_token|session_id|exit_?code|duration(?:_ms)?|num_turns|(?:total_)?cost(?:_usd)?|usage|run_id)$/i;
+
+function authoredOutputExpr(text                           , stepId        )                     {
+  const ref = new RegExp(String.raw`\bsteps\.${stepId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\.outputs\.([\w-]+)`, 'g');
+  for (const expr of String(text ?? '').match(/\$\{\{(?:[^}]|\}(?!\}))*\}\}/g) ?? []) {
+    if ([...expr.matchAll(ref)].some((m) => !ACTION_METADATA_OUTPUT_RE.test(m[1]))) return expr;
+  }
+  return undefined;
+}
+
 function outputFindings(ctx          , step        )                    {
   if (!step.id) return [];
   const job = jobOf(ctx.wf, step);
-  const ref = new RegExp(String.raw`\$\{\{[^}]*\bsteps\.${step.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\.outputs\.[\w-]+[^}]*\}\}`);
-  const sink = job.steps.find((s) => s.index > step.index && (has(s.run, ref) || (has(s.uses, /^actions\/github-script\b/) && has(s.with.script, ref))));
+  const sinkExpr = (s        ) => authoredOutputExpr(s.run, step.id ) ?? (has(s.uses, /^actions\/github-script\b/) ? authoredOutputExpr(s.with.script, step.id ) : undefined);
+  const sink = job.steps.find((s) => s.index > step.index && sinkExpr(s));
   if (!sink) return [];
-  const expr = ((sink.run ?? sink.with.script ?? '').match(ref) ?? [''])[0];
+  const expr = sinkExpr(sink) ;
   return [{
     class: 'INJECTION_FLAW',
     severity: 'HIGH',
@@ -234,7 +298,7 @@ function reachFindings(ctx          , step        )                    {
     });
   }
 
-  const holders = [...Object.entries(step.env), ...Object.entries(step.with)].filter(([k]) => !isModelAuthInput(k)).map(([, v]) => v);
+  const holders = [...Object.entries(step.scopeEnv), ...Object.entries(step.with)].filter(([k]) => !isModelAuthInput(k) && !GH_TOKEN_KEY_RE.test(k)).map(([, v]) => v);
   const secrets = uniq(matchesOf(holders.join('\n'), /\$\{\{\s*secrets\.([\w-]+)\s*\}\}/g).map((m) => /secrets\.([\w-]+)/.exec(m) [1]))
     .filter((s) => !MODEL_SECRET_RE.test(s));
   if (secrets.length && (ctx.privileged.length || untrustedRefs(step.inputText).length > 0)) {
@@ -260,6 +324,86 @@ function reachFindings(ctx          , step        )                    {
     });
   }
   return out;
+}
+
+function storedTokenFindings(ctx          , step        )                    {
+  const t = storedToken(step);
+  if (!t) return [];
+  const exposed = reachedByOutsiders(ctx, step);
+  return [{
+    class: 'WEAK_AUTH',
+    severity: exposed ? 'HIGH' : 'MEDIUM',
+    title: `Agent step "${step.id ?? step.ai .product}" in "${ctx.a.name}" acts with a stored GitHub token, not the job's own`,
+    detail:
+      `\`${t.key}\` is \`secrets.${t.secret}\`. The workflow's \`permissions:\` block narrows only the job's own GITHUB_TOKEN, which also expires when the job ends. A stored personal or bot token keeps its owner's reach across every repository it can see and is the same token on every run, so an injected instruction that leaks a piece of it each time still ends up with all of it.` +
+      (exposed ? ' This agent reads text an outsider wrote.' : ''),
+    remediationText:
+      'Pass `github_token: ${{ secrets.GITHUB_TOKEN }}` and declare the job\'s permissions. If the job token cannot do what the agent needs, mint a short-lived GitHub App token scoped to this repository (actions/create-github-app-token) instead of a personal one.',
+    remediationTier: 1,
+    evidence: { key: t.key, secret: t.secret, step: step.id, product: step.ai .product, path: ctx.a.path, ...locate(`secrets.${t.secret}`, ctx.a.content) },
+  }];
+}
+
+const isClaude = (step        ) => /^(?:claude-code-action|claude|claude-code)$/.test(step.ai?.product ?? '');
+const SCRUB_OFF_RE = /\bCLAUDE_CODE_SUBPROCESS_ENV_SCRUB\b["']?\s*[:=]\s*["']?0(?![\w.])/;
+
+function leakFindings(ctx          , step        )                    {
+  if (!isClaude(step)) return [];
+  const out                    = [];
+  const exposed = reachedByOutsiders(ctx, step);
+  const name = step.id ?? step.ai .product;
+  if (/^['"]?0['"]?$/.test((step.scopeEnv.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB ?? '').trim()) || SCRUB_OFF_RE.test(step.inputText)) {
+    out.push({
+      class: 'INSECURE_CONFIG',
+      severity: exposed ? 'HIGH' : 'MEDIUM',
+      title: `Workflow "${ctx.a.name}" switches off Claude's secret scrubbing for agent step "${name}"`,
+      detail:
+        '`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: 0` stops Claude Code removing Anthropic, cloud and GitHub Actions secrets from the environment of the commands it runs, so one `env` or `printenv` from an injected instruction reads them all.' +
+        (exposed ? ' This agent reads text an outsider wrote.' : ''),
+      remediationText: 'Remove the opt-out. If a command genuinely needs a secret, run it in a separate step the agent does not control.',
+      remediationTier: 1,
+      evidence: { step: step.id, product: step.ai .product, path: ctx.a.path, ...locate('CLAUDE_CODE_SUBPROCESS_ENV_SCRUB', ctx.a.content) },
+    });
+  }
+  if (step.ai?.product === 'claude-code-action' && /^['"]?true['"]?$/i.test((step.with.show_full_output ?? '').trim())) {
+    out.push({
+      class: 'INSECURE_CONFIG',
+      severity: exposed ? 'HIGH' : 'MEDIUM',
+      title: `Workflow "${ctx.a.name}" prints everything agent step "${name}" sees into the Actions log`,
+      detail:
+        '`show_full_output: true` writes every tool result to the job log - file contents, command output, `env`. On a public repository that log is public, so whatever an injected instruction makes the agent read leaves through the log, with no network call to stop.' +
+        (exposed ? ' This agent reads text an outsider wrote.' : ''),
+      remediationText: 'Turn show_full_output off outside a private debugging run.',
+      remediationTier: 1,
+      evidence: { step: step.id, path: ctx.a.path, ...locate('show_full_output', ctx.a.content) },
+    });
+  }
+  return out;
+}
+
+function flawedPinFindings(ctx          , step        )                    {
+  const pins                                                         = [];
+  if (step.ai?.product === 'run-gemini-cli') {
+    const ref = (step.uses ?? '').split('@')[1] ?? '';
+    if (flawedVersion(ref, GEMINI_ACTION_FLAW)) pins.push({ flaw: GEMINI_ACTION_FLAW, version: ref, needle: step.uses  });
+    if (flawedVersion(step.with.gemini_cli_version, GEMINI_CLI_FLAW)) pins.push({ flaw: GEMINI_CLI_FLAW, version: step.with.gemini_cli_version.trim(), needle: 'gemini_cli_version' });
+  }
+  for (const s of jobOf(ctx.wf, step).steps) {
+    for (const m of (s.run ?? '').slice(0, 200_000).matchAll(PINNED_CLI_RE)) {
+      const flaw = m[1] === GEMINI_CLI_FLAW.pkg ? GEMINI_CLI_FLAW : CLAUDE_CODE_FLAW;
+      if (flawedVersion(m[2], flaw)) pins.push({ flaw, version: m[2], needle: m[0] });
+    }
+  }
+  const exposed = reachedByOutsiders(ctx, step);
+  return pins.map(({ flaw, version, needle }) => ({
+    class: 'BAD_DEPENDENCY',
+    severity: exposed ? 'HIGH' : 'MEDIUM',
+    title: `Workflow "${ctx.a.name}" pins ${flaw.pkg} ${version}, which has a known agent flaw (${flaw.advisory})`,
+    detail: `${flaw.pkg} is fixed in ${flaw.fixed}. ${flaw.effect}` + (exposed ? ' This workflow hands the agent text an outsider wrote, which is the input the flaw needs.' : ''),
+    remediationText: `Move ${flaw.pkg} to ${flaw.fixed} or later.`,
+    remediationTier: 1,
+    evidence: { package: flaw.pkg, version, fixed: flaw.fixed, advisory: flaw.advisory, step: step.id, path: ctx.a.path, ...locate(needle, ctx.a.content) },
+  }));
 }
 
 function scriptInjectionFindings(a                  , wf            , privileged          )                    {
@@ -294,6 +438,7 @@ export function agenticCiFindings(a                  )                    {
     out.push(
       ...triggerFindings(ctx, step), ...interpolationFindings(ctx, step), ...bypassFindings(ctx, step),
       ...checkoutFindings(ctx, step), ...outputFindings(ctx, step), ...reachFindings(ctx, step),
+      ...storedTokenFindings(ctx, step), ...leakFindings(ctx, step), ...flawedPinFindings(ctx, step),
     );
   }
   out.push(...scriptInjectionFindings(a, wf, privileged));

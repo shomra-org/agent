@@ -126,7 +126,9 @@ const BASELINE_AND_SUPPRESSION = () => `${bold('BASELINE & SUPPRESSION')}  ${dim
     ${dim('.shomraignore')}   a repo file: ${dim('path/glob')} (skip file) or ${dim('path/glob :: title-substring')}
     ${dim('inline comment')}  ${bold('// shomra-ignore')} / ${bold('# shomra-ignore')} on the finding's line or the one above
     ${dim('whole file')}      ${bold('shomra-ignore-file')} in the first lines (works in JSON too)
-  Any suppression re-grades the artifact, so a fully-suppressed file drops to ALLOW.
+  Any suppression re-grades the artifact, so a fully-suppressed file drops to ALLOW -
+  except a BLOCK your org's policy returned: repo files only silence findings, so that
+  stays BLOCK ${dim('(ignored locally, still blocked by org policy)')}. Lift it in the platform.
   ${dim('--no-suppress')} ignores all of the above; ${dim('--no-baseline')} ignores just the baseline.
 `;
 
@@ -270,6 +272,12 @@ const RUNTIME_FIREWALL = () => `${bold('RUNTIME FIREWALL (multi-agent)')}
   identity / governance / flow engine, with a short timeout + a circuit breaker
   that skips a known-down backend. Fail-open by default (the local tier is still
   enforcing); SHOMRA_GUARD_STRICT=1 to also fail-closed on the server tier.
+
+  ${bold('Skills (Claude Code).')} When the agent invokes a skill, the hook reads its
+  SKILL.md (project .claude/skills, ~/.claude/skills or an installed plugin) plus
+  the names of the files it bundles and asks the gate - the same check as
+  ${bold('shomra gate')}. A BLOCK refuses the call. Verdicts are cached on the
+  machine by content for 10 minutes; a skill not found on disk is not blocked.
 `;
 
 const EXIT_CODES = () => `${bold('EXIT CODES')}  ${dim('- one convention across every command')}
