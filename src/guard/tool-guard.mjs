@@ -15,7 +15,9 @@ import { VERSION } from '../core/version.mjs';
 import { loadConfig, resolveSettings } from '../core/config.mjs';
 import { workloadCredential } from '../core/workload-identity.mjs';
 import { classifyConsequence, downrankCodeContext, grade, localScan } from '../detect/guard-signals.mjs';
-import { WRITE_TOOLS, callSubjectTypes, guardNeedsServer, guardTargetPath, guardText } from './classify.mjs';
+import { SHELL_TOOLS_RE, WRITE_TOOLS, callSubjectTypes, guardNeedsServer, guardTargetPath, guardText } from './classify.mjs';
+import { shellCommandOf } from './command-text.mjs';
+import { runTargets } from './run-targets.mjs';
 import { confirmationNote, emitGuardAsk, emitGuardDeny, stoppedNote } from './emit.mjs';
 import { guardPathAllowlisted } from './ignore.mjs';
 import { screenModelLoad } from './model-load.mjs';
@@ -247,6 +249,21 @@ export function postContentField(tool, input, normalized, read = boundedRead) {
   }
 }
 
+export function runTargetsOf(tool, input, normalized, read) {
+  try {
+    if (!SHELL_TOOLS_RE.test(tool || '')) return { targets: [], risky: [] };
+    const targets = runTargets(shellCommandOf(input), normalized?.cwd, read);
+    const risky = targets.flatMap((t) =>
+      localScan(t.text).findings
+        .filter((f) => f.severity === 'CRITICAL' || f.severity === 'HIGH')
+        .map((f) => ({ target: t.name, kind: t.kind, label: f.label ?? f.name ?? f.title, severity: f.severity })),
+    );
+    return { targets, risky };
+  } catch {
+    return { targets: [], risky: [] };
+  }
+}
+
 export async function cmdToolGuard(flags) {
   const agent = resolveAgentFlag(flags);
   const strict = envFlag('SHOMRA_GUARD_STRICT');
@@ -301,7 +318,8 @@ export async function cmdToolGuard(flags) {
   await recordMemoryWrite({ url, apiKey, tool, input, normalized });
 
 
-  const severe = unscreenedSevere(normalized, tool, input);
+  const run = runTargetsOf(tool, input, normalized);
+  const severe = unscreenedSevere(normalized, tool, input) || run.risky.length > 0;
   /**
    * ⚠ The org's subject types come from the server's last answer, cached on
    * disk - reading them costs no round trip. Unknown (no answer yet, stale, an
@@ -357,6 +375,7 @@ export async function cmdToolGuard(flags) {
       ...buildGuardBody(normalized, agent, flagged ? 'FLAG' : undefined, flagged ? local.top?.label : undefined),
       ...post,
       ...activeArtifactsField(agent, normalized),
+      ...(run.targets.length ? { run_targets: run.targets.map(({ kind, name, path: p, text }) => ({ kind, name, path: p, text })) } : {}),
       ...selftest,
       ...(selftest.selftest ? {} : { guard_ledger: sendLedger() }),
       ...guardWait(),
