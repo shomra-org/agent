@@ -54,10 +54,13 @@ export function screenResult(result) {
 function descriptorText(entry, method) {
   const descriptor = entry ?? {};
   const parts = method === 'tools/list'
-    ? [descriptor.name ?? '', descriptor.description ?? '', safeJson(descriptor.annotations), safeJson(descriptor.inputSchema)]
+    ? [
+      descriptor.name ?? '', typeof descriptor.title === 'string' ? descriptor.title : '', descriptor.description ?? '',
+      safeJson(descriptor.annotations), safeJson(descriptor.inputSchema), safeJson(descriptor.outputSchema), safeJson(descriptor._meta),
+    ]
     : [
       descriptor.name ?? '', descriptor.title ?? '', descriptor.description ?? '',
-      descriptor.uri ?? '', descriptor.uriTemplate ?? '', safeJson(descriptor.arguments),
+      descriptor.uri ?? '', descriptor.uriTemplate ?? '', safeJson(descriptor.arguments), safeJson(descriptor._meta),
     ];
   return parts.filter(Boolean).join('\n');
 }
@@ -66,11 +69,20 @@ function descriptorLabel(entry) {
   return String(entry?.name ?? entry?.uri ?? entry?.uriTemplate ?? 'unnamed');
 }
 
-function isPoisonedDescriptor(entry, method) {
-  const text = descriptorText(entry, method);
+function poisonedText(text) {
   if (!text.trim()) return false;
   const { findings } = localScan(text, { categories: ['injection', 'secret', 'egress'] });
   return findings.some((f) => f.severity === 'CRITICAL' || f.severity === 'HIGH');
+}
+
+function isPoisonedDescriptor(entry, method) {
+  return poisonedText(descriptorText(entry, method));
+}
+
+export function screenInstructions(result) {
+  if (typeof result?.instructions !== 'string' || !poisonedText(result.instructions)) return { result, withheld: false };
+  const { instructions: _withheld, ...rest } = result;
+  return { result: rest, withheld: true };
 }
 
 export function screenListing(method, result, deniedTools = []) {
