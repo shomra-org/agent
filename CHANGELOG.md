@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Security (agent runtime hardening)
+- **What a named script runs is screened, not just its name.** `npm test`,
+  `make deploy` and `./setup.sh` showed the server only a name. The hook now
+  reads the package.json script (with npm's pre and post hooks), the make recipe
+  or the script file a command runs, sends it as `run_targets`, and sends the
+  call to the server when the on-machine scan finds a dangerous line in it - or
+  asks you when the server cannot answer.
+- **A download whose output flag is bunched with others is still a download.**
+  `curl -fsSLo install.sh <url> && sh install.sh` read as nothing to the staged
+  fetch-then-run rule, which only knew a standalone `-o`; it is caught offline
+  now, as on the server.
 - **Every install reaches the server's package checks.** On a machine with no
   agent identity, `npm install`, `pip install`, `npx`, `docker pull`, `helm
   install`, `brew tap`, an editor extension, a model download and a dependency

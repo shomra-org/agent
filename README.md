@@ -279,6 +279,13 @@ backend, behind a short timeout + circuit breaker - so a slow or down backend
 never freezes the agent. Fail-open by default; `SHOMRA_GUARD_STRICT=1` fails
 closed on the server tier.
 
+A command that names a script runs what the script says, so the hook reads it:
+the package.json script behind `npm test` / `npm run x` / `yarn x` / `pnpm x`
+(with npm's pre and post hooks), the recipe behind `make target`, or the file
+behind `./setup.sh` / `bash x.sh`. What it read goes to the server as
+`run_targets` and is screened like a command you typed; a dangerous line in it
+sends the call to the server, or asks you when the server cannot answer.
+
 Installs always escalate. A package, image, Helm chart, editor extension or model
 the agent is about to fetch, and a dependency it writes into a manifest
 (`package.json`, `requirements.txt`, a Dockerfile, a compose file), is sent to the
