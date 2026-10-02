@@ -6,7 +6,7 @@ import path from 'node:path';
 
 
 import { SHELL_TOOL_NAMES, SHELL_TOOLS_RE, argvCommand, callSubjectTypes, guardNeedsServer, shellCommandOf } from '../src/guard/classify.mjs';
-import { commandSubjectTypes, pathSubjectTypes, readSubjectTypes, rememberSubjectTypes, subjectEscalation } from '../src/guard/subject-preclassify.mjs';
+import { commandSubjectTypes, pathSubjectTypes, readSubjectTypes, rememberSubjectTypes, serverScreened, subjectEscalation } from '../src/guard/subject-preclassify.mjs';
 import { postEditContents } from '../src/guard/memory-write.mjs';
 import { normalizeGuardInput } from '../src/guard/normalize.mjs';
 import { postContentField } from '../src/guard/tool-guard.mjs';
@@ -66,7 +66,7 @@ test('installs, pulls, IaC, models and extensions pre-classify to their subject 
 test('escalation: the org set decides, an UNKNOWN set escalates every subject-bearing call', () => {
   const install = { command: 'npm install left-pad' };
   assert.equal(guardNeedsServer('Bash', install, false, { subjectTypes: ['package'] }), true);
-  assert.equal(guardNeedsServer('Bash', install, false, { subjectTypes: ['image'] }), false, 'no package rule - decided locally');
+  assert.equal(guardNeedsServer('Bash', install, false, { subjectTypes: ['image'] }), true, 'no package rule - the server still checks the package itself');
   assert.equal(guardNeedsServer('Bash', install, false, { subjectTypes: null }), true, 'unknown -> escalate');
   assert.equal(guardNeedsServer('Bash', install, false), true, 'an older call site with no set -> escalate');
   assert.equal(guardNeedsServer('Bash', { command: 'npm test' }, false, { subjectTypes: null }), false, 'nothing subject-bearing stays local');
@@ -77,6 +77,20 @@ test('escalation: the org set decides, an UNKNOWN set escalates every subject-be
   assert.equal(guardNeedsServer('Bash', { command: 'cat > Dockerfile <<EOF\nFROM node\nEOF' }, false, { subjectTypes: ['image'] }), true, 'a heredoc Dockerfile');
   assert.ok(callSubjectTypes('apply_patch', { patch: '*** Begin Patch\n*** Add File: compose.yaml\n+services: {}\n*** End Patch' }).has('container'));
   assert.equal(subjectEscalation(new Set(), null), false);
+});
+
+test('an install reaches the server whatever the org rules say, because the server checks the package itself', () => {
+  for (const command of ['npm install left-pad', 'pip install requests', 'npx -y some-cli', 'docker pull nginx:latest', 'terraform init', 'ollama pull llama3', 'code --install-extension ms-python.python', 'brew tap someone/formulae']) {
+    assert.equal(guardNeedsServer('Bash', { command }, false, { subjectTypes: [] }), true, command);
+  }
+  assert.equal(guardNeedsServer('Edit', { file_path: 'package.json', old_string: '"a": "1"', new_string: '"a": "1", "b": "2"' }, false, { subjectTypes: [] }), true, 'a dependency added to a manifest');
+  assert.equal(guardNeedsServer('Write', { file_path: '.env.local', content: 'A=1' }, false, { subjectTypes: ['image'] }), false, 'a type the server does not check itself still waits for an org rule');
+  assert.equal(guardNeedsServer('Write', { file_path: '.env.local', content: 'A=1' }, false, { subjectTypes: ['secret-file'] }), true);
+  assert.equal(guardNeedsServer('Bash', { command: 'gh workflow run ci.yml' }, false, { subjectTypes: [] }), false);
+  assert.equal(guardNeedsServer('Bash', { command: 'npm test' }, false, { subjectTypes: [] }), false, 'running the tests installs nothing');
+  assert.ok(serverScreened(commandSubjectTypes('pip install requests')));
+  assert.equal(serverScreened(commandSubjectTypes('ls -la')), false);
+  assert.equal(serverScreened(null), false);
 });
 
 test('the learned type set round-trips, expires, and is cleared by an answer without one', () => {

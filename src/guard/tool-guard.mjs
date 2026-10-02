@@ -8,17 +8,21 @@ import { CONFIG_DIR } from '../core/config.mjs';
 import { makeLedgerStore } from './ledger.mjs';
 import { MAX_POST_CONTENT, memoryWritesFor, postEditContents, recordLedger, sha256 } from './memory-write.mjs';
 import { memoryReportBase, reportOutOfBand } from './memory-report.mjs';
-import { readSubjectTypes, rememberSubjectTypes, subjectBearingPath, subjectEscalation } from './subject-preclassify.mjs';
+import { readSubjectTypes, rememberSubjectTypes, serverScreened, subjectBearingPath, subjectEscalation } from './subject-preclassify.mjs';
 import { artifactKindFor } from './artifact-paths.mjs';
 import { gateMachine } from '../core/api-client.mjs';
 import { VERSION } from '../core/version.mjs';
 import { loadConfig, resolveSettings } from '../core/config.mjs';
 import { workloadCredential } from '../core/workload-identity.mjs';
 import { classifyConsequence, downrankCodeContext, grade, localScan } from '../detect/guard-signals.mjs';
-import { WRITE_TOOLS, callSubjectTypes, guardNeedsServer, guardTargetPath, guardText } from './classify.mjs';
+import { SHELL_TOOLS_RE, WRITE_TOOLS, callSubjectTypes, guardNeedsServer, guardTargetPath, guardText } from './classify.mjs';
+import { shellCommandOf } from './command-text.mjs';
+import { runTargets } from './run-targets.mjs';
 import { confirmationNote, emitGuardAsk, emitGuardDeny, stoppedNote } from './emit.mjs';
 import { guardPathAllowlisted } from './ignore.mjs';
 import { screenModelLoad } from './model-load.mjs';
+import { screenSkillInvocation } from './skill-check.mjs';
+import { activeArtifactsField } from './active-artifacts.mjs';
 import { normalizeGuardInput } from './normalize.mjs';
 import { envFlag, guardWait, resolveAgentFlag } from './options.mjs';
 import { recordSelftest, selftestField } from './selftest-marker.mjs';
@@ -245,6 +249,21 @@ export function postContentField(tool, input, normalized, read = boundedRead) {
   }
 }
 
+export function runTargetsOf(tool, input, normalized, read) {
+  try {
+    if (!SHELL_TOOLS_RE.test(tool || '')) return { targets: [], risky: [] };
+    const targets = runTargets(shellCommandOf(input), normalized?.cwd, read);
+    const risky = targets.flatMap((t) =>
+      localScan(t.text).findings
+        .filter((f) => f.severity === 'CRITICAL' || f.severity === 'HIGH')
+        .map((f) => ({ target: t.name, kind: t.kind, label: f.label ?? f.name ?? f.title, severity: f.severity })),
+    );
+    return { targets, risky };
+  } catch {
+    return { targets: [], risky: [] };
+  }
+}
+
 export async function cmdToolGuard(flags) {
   const agent = resolveAgentFlag(flags);
   const strict = envFlag('SHOMRA_GUARD_STRICT');
@@ -294,18 +313,23 @@ export async function cmdToolGuard(flags) {
     process.exit(0);
   }
 
+  await screenSkillInvocation({ agent, tool, input, normalized, url, apiKey: settings.apiKey, agentId, strict });
+
   await recordMemoryWrite({ url, apiKey, tool, input, normalized });
 
 
-  const severe = unscreenedSevere(normalized, tool, input);
+  const run = runTargetsOf(tool, input, normalized);
+  const severe = unscreenedSevere(normalized, tool, input) || run.risky.length > 0;
   /**
    * ⚠ The org's subject types come from the server's last answer, cached on
    * disk - reading them costs no round trip. Unknown (no answer yet, stale, an
    * older server) escalates every subject-bearing call: see `subject-preclassify`.
    */
   const subjectTypes = readSubjectTypes({ url });
-  const subjectCall = subjectEscalation(callSubjectTypes(tool, input, { cwd: normalized.cwd }), subjectTypes);
-  const escalate = alwaysEscalate || severe || local.verdict === 'FLAG' || subjectCall || guardNeedsServer(tool, input, !!agentId, { subjectTypes, cwd: normalized.cwd });
+  const candidates = callSubjectTypes(tool, input, { cwd: normalized.cwd });
+  const subjectCall = subjectEscalation(candidates, subjectTypes);
+  const supplyCall = serverScreened(candidates);
+  const escalate = alwaysEscalate || severe || local.verdict === 'FLAG' || subjectCall || supplyCall || guardNeedsServer(tool, input, !!agentId, { subjectTypes, cwd: normalized.cwd });
   if (!escalate) {
     recordSelftest({ stage: 'not-escalated', tool, subjectTypes, reason: 'the local tier decided this call alone - the server never saw it' });
     countUnscreened('not escalated - screened by the local tier only');
@@ -322,7 +346,7 @@ export async function cmdToolGuard(flags) {
    */
   const onUnreachable = (why) => {
     recordSelftest({ stage: 'unreachable', tool, reason: why });
-    countUnscreened(subjectCall ? `${why} - org subject rules NOT evaluated` : why);
+    countUnscreened(subjectCall ? `${why} - org subject rules NOT evaluated` : supplyCall ? `${why} - package and image checks NOT run` : why);
     if (severe) askUnscreened(agent, why);
     return process.exit(0);
   };
@@ -350,6 +374,8 @@ export async function cmdToolGuard(flags) {
     body: {
       ...buildGuardBody(normalized, agent, flagged ? 'FLAG' : undefined, flagged ? local.top?.label : undefined),
       ...post,
+      ...activeArtifactsField(agent, normalized),
+      ...(run.targets.length ? { run_targets: run.targets.map(({ kind, name, path: p, text }) => ({ kind, name, path: p, text })) } : {}),
       ...selftest,
       ...(selftest.selftest ? {} : { guard_ledger: sendLedger() }),
       ...guardWait(),

@@ -13,6 +13,7 @@ const DEFAULT_PORT = 4141;
 const BODYLESS_METHODS = ['GET', 'HEAD'];
 const HOP_BY_HOP_REQUEST_HEADERS = ['host', 'connection', 'content-length', 'accept-encoding', 'expect'];
 const HOP_BY_HOP_RESPONSE_HEADERS = ['content-length', 'transfer-encoding', 'content-encoding', 'connection'];
+const AGENT_CREDENTIAL_PREFIX = 'shm_agt_';
 
 function newSessionId() {
   return `proxy-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -48,7 +49,10 @@ export function forwardHeaders(incoming, { apiKey, actor, machineId, sessionId, 
   headers['x-shomra-source'] = 'shomra llm-proxy';
   if (!headers['x-shomra-session']) headers['x-shomra-session'] = sessionId;
   if (project) headers['x-shomra-project'] = project;
-  if (agentId) headers['x-shomra-agent'] = agentId;
+  const presented = typeof headers['x-shomra-agent'] === 'string' ? headers['x-shomra-agent'].trim() : '';
+  delete headers['x-shomra-agent'];
+  const agent = agentId || (presented.startsWith(AGENT_CREDENTIAL_PREFIX) ? presented : null);
+  if (agent) headers['x-shomra-agent'] = agent;
   return headers;
 }
 
