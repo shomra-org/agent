@@ -8,7 +8,7 @@ import { envFlag } from '../guard/options.mjs';
 import { spawnGuardedServer } from './child-process.mjs';
 import { reportListing, requestConnectVerdict } from './connect-gate.mjs';
 import { createLineFramer, refusal, sendBlockedInitialize, writeMessage } from './jsonrpc.mjs';
-import { LISTING_KEY, RESULT_METHODS, screenListing, screenResult, screenToolCallArguments } from './screening.mjs';
+import { LISTING_KEY, RESULT_METHODS, screenInstructions, screenListing, screenResult, screenToolCallArguments } from './screening.mjs';
 import { resolveAgentIdentityHandle } from '../commands/agent-identity.mjs';
 import { resolveScreenMode, screenCallRemote, screenResultRemote, shimSessionId } from './backend-screen.mjs';
 import { SCREENED_SERVER_METHODS, screenServerRequest } from './server-requests.mjs';
@@ -89,7 +89,7 @@ function launchServer(name, command, args) {
 function trackableMethod(message) {
   return message.method
     && 'id' in message
-    && (LISTING_KEY[message.method] || RESULT_METHODS.has(message.method) || message.method === 'tools/call');
+    && (LISTING_KEY[message.method] || RESULT_METHODS.has(message.method) || message.method === 'tools/call' || message.method === 'initialize');
 }
 
 /**
@@ -211,6 +211,30 @@ async function forwardResultMethod({ message, line, entry, server, ctx }) {
   ));
 }
 
+function forwardError({ message, line, entry, server }) {
+  const verdict = screenResult({ error: message.error });
+  if (!verdict.blocked) {
+    process.stdout.write(`${line}\n`);
+    return;
+  }
+  note(`withheld a ${entry.method} error from "${server}": ${verdict.label}`);
+  writeMessage(refusal(
+    message.id,
+    `Shomra withheld this ${entry.method} error: ${verdict.label}. Its text was not read into context - do not act on it.`,
+    { source: 'shomra-mcp-shim', server, method: entry.method, refusedBy: 'content', screenedBy: 'local' },
+  ));
+}
+
+function forwardInitialize({ message, line, server }) {
+  const screened = screenInstructions(message.result);
+  if (!screened.withheld) {
+    process.stdout.write(`${line}\n`);
+    return;
+  }
+  note(`withheld the server instructions from "${server}": they carry injected directives`);
+  writeMessage({ ...message, result: screened.result });
+}
+
 function forwardListing({ message, method, server, deniedTools, settings, agent }) {
   const screened = screenListing(method, message.result, deniedTools);
   if (screened.denied.length) {
@@ -244,6 +268,11 @@ function createServerFilter({ child, pending, server, deniedTools, settings, age
     }
     const key = 'id' in message ? JSON.stringify(message.id) : null;
     const entry = key ? pending.get(key) : null;
+    if (entry && message.error !== undefined) {
+      pending.delete(key);
+      forwardError({ message, line, entry, server });
+      return;
+    }
     if (!entry || !message.result) {
       if (key) pending.delete(key);
       process.stdout.write(`${line}\n`);
@@ -251,7 +280,8 @@ function createServerFilter({ child, pending, server, deniedTools, settings, age
     }
     pending.delete(key);
 
-    if (RESULT_METHODS.has(entry.method) || entry.method === 'tools/call') await forwardResultMethod({ message, line, entry, server, ctx });
+    if (entry.method === 'initialize') forwardInitialize({ message, line, server });
+    else if (RESULT_METHODS.has(entry.method) || entry.method === 'tools/call') await forwardResultMethod({ message, line, entry, server, ctx });
     else forwardListing({ message, method: entry.method, server, deniedTools, settings, agent });
   }, refuseUnscreened(server, (l) => process.stdout.write(`${l}\n`))));
 }
