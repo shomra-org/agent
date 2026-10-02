@@ -243,8 +243,9 @@ test('the hook entry a canary is sent to is the one the vendor would run', () =>
 
 // ── the escalation expectation ──────────────────────────────────────────────
 
-test('an org with no rule of a type is SUPPOSED to decide that canary locally', () => {
-  assert.equal(expectsEscalation('shell-install', ['image']), false);
+test('an install canary always expects the server, which checks the package whatever the org rules say', () => {
+  assert.equal(expectsEscalation('shell-install', ['image']), true);
+  assert.equal(expectsEscalation('edit-manifest', []), true);
   assert.equal(expectsEscalation('shell-install', ['package']), true);
   assert.equal(expectsEscalation('shell-install', null), true, 'an unknown set escalates everything');
   assert.equal(expectsEscalation('mcp-exec', ['image']), true, 'an MCP call always escalates');

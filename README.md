@@ -279,6 +279,14 @@ backend, behind a short timeout + circuit breaker - so a slow or down backend
 never freezes the agent. Fail-open by default; `SHOMRA_GUARD_STRICT=1` fails
 closed on the server tier.
 
+Installs always escalate. A package, image, Helm chart, editor extension or model
+the agent is about to fetch, and a dependency it writes into a manifest
+(`package.json`, `requirements.txt`, a Dockerfile, a compose file), is sent to the
+backend, which checks the name against the public registry and the advisory feeds
+whether or not your org wrote a rule about it. Before, a machine with no agent
+identity decided these alone unless the org had a rule of that type, so an
+invented package name was never looked up.
+
 Three channels are screened:
 
 | Channel | Hook | What it stops |
@@ -335,8 +343,9 @@ It does two things no simulation can:
 
 Each canary is then read against the org's live rules: escalated and answered,
 or decided locally *because the org has no rule of that type* (which is the
-correct answer, and is reported as one), or **porous** - the call reached no
-screen at all. When the machine is enrolled the result is reported to the org, so
+correct answer for a call the backend does not check itself, and is reported as
+one), or **porous** - the call reached no screen at all. The install canaries
+always expect the backend, because it checks every package itself. When the machine is enrolled the result is reported to the org, so
 fleet coverage is a measured number rather than an install count.
 
 The prompt channel is the one a person controls, and the only one where the leak

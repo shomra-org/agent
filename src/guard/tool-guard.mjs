@@ -8,7 +8,7 @@ import { CONFIG_DIR } from '../core/config.mjs';
 import { makeLedgerStore } from './ledger.mjs';
 import { MAX_POST_CONTENT, memoryWritesFor, postEditContents, recordLedger, sha256 } from './memory-write.mjs';
 import { memoryReportBase, reportOutOfBand } from './memory-report.mjs';
-import { readSubjectTypes, rememberSubjectTypes, subjectBearingPath, subjectEscalation } from './subject-preclassify.mjs';
+import { readSubjectTypes, rememberSubjectTypes, serverScreened, subjectBearingPath, subjectEscalation } from './subject-preclassify.mjs';
 import { artifactKindFor } from './artifact-paths.mjs';
 import { gateMachine } from '../core/api-client.mjs';
 import { VERSION } from '../core/version.mjs';
@@ -308,8 +308,10 @@ export async function cmdToolGuard(flags) {
    * older server) escalates every subject-bearing call: see `subject-preclassify`.
    */
   const subjectTypes = readSubjectTypes({ url });
-  const subjectCall = subjectEscalation(callSubjectTypes(tool, input, { cwd: normalized.cwd }), subjectTypes);
-  const escalate = alwaysEscalate || severe || local.verdict === 'FLAG' || subjectCall || guardNeedsServer(tool, input, !!agentId, { subjectTypes, cwd: normalized.cwd });
+  const candidates = callSubjectTypes(tool, input, { cwd: normalized.cwd });
+  const subjectCall = subjectEscalation(candidates, subjectTypes);
+  const supplyCall = serverScreened(candidates);
+  const escalate = alwaysEscalate || severe || local.verdict === 'FLAG' || subjectCall || supplyCall || guardNeedsServer(tool, input, !!agentId, { subjectTypes, cwd: normalized.cwd });
   if (!escalate) {
     recordSelftest({ stage: 'not-escalated', tool, subjectTypes, reason: 'the local tier decided this call alone - the server never saw it' });
     countUnscreened('not escalated - screened by the local tier only');
@@ -326,7 +328,7 @@ export async function cmdToolGuard(flags) {
    */
   const onUnreachable = (why) => {
     recordSelftest({ stage: 'unreachable', tool, reason: why });
-    countUnscreened(subjectCall ? `${why} - org subject rules NOT evaluated` : why);
+    countUnscreened(subjectCall ? `${why} - org subject rules NOT evaluated` : supplyCall ? `${why} - package and image checks NOT run` : why);
     if (severe) askUnscreened(agent, why);
     return process.exit(0);
   };

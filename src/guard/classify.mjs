@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { artifactKindFor } from './artifact-paths.mjs';
-import { preclassifySubjects, shellWriteTargets, subjectEscalation } from './subject-preclassify.mjs';
+import { preclassifySubjects, serverScreened, shellWriteTargets, subjectEscalation } from './subject-preclassify.mjs';
 
 /**
  *  WHAT COUNTS AS A WRITE, AND IT WAS TEN NAMES SHORT.
@@ -243,12 +243,14 @@ export function guardNeedsServer(tool, input, hasIdentity, opts = {}) {
    * `helm install`, a model pull, an extension install, a write of a manifest,
    * Dockerfile, compose file, workflow or secret file - none is egress or an
    * agent artifact, so every one was decided here, alone, and the org's
-   * `subject:` rules about them never saw a runtime call. Escalated when the org
+   * `subject:` rules about them never saw a runtime call. Escalated when the
+   * server screens the type itself (`SERVER_SCREENED_TYPES`), or when the org
    * has a live runtime rule of a type this call could carry (`opts.subjectTypes`,
    * learned from the server's answers); when that set is UNKNOWN every
    * subject-bearing call is escalated - see `subject-preclassify.mjs`.
    */
-  return subjectEscalation(callSubjectTypes(tool, input, { cwd: opts.cwd }), opts.subjectTypes);
+  const candidates = callSubjectTypes(tool, input, { cwd: opts.cwd });
+  return serverScreened(candidates) || subjectEscalation(candidates, opts.subjectTypes);
 }
 
 const MCP_WRITE_LEAF = /(?:^|_)(?:write|create|edit|append|patch|put|save|upsert|move|copy|rename)(?:_|$)/i;

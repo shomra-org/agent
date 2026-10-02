@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Security (agent runtime hardening)
+- **Every install reaches the server's package checks.** On a machine with no
+  agent identity, `npm install`, `pip install`, `npx`, `docker pull`, `helm
+  install`, `brew tap`, an editor extension, a model download and a dependency
+  written into a manifest were decided on the machine unless the org had a rule
+  of that type - so the server never looked the name up, and a package an agent
+  invented went unchecked. They are now always sent (`SERVER_SCREENED_TYPES`),
+  and the self-test expects them to be.
 - **A call waiting for the person tells the person.** When an agent's policy
   asks the person it acts for to confirm a tool on their phone, Claude Code now
   shows them the code directly (`systemMessage`), not only the agent. Control
